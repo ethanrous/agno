@@ -4,7 +4,7 @@ set -euo pipefail
 ARCHITECTURE="${ARCHITECTURE:-$(uname -m)}"
 
 case "$ARCHITECTURE" in
-amd64)
+x86_64)
     MUSL_PREFIX="x86_64"
 
     # check if this is ubuntu or alpine
