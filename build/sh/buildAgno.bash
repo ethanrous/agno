@@ -1,18 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ARCHITECTURE="${ARCHITECTURE:-amd64}"
+ARCHITECTURE="${ARCHITECTURE:-$(uname -m)}"
 
 case "$ARCHITECTURE" in
 amd64)
     MUSL_PREFIX="x86_64"
-    TARGET_TRIPLE="x86_64-unknown-linux-musl"
-    CARGO_LINKER_ENV_VAR="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER"
+
+    # check if this is ubuntu or alpine
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        if [[ "$ID" == "alpine" ]]; then
+            TARGET_TRIPLE="x86_64-unknown-linux-musl"
+            CARGO_LINKER_ENV_VAR="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER"
+        else
+            TARGET_TRIPLE="x86_64-unknown-linux-gnu"
+            CARGO_LINKER_ENV_VAR="CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
+        fi
+    fi
     ;;
 arm64)
     MUSL_PREFIX="aarch64"
-    TARGET_TRIPLE="aarch64-unknown-linux-musl"
-    CARGO_LINKER_ENV_VAR="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"
+
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        TARGET_TRIPLE="aarch64-apple-darwin"
+    else
+        TARGET_TRIPLE="aarch64-unknown-linux-musl"
+        CARGO_LINKER_ENV_VAR="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"
+    fi
     ;;
 *)
     echo "Unsupported architecture: $ARCHITECTURE" >&2
@@ -20,9 +35,9 @@ arm64)
     ;;
 esac
 
-. "$HOME/.cargo/env"
-
+[ -z "${DO_PDF+x}" ] && DO_PDF=false
 if [[ $DO_PDF == true ]]; then
+    echo "NOT BUILDING AGNO WITH PDF SUPPORT YET"
     exit 1
     # 3) Make Cargo use the C++ linker driver for this target
     export ${CARGO_LINKER_ENV_VAR}="${MUSL_PREFIX}-linux-musl-g++"
@@ -57,6 +72,4 @@ fi
 cargo build --release --target "${TARGET_TRIPLE}"
 
 # 11) Copy the resulting static library to a known location
-mkdir -p /lib/libagno/
-cp "target/${TARGET_TRIPLE}/release/libagno.a" /lib/libagno/
-echo "Built and copied: /lib/libagno/libagno.a"
+cp "target/${TARGET_TRIPLE}/release/libagno.a" "$1"

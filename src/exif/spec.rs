@@ -29,15 +29,15 @@ impl ExifField {
 // }
 //
 // // Or enum-first:
-// if let Ok(id) = ExifTagId::try_from(0x829D) {
-//     // match id { ExifTagId::FNumber => { ... } _ => {} }
+// if let Ok(id) = ExifTagID::try_from(0x829D) {
+//     // match id { ExifTagID::FNumber => { ... } _ => {} }
 // }
 
 macro_rules! exif_tags {
     ( $( ($name:ident, $tag:expr_2021, $section:ident, $human:expr_2021) ),+ $(,)? ) => {
         #[repr(u16)]
         #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-        pub enum ExifTagId {
+        pub enum ExifTagID {
             $( $name = $tag, )+
         }
 
@@ -55,11 +55,11 @@ macro_rules! exif_tags {
             }
         }
 
-        impl core::convert::TryFrom<u16> for ExifTagId {
+        impl core::convert::TryFrom<u16> for ExifTagID {
             type Error = ();
             fn try_from(value: u16) -> Result<Self, Self::Error> {
                 match value {
-                    $( $tag => Ok(ExifTagId::$name), )+
+                    $( $tag => Ok(ExifTagID::$name), )+
                     _ => Err(()),
                 }
             }
