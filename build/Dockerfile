@@ -36,8 +36,8 @@ RUN if [ $DO_PDF == true ]; then mkdir -p /lib/libpdfium && cp /src/pdfium/out/S
 WORKDIR /src/agno
 COPY . .
 
-COPY ./build/sh/buildAgno.bash /build/buildAgno.bash
-RUN /build/buildAgno.bash;
+COPY ./build/sh/build-agno.bash /build/build-agno.bash
+RUN /build/build-agno.bash;
 
 FROM --platform=linux/${TARGETARCH} scratch
 COPY --from=build /lib/libagno/libagno.a /libagno.a

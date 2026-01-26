@@ -19,7 +19,7 @@ x86_64)
         fi
     fi
     ;;
-arm64)
+arm64 | aarch64)
     MUSL_PREFIX="aarch64"
 
     if [[ "$(uname -s)" == "Darwin" ]]; then
