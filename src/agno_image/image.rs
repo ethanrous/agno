@@ -1,4 +1,4 @@
-use std::{os::raw::c_void, ptr::null_mut};
+use std::{error::Error, os::raw::c_void, ptr::null_mut};
 
 use libc::c_uchar;
 
@@ -58,5 +58,22 @@ impl AgnoImage {
 
     pub fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+
+    pub fn to_jpeg(&self, quality: u8, path: &str) -> Result<(), Box<dyn Error>> {
+        let img = image::RgbImage::from_raw(
+            self.width as u32,
+            self.height as u32,
+            self.as_slice().to_vec(),
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+
+        encoder.encode_image(&img)?;
+
+        std::fs::write(path, buf)?;
+
+        Ok(())
     }
 }

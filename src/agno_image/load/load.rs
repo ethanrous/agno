@@ -7,10 +7,10 @@ use std::{
 use crate::{
     agno_image::{
         AgnoImage,
-        load::{load_pdf, load_sony_raw},
+        load::{load_canon_raw, load_pdf, load_sony_raw},
     },
     exif::ExifContext,
-    tiff::{TiffDetectResult, detect_sony_raw},
+    tiff::{detect_raw, RawMaker, TiffDetectResult},
 };
 
 pub enum ImageType {
@@ -19,6 +19,7 @@ pub enum ImageType {
     Webp,
     Pdf,
     SonyRaw(TiffDetectResult),
+    CanonRaw(TiffDetectResult),
 }
 
 pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>> {
@@ -33,8 +34,12 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
         // [0x25, 0x50, 0x44, 0x46]
         [0x25, 0x50] => Ok(ImageType::Pdf),
         [b'I', b'I'] | [b'M', b'M'] => {
-            let det = detect_sony_raw(reader)?;
-            Ok(ImageType::SonyRaw(det))
+            let det = detect_raw(reader)?;
+            // Distinguish Sony from Canon based on maker
+            match det.maker {
+                RawMaker::Canon(_) => Ok(ImageType::CanonRaw(det)),
+                RawMaker::Sony(_) => Ok(ImageType::SonyRaw(det)),
+            }
         }
         _ => Err("Unsupported image format".into()),
     }
@@ -43,7 +48,8 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
 pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>> {
     let mut file = File::open(path)?;
 
-    let exif = ExifContext::from_reader_auto(&mut file)?;
+    // Try to load EXIF, but don't fail if it's missing (e.g., some JPEGs/PNGs)
+    let exif = ExifContext::from_reader_auto(&mut file).unwrap_or_default();
 
     match detect_image_type(&mut file)? {
         ImageType::Jpeg | ImageType::Png | ImageType::Webp => {
@@ -71,6 +77,10 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         ImageType::SonyRaw(det) => {
             // For Sony RAW, proceed with ARW decoding
             load_sony_raw(det, &mut file, exif)
+        }
+        ImageType::CanonRaw(det) => {
+            // For Canon RAW, proceed with CR2 decoding
+            load_canon_raw(det, &mut file, exif)
         }
     }
 }

@@ -415,6 +415,12 @@ exif_tags![
     (WB_RGGBLEVELS, 0x7313, SubIFD, "WB_RGGBLevels"),
     (SONY_CROP_TOP_LEFT, 0x74c7, SubIFD, "SonyCropTopLeft"),
     (SONY_CROP_SIZE, 0x74c8, SubIFD, "SonyCropSize"),
+    // SR2SubIFD access tags (Sony encrypted metadata)
+    (SR2_SUBIFD_OFFSET, 0x7200, IFD0, "SR2SubIFDOffset"),
+    (SR2_SUBIFD_LENGTH, 0x7201, IFD0, "SR2SubIFDLength"),
+    (SR2_SUBIFD_KEY, 0x7221, IFD0, "SR2SubIFDKey"),
+    // Inside SR2SubIFD (decrypted)
+    (SR2_COLOR_MATRIX, 0x7800, SubIFD, "SR2ColorMatrix"),
     (IMAGE_ID, 0x800d, NONE, "ImageID"),
     (WANG_TAG1, 0x80a3, NONE, "WangTag1"),
     (WANG_ANNOTATION, 0x80a4, NONE, "WangAnnotation"),
@@ -840,6 +846,7 @@ exif_tags![
         SubIFD,
         "BlackLevelRepeatDim"
     ),
+    (BLACK_LEVEL_DNG, 0xc61a, SubIFD, "BlackLevelDng"),
     (BLACK_LEVEL_DELTA_H, 0xc61b, SubIFD, "BlackLevelDeltaH"),
     (BLACK_LEVEL_DELTA_V, 0xc61c, SubIFD, "BlackLevelDeltaV"),
     (WHITE_LEVEL, 0xc61d, SubIFD, "WhiteLevel"),

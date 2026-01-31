@@ -115,7 +115,7 @@ pub extern "C" fn free_agno_image(img: &AgnoImage) {
 pub extern "C" fn init_agno() {
     // Only initialize the logger once to avoid errors.
     let _ = env_logger::builder()
-        .filter_level(LevelFilter::Debug) // Set default log level
+        .filter_level(LevelFilter::Info) // Set default log level
         .try_init();
 
     info!("Agno initialized");

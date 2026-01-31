@@ -1,6 +1,7 @@
 mod agno_image;
 mod lib_interface;
 
+mod canon_decoder;
 mod demosaic;
 mod exif;
 mod sony_decoder;

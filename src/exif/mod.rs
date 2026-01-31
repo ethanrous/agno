@@ -1,5 +1,5 @@
 use std::backtrace::{self, Backtrace};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agno_image::load::{ImageType, detect_image_type};
 use crate::exif::spec::ExifField;
+use crate::sony_decoder::{SonyDecryptor, decrypt_sr2_data};
 
 pub mod spec;
 
@@ -231,6 +232,12 @@ struct ExifMap {
 
 // ---------------- Public API ----------------
 
+impl Default for ExifContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExifContext {
     pub fn new() -> Self {
         ExifContext {
@@ -253,6 +260,7 @@ impl ExifContext {
                 ImageType::Webp => return Ok(Self::new()),
                 ImageType::Pdf => return Ok(Self::new()),
                 ImageType::SonyRaw(_) => Self::from_tiff(reader, 0)?,
+                ImageType::CanonRaw(_) => Self::from_tiff(reader, 0)?,
             },
             Err(e) => {
                 return Err(ExifError::Unsupported(format!(
@@ -378,69 +386,155 @@ impl ExifContext {
         let ifd0_off_rel = read_u32_e(reader, endian)? as u64;
         let ifd0_off = tiff_base + ifd0_off_rel;
 
-        // Parse IFD0
-        let ifd0 = read_ifd(reader, endian, ifd0_off)?;
-        // Read Make(0x010F), Model(0x0110) if present
-
-        // Find ExifIFD (0x8769) and GPS (0x8825) offsets
-        let exif_off = read_u32_tag_if_present(reader, endian, tiff_base, &ifd0, 0x8769)
-            .ok()
-            .flatten();
-
-        let sub_ifd_off = read_u32_tag_if_present(reader, endian, tiff_base, &ifd0, 0x014a)
-            .ok()
-            .flatten();
-        // let gps_off = read_u32_tag_if_present(reader, endian, tiff_base, &ifd0, 0x8825)
-        //     .ok()
-        //     .flatten();
-
-        let mut sects = vec![ifd0];
-
-        match sub_ifd_off {
-            Some(0) | None => {}
-            Some(off) => {
-                let sub_ifd = read_ifd(reader, endian, off)?;
-                sects.push(sub_ifd);
-            }
-        }
-
-        match exif_off {
-            Some(0) | None => {}
-            Some(off) => {
-                let exif_ifd = read_ifd(reader, endian, off)?;
-                sects.push(exif_ifd);
-            }
-        }
-
-        match sub_ifd_off {
-            Some(0) | None => {}
-            Some(off) => {
-                let sub_ifd = read_ifd(reader, endian, off)?;
-                sects.push(sub_ifd);
-            }
-        }
-
+        // Use worklist pattern to traverse all IFDs (like tiff.rs does)
+        let mut pending_ifds = vec![ifd0_off];
+        let mut visited: HashSet<u64> = HashSet::new();
         let mut exif_values = HashMap::new();
 
-        sects.iter().for_each(|info| {
-            info.entries.iter().for_each(|entry| {
-                let Ok(ts) = type_size(entry.typ).ok_or(ExifError::Unsupported) else {
-                    return;
+        while let Some(ifd_off) = pending_ifds.pop() {
+            // Skip already-visited or invalid offsets
+            if ifd_off == 0 || !visited.insert(ifd_off) {
+                continue;
+            }
+
+            let ifd = match read_ifd(reader, endian, ifd_off) {
+                Ok(ifd) => ifd,
+                Err(_) => continue, // Skip unreadable IFDs
+            };
+
+            // Process all entries in this IFD
+            for entry in &ifd.entries {
+                // Queue linked IFDs before processing entry values
+                // Tag 330 (0x014a) = SubIFDs (standard TIFF, can point to multiple SubIFDs)
+                // Tag 0x8769 = ExifIFD
+                // Tag 0x8825 = GPS IFD
+                // Tag 0xc634 = DNGPrivateData (Sony SR2Private IFD)
+                if entry.tag == 330
+                    || entry.tag == 0x8769
+                    || entry.tag == 0x8825
+                    || entry.tag == 0xc634
+                {
+                    // Handle arrays of SubIFD offsets (tag 330 can have multiple)
+                    if entry.tag == 330 && entry.typ == 4 && entry.count >= 1 {
+                        if let Ok(offsets) =
+                            read_long_array_tag_entry(reader, endian, tiff_base, entry)
+                        {
+                            for off in offsets {
+                                if off != 0 {
+                                    pending_ifds.push(tiff_base + off as u64);
+                                }
+                            }
+                        }
+                    } else if entry.tag == 0xc634 {
+                        // DNGPrivateData - read offset from first 4 bytes of data
+                        // For Sony SR2, the first 4 bytes contain a pointer to the SR2 IFD
+                        if entry.typ == 1 && entry.count >= 4 {
+                            // Bytes stored inline in value_or_offset for small counts
+                            let off = if entry.count <= 4 {
+                                entry.value_or_offset
+                            } else {
+                                // Read first 4 bytes from the pointed-to data
+                                let data_offset = tiff_base + entry.value_or_offset as u64;
+                                if reader.seek(SeekFrom::Start(data_offset)).is_ok() {
+                                    let mut buf = [0u8; 4];
+                                    if reader.read_exact(&mut buf).is_ok() {
+                                        match endian {
+                                            Endian::Little => u32::from_le_bytes(buf),
+                                            Endian::Big => u32::from_be_bytes(buf),
+                                        }
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                }
+                            };
+                            if off != 0 {
+                                pending_ifds.push(tiff_base + off as u64);
+                            }
+                        }
+                    } else if let Ok(Some(off)) =
+                        read_u32_tag_if_present(reader, endian, tiff_base, &ifd, entry.tag)
+                    {
+                        pending_ifds.push(off);
+                    }
+                }
+
+                // Tag 0x927c = MakerNotes - for Sony, this contains a TIFF-like structure
+                // with "II*\0" header followed by IFD offset, then IFD entries
+                if entry.tag == 0x927c && entry.typ == 7 && entry.count > 12 {
+                    let makernote_offset = tiff_base + entry.value_or_offset as u64;
+                    // Try to parse as Sony MakerNotes (has TIFF header)
+                    if let Ok(makernote_tags) =
+                        parse_sony_makernotes(reader, makernote_offset, entry.count as usize)
+                    {
+                        // Only add MakerNotes entries that don't conflict with existing EXIF tags
+                        // MakerNotes often reuse standard tag IDs for different purposes
+                        for (tag, val) in makernote_tags {
+                            if !exif_values.contains_key(&tag) {
+                                exif_values.insert(tag, val);
+                            }
+                        }
+                    }
+                }
+
+                // Read entry value
+                let Some(ts) = type_size(entry.typ) else {
+                    continue;
                 };
 
                 let total = (entry.count as usize) * ts;
 
                 let Ok(data) = read_value_bytes(reader, tiff_base, entry, total) else {
-                    return;
+                    continue;
                 };
 
                 let Ok(val) = read_entry_value(data, endian, entry) else {
-                    return;
+                    continue;
                 };
 
                 exif_values.insert(entry.tag, val);
-            });
+            }
+
+            // Follow next_ifd chain
+            if ifd.next_ifd != 0 {
+                pending_ifds.push(tiff_base + ifd.next_ifd as u64);
+            }
+        }
+
+        // Check for encrypted SR2SubIFD (Sony-specific)
+        // Tags: 0x7200 = offset, 0x7201 = length, 0x7221 = decryption key
+        let sr2_offset = exif_values.get(&0x7200).and_then(|v| match v {
+            ExifValue::Long(vals) if !vals.is_empty() => Some(vals[0]),
+            _ => None,
         });
+        let sr2_length = exif_values.get(&0x7201).and_then(|v| match v {
+            ExifValue::Long(vals) if !vals.is_empty() => Some(vals[0]),
+            _ => None,
+        });
+        let sr2_key = exif_values.get(&0x7221).and_then(|v| match v {
+            ExifValue::Long(vals) if !vals.is_empty() => Some(vals[0]),
+            // Type 7 (UNDEFINED) stores 4 bytes inline as the key
+            ExifValue::Byte(bytes) if bytes.len() >= 4 => {
+                Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            }
+            _ => None,
+        });
+
+        if let (Some(offset), Some(length), Some(key)) = (sr2_offset, sr2_length, sr2_key) {
+            debug!(
+                "Found SR2SubIFD: offset={}, length={}, key=0x{:08x}",
+                offset, length, key
+            );
+
+            // Read encrypted SR2SubIFD data
+            if let Ok(sr2_tags) =
+                parse_encrypted_sr2_subifd(reader, tiff_base, offset, length, key, endian)
+            {
+                debug!("Extracted {} tags from SR2SubIFD", sr2_tags.len());
+                exif_values.extend(sr2_tags);
+            }
+        }
 
         Ok((tiff_base, endian, exif_values))
     }
@@ -456,6 +550,16 @@ impl ExifContext {
 
     pub fn get_tag_value_by_tag(&self, tag: u16) -> Option<&ExifValue> {
         self.exif_values.get(&tag)
+    }
+
+    /// Returns all EXIF values as (name, tag, value) tuples
+    pub fn iter_all(&self) -> impl Iterator<Item = (&'static str, u16, &ExifValue)> + '_ {
+        self.exif_values.iter().map(|(&tag, val)| {
+            let name = spec::get_exif_field(tag)
+                .map(|f| f.name)
+                .unwrap_or("Unknown");
+            (name, tag, val)
+        })
     }
 }
 
@@ -645,6 +749,33 @@ fn read_u32_tag_if_present<R: Read + Seek>(
     Ok(None)
 }
 
+/// Read an array of LONG (u32) values from an IFD entry for SubIFD offsets
+fn read_long_array_tag_entry<R: Read + Seek>(
+    r: &mut R,
+    e: Endian,
+    tiff_base: u64,
+    entry: &IfdEntry,
+) -> Result<Vec<u32>, ExifError> {
+    if entry.typ != 4 {
+        return Ok(vec![]);
+    }
+    let count = entry.count as usize;
+    let mut out = Vec::with_capacity(count);
+
+    if count * 4 <= 4 {
+        // Values fit inline in value_or_offset (only 1 value for LONG)
+        out.push(entry.value_or_offset);
+    } else {
+        // Values stored at offset
+        let ptr = tiff_base + entry.value_or_offset as u64;
+        r.seek(SeekFrom::Start(ptr))?;
+        for _ in 0..count {
+            out.push(read_u32_e(r, e)?);
+        }
+    }
+    Ok(out)
+}
+
 #[inline(never)]
 fn read_exact_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<u8>, ExifError> {
     let mut v = vec![0u8; n];
@@ -712,4 +843,194 @@ fn type_size(typ: u16) -> Option<usize> {
         10 => Some(8), // SRATIONAL
         _ => None,
     }
+}
+
+/// Parse Sony's encrypted SR2SubIFD structure
+fn parse_encrypted_sr2_subifd(
+    reader: &mut File,
+    tiff_base: u64,
+    offset: u32,
+    length: u32,
+    key: u32,
+    endian: Endian,
+) -> Result<HashMap<u16, ExifValue>, ExifError> {
+    // Read encrypted SR2SubIFD data
+    reader.seek(SeekFrom::Start(tiff_base + offset as u64))?;
+    let mut sr2_data = vec![0u8; length as usize];
+    reader.read_exact(&mut sr2_data)?;
+
+    // Decrypt using Sony cipher
+    let mut decryptor = SonyDecryptor::new();
+    decrypt_sr2_data(&mut decryptor, &mut sr2_data, key);
+
+    // Parse decrypted data as IFD
+    parse_ifd_from_bytes(&sr2_data, endian, offset)
+}
+
+/// Parse an IFD structure from an in-memory buffer (used for decrypted SR2SubIFD)
+fn parse_ifd_from_bytes(
+    data: &[u8],
+    endian: Endian,
+    sr2_offset: u32,
+) -> Result<HashMap<u16, ExifValue>, ExifError> {
+    let mut result = HashMap::new();
+
+    if data.len() < 2 {
+        return Err(ExifError::Malformed(
+            "SR2SubIFD too short for entry count".to_string(),
+        ));
+    }
+
+    // Read entry count
+    let count = match endian {
+        Endian::Little => u16::from_le_bytes([data[0], data[1]]),
+        Endian::Big => u16::from_be_bytes([data[0], data[1]]),
+    } as usize;
+
+    let header_size = 2; // entry count
+    let entry_size = 12; // tag(2) + type(2) + count(4) + value/offset(4)
+    let required_size = header_size + count * entry_size;
+
+    if data.len() < required_size {
+        return Err(ExifError::Malformed(format!(
+            "SR2SubIFD too short: need {} bytes, have {}",
+            required_size,
+            data.len()
+        )));
+    }
+
+    debug!("Parsing SR2SubIFD with {} entries", count);
+
+    for i in 0..count {
+        let base = header_size + i * entry_size;
+
+        let tag = match endian {
+            Endian::Little => u16::from_le_bytes([data[base], data[base + 1]]),
+            Endian::Big => u16::from_be_bytes([data[base], data[base + 1]]),
+        };
+
+        let typ = match endian {
+            Endian::Little => u16::from_le_bytes([data[base + 2], data[base + 3]]),
+            Endian::Big => u16::from_be_bytes([data[base + 2], data[base + 3]]),
+        };
+
+        let cnt = match endian {
+            Endian::Little => u32::from_le_bytes([
+                data[base + 4],
+                data[base + 5],
+                data[base + 6],
+                data[base + 7],
+            ]),
+            Endian::Big => u32::from_be_bytes([
+                data[base + 4],
+                data[base + 5],
+                data[base + 6],
+                data[base + 7],
+            ]),
+        };
+
+        let value_or_offset = match endian {
+            Endian::Little => u32::from_le_bytes([
+                data[base + 8],
+                data[base + 9],
+                data[base + 10],
+                data[base + 11],
+            ]),
+            Endian::Big => u32::from_be_bytes([
+                data[base + 8],
+                data[base + 9],
+                data[base + 10],
+                data[base + 11],
+            ]),
+        };
+
+        let Some(ts) = type_size(typ) else {
+            continue;
+        };
+
+        let total_size = (cnt as usize) * ts;
+
+        // Get value bytes - either inline or from offset within the SR2SubIFD buffer
+        let value_bytes = if total_size <= 4 {
+            // Inline value
+            data[base + 8..base + 8 + total_size].to_vec()
+        } else {
+            // Offset points relative to tiff_base, but data is within SR2SubIFD
+            // The offset is relative to the TIFF base, so we need to calculate
+            // the position within our decrypted buffer
+            let abs_offset = value_or_offset as i64;
+            let sr2_start = sr2_offset as i64;
+            let rel_offset = abs_offset - sr2_start;
+
+            if rel_offset < 0 || rel_offset as usize + total_size > data.len() {
+                debug!(
+                    "SR2SubIFD tag 0x{:04x}: offset {} out of bounds (sr2_start={}, data_len={})",
+                    tag,
+                    value_or_offset,
+                    sr2_offset,
+                    data.len()
+                );
+                continue;
+            }
+
+            data[rel_offset as usize..rel_offset as usize + total_size].to_vec()
+        };
+
+        let entry = IfdEntry {
+            tag,
+            typ,
+            count: cnt,
+            value_or_offset,
+        };
+
+        if let Ok(val) = read_entry_value(value_bytes, endian, &entry) {
+            result.insert(tag, val);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Parse Sony MakerNotes - starts directly with IFD entry count (no TIFF header)
+/// Offsets within MakerNotes are relative to the TIFF base (file start), not MakerNotes start
+fn parse_sony_makernotes(
+    reader: &mut File,
+    offset: u64,
+    length: usize,
+) -> Result<HashMap<u16, ExifValue>, ExifError> {
+    // Sony MakerNotes uses little-endian and offsets are relative to file start (tiff_base=0)
+    let endian = Endian::Little;
+    let tiff_base = 0u64;
+
+    let mut result = HashMap::new();
+
+    // MakerNotes starts directly with an IFD (no TIFF header)
+    let ifd = read_ifd(reader, endian, offset)?;
+
+    for entry in &ifd.entries {
+        // Read entry value
+        let Some(ts) = type_size(entry.typ) else {
+            continue;
+        };
+
+        let total = (entry.count as usize) * ts;
+
+        // For MakerNotes, offsets are relative to TIFF base (file start)
+        let data = if total <= 4 {
+            let raw = entry.value_or_offset.to_le_bytes();
+            raw[..total].to_vec()
+        } else {
+            let abs = tiff_base + entry.value_or_offset as u64;
+            reader.seek(SeekFrom::Start(abs))?;
+            let mut buf = vec![0u8; total];
+            reader.read_exact(&mut buf)?;
+            buf
+        };
+
+        if let Ok(val) = read_entry_value(data, endian, &entry) {
+            result.insert(entry.tag, val);
+        }
+    }
+
+    Ok(result)
 }

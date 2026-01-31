@@ -3,9 +3,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 
-use log::{debug, warn};
-
-use crate::{exif::ExifContext, sony_decoder::DecodeError};
+use crate::sony_decoder::DecodeError;
 
 #[derive(Clone, Copy, Debug)]
 enum Endian {
@@ -21,11 +19,11 @@ pub struct TiffRawInfo {
     pub width: u32,               // image width (pixels)
     pub height: u32,              // image height (pixels)
     pub bits_per_sample: u16,     // usually 12/14 (reported)
-    pub compression: u16,         // 32767 for Sony custom
+    pub compression: u16,         // 32767 for Sony custom, 6 for Canon LJPEG
     pub strip_offsets: Vec<u64>,  // byte offsets to each strip
     pub strip_byte_counts: Vec<u64>, // sizes of each strip in bytes
     pub total_bytes: u64,         // sum of strip_byte_counts
-    pub is_sony: bool,
+    pub cr2_slices: Option<Vec<u16>>, // Canon CR2 slice info (tag 0xC640): [count, width1, width2, ...]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,12 +34,26 @@ pub enum SonyVariant {
     Unknown,
 }
 
-pub struct TiffDetectResult {
-    pub raw: TiffRawInfo,
-    pub variant: SonyVariant,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonVariant {
+    LosslessJpeg, // compression = 6 (Old-style JPEG / Lossless JPEG)
+    Uncompressed, // compression = 1
+    Unknown,
 }
 
-pub fn detect_sony_raw(r: &mut File) -> Result<TiffDetectResult, DecodeError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawMaker {
+    Sony(SonyVariant),
+    Canon(CanonVariant),
+}
+
+pub struct TiffDetectResult {
+    pub raw: TiffRawInfo,
+    pub maker: RawMaker,
+}
+
+/// Detect RAW format - supports Sony ARW and Canon CR2
+pub fn detect_raw(r: &mut File) -> Result<TiffDetectResult, DecodeError> {
     let (endian, ifd0_offset) = read_tiff_header(r)?;
     // Parse IFD0 and descend into SubIFDs to find the raw IFD with strip info
     let mut all_ifd_offsets = vec![ifd0_offset];
@@ -77,7 +89,7 @@ pub fn detect_sony_raw(r: &mut File) -> Result<TiffDetectResult, DecodeError> {
         }
 
         // Check whether this IFD looks like RAW data (mono, compressed/uncompressed single plane)
-        if let Some(raw_info) = try_extract_raw_info(r, endian, &ifd, &make, &model)? {
+        if let Some(raw_info) = try_extract_raw_info(r, endian, &ifd)? {
             // Choose the IFD with the largest data payload (typical RAW)
             if chosen.as_ref().map(|c| c.total_bytes).unwrap_or(0) < raw_info.total_bytes {
                 chosen = Some(raw_info);
@@ -94,47 +106,74 @@ pub fn detect_sony_raw(r: &mut File) -> Result<TiffDetectResult, DecodeError> {
     }
 
     let mut raw = chosen.ok_or(DecodeError::CorruptData("No RAW IFD found"))?;
-    raw.make = make;
+    raw.make = make.clone();
     raw.model = model;
     raw.dng_version = dng_version;
 
-    // Determine Sony variant per LibRaw’s tiff.cpp logic
-    let is_sony = raw.is_sony;
+    // Determine maker from make field
+    let is_sony = make
+        .as_ref()
+        .map(|m| m.to_ascii_lowercase().starts_with("sony"))
+        .unwrap_or(false);
+    let is_canon = make
+        .as_ref()
+        .map(|m| m.to_ascii_lowercase().starts_with("canon"))
+        .unwrap_or(false);
+
     let pixels = raw.width as u64 * raw.height as u64;
 
-    let mut variant = SonyVariant::Unknown;
-
-    // Compression tag checks based on LibRaw behavior
-    match raw.compression {
-        32767 => {
-            // Sony custom
-            if raw.dng_version.is_none() && raw.total_bytes == pixels {
-                // bytes == width*height => ARW2 block-compressed
-                variant = SonyVariant::Arw2Compressed;
-            } else if raw.dng_version.is_none() && is_sony && raw.total_bytes == pixels * 2 {
-                // bytes == 2*width*height => 14-bit uncompressed under 32767
-                variant = SonyVariant::Uncompressed14;
-            } else {
-                // If geometry doesn't match bps report, use ARW LJPEG shim
-                // LibRaw does: if (bytes*8 != width*height*bps) { raw_height += 8; load sony_arw_load_raw; }
-                let reported = pixels * raw.bits_per_sample as u64;
-                if raw.total_bytes * 8 != reported {
-                    variant = SonyVariant::ArwLjpeg;
+    let maker = if is_canon {
+        // Canon CR2 detection
+        let variant = match raw.compression {
+            6 => CanonVariant::LosslessJpeg, // Old-style JPEG (Lossless JPEG for Canon)
+            1 => CanonVariant::Uncompressed,
+            _ => CanonVariant::Unknown,
+        };
+        RawMaker::Canon(variant)
+    } else if is_sony {
+        // Sony ARW detection (existing logic)
+        let variant = match raw.compression {
+            32767 => {
+                // Sony custom
+                if raw.dng_version.is_none() && raw.total_bytes == pixels {
+                    // bytes == width*height => ARW2 block-compressed
+                    SonyVariant::Arw2Compressed
+                } else if raw.dng_version.is_none() && raw.total_bytes == pixels * 2 {
+                    // bytes == 2*width*height => 14-bit uncompressed under 32767
+                    SonyVariant::Uncompressed14
+                } else {
+                    // If geometry doesn't match bps report, use ARW LJPEG shim
+                    let reported = pixels * raw.bits_per_sample as u64;
+                    if raw.total_bytes * 8 != reported {
+                        SonyVariant::ArwLjpeg
+                    } else {
+                        SonyVariant::Unknown
+                    }
                 }
             }
-        }
-        0 | 1 => {
-            // Uncompressed
-            if raw.dng_version.is_none() && is_sony && raw.total_bytes == pixels * 2 {
-                variant = SonyVariant::Uncompressed14;
+            0 | 1 => {
+                // Uncompressed
+                if raw.dng_version.is_none() && raw.total_bytes == pixels * 2 {
+                    SonyVariant::Uncompressed14
+                } else {
+                    SonyVariant::Unknown
+                }
             }
-        }
-        _ => {
-            // Other compressions could map to LJPEG or tiles; not handled here
-        }
-    }
+            _ => SonyVariant::Unknown,
+        };
+        RawMaker::Sony(variant)
+    } else {
+        // Default to Sony for unknown makers (backward compatibility)
+        RawMaker::Sony(SonyVariant::Unknown)
+    };
 
-    Ok(TiffDetectResult { raw, variant })
+    Ok(TiffDetectResult { raw, maker })
+}
+
+/// Legacy function name for backward compatibility
+#[allow(dead_code)]
+pub fn detect_sony_raw(r: &mut File) -> Result<TiffDetectResult, DecodeError> {
+    detect_raw(r)
 }
 
 // ----------------------------- Low-level TIFF parsing -----------------------------
@@ -279,7 +318,7 @@ fn read_short_array_tag<R: Read + Seek>(
 
 fn read_tag_value_bytes<R: Read + Seek>(
     r: &mut R,
-    e: Endian,
+    _e: Endian,
     ent: &IfdEntry,
     out: &mut [u8],
 ) -> Result<(), DecodeError> {
@@ -355,8 +394,6 @@ fn try_extract_raw_info<R: Read + Seek>(
     r: &mut R,
     e: Endian,
     ifd: &Ifd,
-    make: &Option<String>,
-    model: &Option<String>,
 ) -> Result<Option<TiffRawInfo>, DecodeError> {
     // Required: width(256), height(257), compression(259), strips(273,279)
 
@@ -383,7 +420,7 @@ fn try_extract_raw_info<R: Read + Seek>(
     }
     let bits_per_sample = match read_short_array_tag(r, e, ifd, 258)? {
         Some(v) if !v.is_empty() => v[0],
-        _ => 14, // common default in ARW
+        _ => 14, // common default in ARW/CR2
     };
 
     let strip_offsets = match read_long_array_tag(r, e, ifd, 273)? {
@@ -399,10 +436,8 @@ fn try_extract_raw_info<R: Read + Seek>(
     }
     let total_bytes = strip_byte_counts.iter().sum();
 
-    let is_sony = make
-        .as_ref()
-        .map(|m| m.to_ascii_lowercase().starts_with("sony"))
-        .unwrap_or(false);
+    // Read Canon CR2 slice info (tag 0xC640)
+    let cr2_slices = read_short_array_tag(r, e, ifd, 0xC640)?;
 
     Ok(Some(TiffRawInfo {
         make: None,
@@ -415,7 +450,7 @@ fn try_extract_raw_info<R: Read + Seek>(
         strip_offsets,
         strip_byte_counts,
         total_bytes,
-        is_sony,
+        cr2_slices,
     }))
 }
 

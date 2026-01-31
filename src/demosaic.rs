@@ -6,12 +6,16 @@ use rayon::{
 // Minimal dependencies: adjust imports/types to your crate as needed.
 use crate::sony_decoder::Dimensions;
 
+// "Camera look" defaults - hardcoded for simplicity
+const EXPOSURE_EV: f32 = 1.2; // Sony RAW significantly underexposed
+const SATURATION: f32 = 1.25; // 25% saturation boost
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BayerPattern {
-    RGGB,
-    // BGGR,
-    // GRBG,
-    // GBRG,
+    RGGB, // Sony and Canon sensors
+    BGGR, // Some other cameras
+          // GRBG,
+          // GBRG,
 }
 
 #[inline(always)]
@@ -48,32 +52,45 @@ fn cfa_color_at(row: usize, col: usize, pattern: BayerPattern) -> CfaColor {
             (1, 0) => CfaColor::G,
             _ => CfaColor::B,
         },
-        // BayerPattern::BGGR => match (r, c) {
-        //     (0, 0) => CfaColor::B,
-        //     (0, 1) => CfaColor::G,
-        //     (1, 0) => CfaColor::G,
-        //     _ => CfaColor::R,
-        // },
-        // BayerPattern::GRBG => match (r, c) {
-        //     (0, 0) => CfaColor::G,
-        //     (0, 1) => CfaColor::R,
-        //     (1, 0) => CfaColor::B,
-        //     _ => CfaColor::G,
-        // },
-        // BayerPattern::GBRG => match (r, c) {
-        //     (0, 0) => CfaColor::G,
-        //     (0, 1) => CfaColor::B,
-        //     (1, 0) => CfaColor::R,
-        //     _ => CfaColor::G,
-        // },
+        BayerPattern::BGGR => match (r, c) {
+            (0, 0) => CfaColor::B,
+            (0, 1) => CfaColor::G,
+            (1, 0) => CfaColor::G,
+            _ => CfaColor::R,
+        },
     }
+}
+
+/// Calculate luminance using Rec. 709 coefficients
+#[inline(always)]
+fn luminance(r: f32, g: f32, b: f32) -> f32 {
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Apply saturation adjustment using luminance-preserving interpolation
+#[inline(always)]
+fn apply_saturation(r: f32, g: f32, b: f32, saturation: f32) -> (f32, f32, f32) {
+    let lum = luminance(r, g, b);
+    (
+        lum + (r - lum) * saturation,
+        lum + (g - lum) * saturation,
+        lum + (b - lum) * saturation,
+    )
+}
+
+/// Apply shadow-lifting tone curve using a power function
+/// Values < 1.0 lift shadows, values > 1.0 darken them
+#[inline(always)]
+fn apply_tone_curve(v: f32) -> f32 {
+    // Use x^0.85 to lift shadows - this maps low values higher
+    // e.g., 0.1^0.85 ≈ 0.14, 0.2^0.85 ≈ 0.26, 0.5^0.85 ≈ 0.55
+    v.max(0.0).powf(0.85).min(1.0)
 }
 
 #[inline(always)]
 fn tone_u8(v: f32, gamma: f32) -> u8 {
-    // v is linear and roughly in [0,1], but may exceed 1 slightly after WB
-    let n = v.max(0.0).min(1.0);
-    (n.powf(1.0 / gamma.max(0.001)) * 255.0 + 0.5).floor() as u8
+    let curved = apply_tone_curve(v);
+    (curved.powf(1.0 / gamma.max(0.001)) * 255.0 + 0.5).floor() as u8
 }
 
 // Returns the black-subtracted, normalized, WB-scaled value at (y,x) as f32 (linear).
@@ -97,11 +114,26 @@ fn sample_wb(
     v * gain
 }
 
+/// Apply a 3x3 color correction matrix to RGB values.
+/// Matrix is stored row-major: [r0, r1, r2, g0, g1, g2, b0, b1, b2]
+/// R_out = m[0]*R + m[1]*G + m[2]*B
+/// G_out = m[3]*R + m[4]*G + m[5]*B
+/// B_out = m[6]*R + m[7]*G + m[8]*B
+#[inline(always)]
+fn apply_color_matrix(r: f32, g: f32, b: f32, m: &[f32; 9]) -> (f32, f32, f32) {
+    (
+        m[0] * r + m[1] * g + m[2] * b,
+        m[3] * r + m[4] * g + m[5] * b,
+        m[6] * r + m[7] * g + m[8] * b,
+    )
+}
+
 /// Compact bilinear demosaic with WB applied BEFORE interpolation.
 /// - raw: u16 mosaic buffer with stride dims.raw_width
 /// - dims.output_width/height are the image dimensions you want to render
-/// - white_level should be the sensor’s maximum code value (e.g., 0x3FFF for 14-bit)
+/// - white_level should be the sensor's maximum code value (e.g., 0x3FFF for 14-bit)
 /// - wb: gains [R,G,B], e.g. from AsShotNeutral or a gray-world estimate
+/// - color_matrix: 3x3 camera-to-XYZ color correction matrix (row-major)
 pub fn demosaic_bilinear_to_rgb8(
     raw: &[u16],
     dims: Dimensions,
@@ -109,6 +141,7 @@ pub fn demosaic_bilinear_to_rgb8(
     black_level: u16,
     white_level: u16,
     wb: [f32; 3],
+    color_matrix: [f32; 9],
     gamma: f32,
 ) -> Vec<u8> {
     let w = dims.output_width;
@@ -118,6 +151,9 @@ pub fn demosaic_bilinear_to_rgb8(
     // Normalization (after black subtraction)
     let range = white_level.saturating_sub(black_level).max(1) as f32;
     let inv_range = 1.0 / range;
+
+    // Pre-compute exposure multiplier (2^EV)
+    let exposure_mult = 2.0_f32.powf(EXPOSURE_EV);
 
     let mut out = vec![0u8; w * h * 3];
 
@@ -189,10 +225,24 @@ pub fn demosaic_bilinear_to_rgb8(
                     }
                 };
 
-                // Clamp negatives that might occur from WB/matrix later (if you add one)
+                // Clamp negatives
                 r = r.max(0.0);
                 g = g.max(0.0);
                 b = b.max(0.0);
+
+                // Apply color correction matrix (camera RGB to standard RGB)
+                let (r_cc, g_cc, b_cc) = apply_color_matrix(r, g, b, &color_matrix);
+                r = r_cc.max(0.0);
+                g = g_cc.max(0.0);
+                b = b_cc.max(0.0);
+
+                // Apply exposure compensation
+                let r = r * exposure_mult;
+                let g = g * exposure_mult;
+                let b = b * exposure_mult;
+
+                // Apply saturation boost (luminance-preserving)
+                let (r, g, b) = apply_saturation(r, g, b, SATURATION);
 
                 let o = x * 3;
                 out_row[o] = tone_u8(r, gamma);

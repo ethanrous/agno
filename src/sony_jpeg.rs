@@ -13,10 +13,13 @@ pub fn write_tiff_from_sony_result_to_path<P: AsRef<Path>>(
     pattern: BayerPattern,
     black_level: u16,
     wb_gains: Option<[f32; 3]>,
+    color_matrix: Option<[f32; 9]>,
     gamma: f32,
     quality: u8,
     out_path: P,
 ) -> Result<(), DecodeError> {
+    // Use identity matrix if no color matrix provided
+    let matrix = color_matrix.unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
     let rgb = demosaic_bilinear_to_rgb8(
         &mut result.pixels,
         dims,
@@ -24,6 +27,7 @@ pub fn write_tiff_from_sony_result_to_path<P: AsRef<Path>>(
         black_level,
         result.white_level,
         wb_gains.unwrap_or([1.0, 1.0, 1.0]),
+        matrix,
         gamma,
     );
 

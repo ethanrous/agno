@@ -227,63 +227,91 @@ impl<'a, R: Read> JpegBitstream<'a, R> {
 
 // ====================== Sony decrypt (ported) ======================
 
-// pub trait SonyDecrypt {
-//     fn decrypt_u32_words(&mut self, data_32bit_words: &mut [u32], start_sequence: bool, key: u32);
-// }
+/// Trait for Sony decryption operations
+pub trait SonyDecrypt {
+    fn decrypt_u32_words(&mut self, data_32bit_words: &mut [u32], start_sequence: bool, key: u32);
+}
 
-// Direct port of LibRaw::sony_decrypt working on u32 words (LE-packed).
-// pub struct SonyDecryptor {
-//     pad: [u32; 128],
-//     p: u32,
-// }
+/// Direct port of LibRaw::sony_decrypt working on u32 words (LE-packed).
+pub struct SonyDecryptor {
+    pad: [u32; 128],
+    p: u32,
+}
 
-// impl SonyDecryptor {
-//     pub fn new() -> Self {
-//         Self {
-//             pad: [0; 128],
-//             p: 0,
-//         }
-//     }
-//
-//     fn init_pad(&mut self, key: u32) {
-//         let mut k = key as u64;
-//         for i in 0..4 {
-//             k = k.wrapping_mul(48_828_125u64).wrapping_add(1);
-//             self.pad[i] = k as u32;
-//         }
-//         // pad[3] = pad[3] << 1 | (pad[0] ^ pad[2]) >> 31;
-//         self.pad[3] = (self.pad[3] << 1) | (((self.pad[0] ^ self.pad[2]) >> 31) & 1);
-//
-//         for i in 4..127 {
-//             // (pad[p-4] ^ pad[p-2]) << 1 | (pad[p-3] ^ pad[p-1]) >> 31
-//             let left = (self.pad[i - 4] ^ self.pad[i - 2]) << 1;
-//             let right = ((self.pad[i - 3] ^ self.pad[i - 1]) >> 31) & 1;
-//             self.pad[i] = left | right;
-//         }
-//         // htonl equivalent
-//         for i in 0..127 {
-//             self.pad[i] = self.pad[i].to_be();
-//         }
-//         self.p = 0;
-//     }
-// }
+impl SonyDecryptor {
+    pub fn new() -> Self {
+        Self {
+            pad: [0; 128],
+            p: 0,
+        }
+    }
 
-// impl SonyDecrypt for SonyDecryptor {
-//     fn decrypt_u32_words(&mut self, data_32bit_words: &mut [u32], start_sequence: bool, key: u32) {
-//         if start_sequence {
-//             self.init_pad(key);
-//         }
-//         for w in data_32bit_words.iter_mut() {
-//             // Advance pad stream: pad[p&127] = pad[(p+1)&127] ^ pad[(p+65)&127]
-//             let idx = (self.p & 127) as usize;
-//             let i1 = ((self.p + 1) & 127) as usize;
-//             let i2 = ((self.p + 65) & 127) as usize;
-//             self.pad[idx] = self.pad[i1] ^ self.pad[i2];
-//             *w ^= self.pad[idx];
-//             self.p = self.p.wrapping_add(1);
-//         }
-//     }
-// }
+    fn init_pad(&mut self, key: u32) {
+        let mut k = key as u64;
+        for i in 0..4 {
+            k = k.wrapping_mul(48_828_125u64).wrapping_add(1);
+            self.pad[i] = k as u32;
+        }
+        // pad[3] = pad[3] << 1 | (pad[0] ^ pad[2]) >> 31;
+        self.pad[3] = (self.pad[3] << 1) | (((self.pad[0] ^ self.pad[2]) >> 31) & 1);
+
+        for i in 4..127 {
+            // (pad[p-4] ^ pad[p-2]) << 1 | (pad[p-3] ^ pad[p-1]) >> 31
+            let left = (self.pad[i - 4] ^ self.pad[i - 2]) << 1;
+            let right = ((self.pad[i - 3] ^ self.pad[i - 1]) >> 31) & 1;
+            self.pad[i] = left | right;
+        }
+        // htonl equivalent
+        for i in 0..127 {
+            self.pad[i] = self.pad[i].to_be();
+        }
+        // In dcraw, p ends at 127 after the htonl loop (for p=0; p<127; p++)
+        // The decrypt loop then starts with p++, making it 128
+        self.p = 127;
+    }
+}
+
+impl Default for SonyDecryptor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SonyDecrypt for SonyDecryptor {
+    fn decrypt_u32_words(&mut self, data_32bit_words: &mut [u32], start_sequence: bool, key: u32) {
+        if start_sequence {
+            self.init_pad(key);
+        }
+        for w in data_32bit_words.iter_mut() {
+            // Advance pad stream: pad[p&127] = pad[(p+1)&127] ^ pad[(p+65)&127]
+            let idx = (self.p & 127) as usize;
+            let i1 = ((self.p + 1) & 127) as usize;
+            let i2 = ((self.p + 65) & 127) as usize;
+            self.pad[idx] = self.pad[i1] ^ self.pad[i2];
+            *w ^= self.pad[idx];
+            self.p = self.p.wrapping_add(1);
+        }
+    }
+}
+
+/// Decrypt a byte buffer in-place using the Sony cipher.
+/// The buffer length must be a multiple of 4 bytes.
+pub fn decrypt_sr2_data(decryptor: &mut SonyDecryptor, data: &mut [u8], key: u32) {
+    // Convert bytes to u32 words (little-endian)
+    let word_count = data.len() / 4;
+    let mut words = Vec::with_capacity(word_count);
+    for chunk in data.chunks_exact(4) {
+        words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+
+    // Decrypt
+    decryptor.decrypt_u32_words(&mut words, true, key);
+
+    // Write back to bytes (little-endian)
+    for (i, chunk) in data.chunks_exact_mut(4).enumerate() {
+        chunk.copy_from_slice(&words[i].to_le_bytes());
+    }
+}
 
 // ====================== Decoders ======================
 
