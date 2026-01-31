@@ -7,3 +7,8 @@ mod exif;
 mod sony_decoder;
 mod sony_jpeg;
 mod tiff;
+
+#[cfg(feature = "gpu")]
+mod demosaic_gpu;
+#[cfg(feature = "gpu")]
+mod gpu;

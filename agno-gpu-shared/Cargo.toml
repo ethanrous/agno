@@ -1,0 +1,10 @@
+[package]
+name = "agno-gpu-shared"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.21", features = ["derive"] }
+
+[target.'cfg(target_arch = "spirv")'.dependencies]
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu" }

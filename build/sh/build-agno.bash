@@ -69,7 +69,7 @@ fi
 
 # 9) Build the Rust static library that links PDFium statically
 # Ensure Cargo.toml:
-cargo build --release --target "${TARGET_TRIPLE}"
+cargo build --release --features gpu --target "${TARGET_TRIPLE}"
 
 # 11) Copy the resulting static library to a known location
 cp "target/${TARGET_TRIPLE}/release/libagno.a" "$1"

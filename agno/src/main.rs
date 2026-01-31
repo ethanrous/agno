@@ -2,6 +2,8 @@ use std::env;
 use std::error::Error;
 use std::fs::File;
 
+use log::LevelFilter;
+
 use crate::agno_image::load::load_agno_image_from_file;
 use crate::exif::{ExifContext, ExifValue};
 
@@ -13,7 +15,15 @@ mod sony_decoder;
 mod sony_jpeg;
 mod tiff;
 
+#[cfg(feature = "gpu")]
+mod demosaic_gpu;
+#[cfg(feature = "gpu")]
+mod gpu;
+
 fn main() -> Result<(), Box<dyn Error>> {
+    let _ = env_logger::builder()
+        .filter_level(LevelFilter::Debug) // Set default log level
+        .try_init();
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
@@ -130,7 +140,7 @@ fn cmd_convert(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     // Load image (auto-detects format)
     let img = load_agno_image_from_file(input_path)?;
-    img.to_jpeg(100, output_path)?;
+    img.to_jpeg_file(100, output_path)?;
 
     println!("Converted {} -> {}", input_path, output_path);
     Ok(())

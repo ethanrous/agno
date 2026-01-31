@@ -1,0 +1,7 @@
+# Rust GPU requires a specific nightly toolchain for SPIR-V compilation.
+# This file specifies the required toolchain version.
+# Note: The specific nightly version should match what rust-gpu main branch supports.
+
+[toolchain]
+channel = "nightly-2025-06-30"
+components = ["rust-src", "rustfmt", "clippy", "rustc-dev", "llvm-tools-preview"]

@@ -60,7 +60,7 @@ impl AgnoImage {
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
 
-    pub fn to_jpeg(&self, quality: u8, path: &str) -> Result<(), Box<dyn Error>> {
+    pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
         let img = image::RgbImage::from_raw(
             self.width as u32,
             self.height as u32,
@@ -71,6 +71,12 @@ impl AgnoImage {
         let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
 
         encoder.encode_image(&img)?;
+
+        Ok(buf)
+    }
+
+    pub fn to_jpeg_file(&self, quality: u8, path: &str) -> Result<(), Box<dyn Error>> {
+        let buf = self.to_jpeg(quality)?;
 
         std::fs::write(path, buf)?;
 

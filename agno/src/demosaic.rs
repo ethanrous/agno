@@ -134,7 +134,54 @@ fn apply_color_matrix(r: f32, g: f32, b: f32, m: &[f32; 9]) -> (f32, f32, f32) {
 /// - white_level should be the sensor's maximum code value (e.g., 0x3FFF for 14-bit)
 /// - wb: gains [R,G,B], e.g. from AsShotNeutral or a gray-world estimate
 /// - color_matrix: 3x3 camera-to-XYZ color correction matrix (row-major)
+///
+/// When the `gpu` feature is enabled and a GPU is available, this function
+/// uses GPU-accelerated processing. Otherwise, it falls back to CPU (Rayon).
 pub fn demosaic_bilinear_to_rgb8(
+    raw: &[u16],
+    dims: Dimensions,
+    pattern: BayerPattern,
+    black_level: u16,
+    white_level: u16,
+    wb: [f32; 3],
+    color_matrix: [f32; 9],
+    gamma: f32,
+) -> Vec<u8> {
+    log::debug!("CHECKING GPU AVAILABLE");
+
+    // Try GPU path first if feature is enabled
+    #[cfg(feature = "gpu")]
+    if let Some(result) = crate::demosaic_gpu::demosaic_bilinear_to_rgb8_gpu(
+        raw,
+        dims,
+        pattern,
+        black_level,
+        white_level,
+        wb,
+        color_matrix,
+        gamma,
+    ) {
+        log::debug!("Using GPU-accelerated demosaic");
+        return result;
+    }
+
+    #[cfg(feature = "gpu")]
+    log::debug!("GPU unavailable, falling back to CPU demosaic");
+
+    demosaic_bilinear_to_rgb8_cpu(
+        raw,
+        dims,
+        pattern,
+        black_level,
+        white_level,
+        wb,
+        color_matrix,
+        gamma,
+    )
+}
+
+/// CPU implementation of bilinear demosaic using Rayon for parallelization.
+fn demosaic_bilinear_to_rgb8_cpu(
     raw: &[u16],
     dims: Dimensions,
     pattern: BayerPattern,

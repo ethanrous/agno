@@ -1,0 +1,45 @@
+[package]
+name = "agno"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "agno"
+crate-type = ["lib", "staticlib"]
+
+[dependencies]
+anyhow = { version = "1.0.99", features = ["backtrace"] }
+env_logger = "0.11.8"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+libc = "0.2.175"
+log = "0.4.27"
+pdf = "0.9.0"
+pdfium-render = { version = "0.8.35", features = ["static"], optional = true }
+rayon = "1.11.0"
+serde = { version = "^1.0.220", features = ["derive"] }
+serde_json = "1.0.143"
+tiff = "0.10.0"
+webp = "0.3.0"
+
+# GPU dependencies (optional)
+agno-gpu-shared = { path = "../agno-gpu-shared", optional = true }
+wgpu = { version = "23.0", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1.21", features = ["derive"], optional = true }
+
+[build-dependencies]
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu", optional = true }
+naga = { version = "23.0", features = ["spv-in", "wgsl-out"], optional = true }
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-g++"
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-g++"
+
+[package.metadata.cross]
+target = "x86_64-unknown-linux-musl"
+
+[features]
+pdf = ["dep:pdfium-render"]
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:agno-gpu-shared", "dep:spirv-builder", "dep:naga"]

@@ -1,0 +1,11 @@
+[package]
+name = "agno-gpu-kernels"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib", "dylib"]
+
+[dependencies]
+agno-gpu-shared = { path = "../agno-gpu-shared" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu" }
