@@ -5,28 +5,14 @@ ARCHITECTURE="${ARCHITECTURE:-$(uname -m)}"
 
 case "$ARCHITECTURE" in
 x86_64)
-    MUSL_PREFIX="x86_64"
-
-    # check if this is ubuntu or alpine
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        if [[ "$ID" == "alpine" ]]; then
-            TARGET_TRIPLE="x86_64-unknown-linux-musl"
-            CARGO_LINKER_ENV_VAR="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER"
-        else
-            TARGET_TRIPLE="x86_64-unknown-linux-gnu"
-            CARGO_LINKER_ENV_VAR="CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
-        fi
-    fi
+    # Target glibc for compatibility with Debian-based containers and NVIDIA drivers
+    TARGET_TRIPLE="x86_64-unknown-linux-gnu"
     ;;
 arm64 | aarch64)
-    MUSL_PREFIX="aarch64"
-
     if [[ "$(uname -s)" == "Darwin" ]]; then
         TARGET_TRIPLE="aarch64-apple-darwin"
     else
-        TARGET_TRIPLE="aarch64-unknown-linux-musl"
-        CARGO_LINKER_ENV_VAR="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"
+        TARGET_TRIPLE="aarch64-unknown-linux-gnu"
     fi
     ;;
 *)
@@ -67,7 +53,13 @@ else
     RUSTFLAGS_LIBS=""
 fi
 
-# 9) Build the Rust static library that links PDFium statically
+# Ensure the target is installed (needed for cross-compilation)
+rustup target add "${TARGET_TRIPLE}" 2>/dev/null || true
+
+# 9) Clean up any previous build artifacts
+rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
+
+# 10) Build the Rust static library that links PDFium statically
 # Ensure Cargo.toml:
 cargo build --release --features gpu --target "${TARGET_TRIPLE}"
 

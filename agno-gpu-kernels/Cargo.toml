@@ -7,5 +7,8 @@ edition = "2021"
 crate-type = ["lib", "dylib"]
 
 [dependencies]
-agno-gpu-shared = { path = "../agno-gpu-shared" }
+agno-gpu-shared = { path = "../agno-gpu-shared", features = ["gpu"] }
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(target_arch, values(\"spirv\"))"] }

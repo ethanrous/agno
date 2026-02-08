@@ -41,10 +41,12 @@ impl AgnoImage {
         }
     }
 
+    #[allow(dead_code)]
     pub fn null() -> *mut AgnoImage {
         null_mut()
     }
 
+    #[allow(dead_code)]
     pub fn free(img: &AgnoImage) {
         unsafe {
             if !img.data.is_null() {
@@ -60,6 +62,7 @@ impl AgnoImage {
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
 
+    #[allow(dead_code)]
     pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
         let img = image::RgbImage::from_raw(
             self.width as u32,
@@ -75,6 +78,7 @@ impl AgnoImage {
         Ok(buf)
     }
 
+    #[allow(dead_code)]
     pub fn to_jpeg_file(&self, quality: u8, path: &str) -> Result<(), Box<dyn Error>> {
         let buf = self.to_jpeg(quality)?;
 

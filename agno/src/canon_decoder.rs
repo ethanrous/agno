@@ -6,7 +6,7 @@
 
 use std::io::{Read, Seek, SeekFrom};
 
-use log::debug;
+use tracing::debug;
 
 use crate::sony_decoder::{DecodeError, Dimensions};
 
@@ -54,8 +54,12 @@ impl Cr2SliceInfo {
         }
 
         debug!(
-            "CR2 slices: count={}, slice_width={}, last_width={}, total_slices={}, total_width={}",
-            count, slice_width, last_slice_width, widths.len(), widths.iter().sum::<usize>()
+            count = count,
+            slice_width = slice_width,
+            last_slice_width = last_slice_width,
+            total_slices = widths.len(),
+            total_width = widths.iter().sum::<usize>(),
+            "CR2 slices"
         );
 
         Self {
@@ -94,11 +98,6 @@ impl<'a, R: Read> LjpegBitstream<'a, R> {
         self.bitbuf = 0;
         self.vbits = 0;
         self.restart_pending = false;
-    }
-
-    /// Align to byte boundary (discard remaining bits in current byte)
-    fn byte_align(&mut self) {
-        self.vbits -= self.vbits % 8;
     }
 
     /// Fill the bit buffer to have at least `need` bits
@@ -334,8 +333,11 @@ pub fn canon_ljpeg_load_raw<R: Read + Seek>(
                 }
 
                 debug!(
-                    "LJPEG SOF3: precision={}, ljpeg_width={}, ljpeg_height={}, components={}",
-                    precision, _ljpeg_width, _ljpeg_height, components
+                    precision = precision,
+                    ljpeg_width = _ljpeg_width,
+                    ljpeg_height = _ljpeg_height,
+                    components = components,
+                    "LJPEG SOF3 header"
                 );
             }
             0xDA => {
@@ -429,8 +431,11 @@ fn decode_ljpeg_data<R: Read>(
     let slices = slice_info.unwrap_or_else(|| Cr2SliceInfo::single_slice(dims.raw_width));
 
     debug!(
-        "Decoding: dims={}x{}, components={}, slices={:?}",
-        dims.raw_width, dims.raw_height, num_comps, slices.slice_widths
+        raw_width = dims.raw_width,
+        raw_height = dims.raw_height,
+        components = num_comps,
+        slices = ?slices.slice_widths,
+        "Decoding LJPEG"
     );
 
     let jh_high = dims.output_height;
@@ -461,8 +466,13 @@ fn decode_ljpeg_data<R: Read>(
     let jwide = ljpeg_width * num_comps;
 
     debug!(
-        "LJPEG decode: jwide={}, jh_high={}, slices cr2=[{}, {}, {}], total_samples={}",
-        jwide, jh_high, cr2_slice_0, cr2_slice_1, cr2_slice_2, jwide * jh_high
+        jwide = jwide,
+        jh_high = jh_high,
+        cr2_slice_0 = cr2_slice_0,
+        cr2_slice_1 = cr2_slice_1,
+        cr2_slice_2 = cr2_slice_2,
+        total_samples = jwide * jh_high,
+        "LJPEG decode parameters"
     );
 
     // Canon CR2 LJPEG decoding with proper predictor handling
@@ -557,8 +567,12 @@ fn decode_ljpeg_data<R: Read>(
             let scaled = ((*p as u32) << 2) as u16;
             f.write_all(&scaled.to_le_bytes()).unwrap();
         }
-        eprintln!("Wrote debug raw to /tmp/debug_raw.gray ({}x{} 16-bit gray)",
-                  dims.raw_width, dims.raw_height);
+        tracing::warn!(
+            raw_width = dims.raw_width,
+            raw_height = dims.raw_height,
+            path = "/tmp/debug_raw.gray",
+            "Wrote debug raw (16-bit gray)"
+        );
     }
 
     Ok(CanonLoadResult {

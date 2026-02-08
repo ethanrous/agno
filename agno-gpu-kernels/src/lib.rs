@@ -5,50 +5,12 @@
 
 #![cfg_attr(target_arch = "spirv", no_std)]
 
-use agno_gpu_shared::{DemosaicParams, Vec4};
+use agno_gpu_shared::{
+    apply_saturation, apply_tone_curve, cfa_color_at, clamp_i32, clamp_u8, lanczos_weight,
+    max_f32, pow_f32, DemosaicParams, ResizeParams, Vec4, CFA_B, CFA_G, CFA_R,
+};
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
-
-// CFA color indices
-const CFA_R: u32 = 0;
-const CFA_G: u32 = 1;
-const CFA_B: u32 = 2;
-
-/// Determine which color (R, G, or B) is at a given CFA position.
-#[inline]
-fn cfa_color_at(row: u32, col: u32, pattern: u32) -> u32 {
-    let r = row & 1;
-    let c = col & 1;
-    if pattern == 0 {
-        // RGGB
-        match (r, c) {
-            (0, 0) => CFA_R,
-            (0, 1) => CFA_G,
-            (1, 0) => CFA_G,
-            _ => CFA_B,
-        }
-    } else {
-        // BGGR
-        match (r, c) {
-            (0, 0) => CFA_B,
-            (0, 1) => CFA_G,
-            (1, 0) => CFA_G,
-            _ => CFA_R,
-        }
-    }
-}
-
-/// Clamp i32 to range [lo, hi]
-#[inline]
-fn clamp_i32(x: i32, lo: i32, hi: i32) -> i32 {
-    if x < lo {
-        lo
-    } else if x > hi {
-        hi
-    } else {
-        x
-    }
-}
 
 /// Saturating subtraction for u32 (SPIR-V doesn't have this builtin)
 #[inline]
@@ -85,64 +47,19 @@ fn sample_wb(
     v * gain
 }
 
-/// Calculate luminance using Rec. 709 coefficients
+/// Convert linear value to gamma-corrected u32 with tone curve (for GPU pixel packing)
 #[inline]
-fn luminance(r: f32, g: f32, b: f32) -> f32 {
-    0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-
-/// Apply saturation adjustment using luminance-preserving interpolation
-#[inline]
-fn apply_saturation(r: f32, g: f32, b: f32, saturation: f32) -> (f32, f32, f32) {
-    let lum = luminance(r, g, b);
-    (
-        lum + (r - lum) * saturation,
-        lum + (g - lum) * saturation,
-        lum + (b - lum) * saturation,
-    )
-}
-
-/// Apply shadow-lifting tone curve using a power function
-#[inline]
-fn apply_tone_curve(v: f32) -> f32 {
-    // Use x^0.85 to lift shadows
-    let clamped = if v < 0.0 { 0.0 } else { v };
-    let result = pow_f32(clamped, 0.85);
-    if result > 1.0 {
-        1.0
-    } else {
-        result
-    }
-}
-
-/// Simple power function for SPIR-V (no std lib)
-#[inline]
-fn pow_f32(base: f32, exp: f32) -> f32 {
-    // Use exp(exp * ln(base))
-    #[cfg(target_arch = "spirv")]
-    {
-        spirv_std::num_traits::Float::powf(base, exp)
-    }
-    #[cfg(not(target_arch = "spirv"))]
-    {
-        base.powf(exp)
-    }
-}
-
-/// Convert linear value to gamma-corrected u8 with tone curve
-#[inline]
-fn tone_u8(v: f32, gamma: f32) -> u32 {
+fn tone_u32(v: f32, gamma: f32) -> u32 {
     let curved = apply_tone_curve(v);
     let gamma_safe = if gamma < 0.001 { 0.001 } else { gamma };
     let corrected = pow_f32(curved, 1.0 / gamma_safe) * 255.0 + 0.5;
-    let floored = if corrected < 0.0 {
+    if corrected < 0.0 {
         0
     } else if corrected > 255.0 {
         255
     } else {
         corrected as u32
-    };
-    floored
+    }
 }
 
 /// Apply 3x3 color correction matrix using separate row Vec4s
@@ -160,16 +77,6 @@ fn apply_color_matrix(
         row1.x * r + row1.y * g + row1.z * b,
         row2.x * r + row2.y * g + row2.z * b,
     )
-}
-
-/// Max helper for f32
-#[inline]
-fn max_f32(a: f32, b: f32) -> f32 {
-    if a > b {
-        a
-    } else {
-        b
-    }
 }
 
 /// Bilinear demosaic compute kernel.
@@ -269,11 +176,118 @@ pub fn demosaic_kernel(
     let (r_sat, g_sat, b_sat) = apply_saturation(r, g, b, params.saturation);
 
     // Convert to u8 with tone curve and gamma
-    let r_u8 = tone_u8(r_sat, params.gamma);
-    let g_u8 = tone_u8(g_sat, params.gamma);
-    let b_u8 = tone_u8(b_sat, params.gamma);
+    let r_u8 = tone_u32(r_sat, params.gamma);
+    let g_u8 = tone_u32(g_sat, params.gamma);
+    let b_u8 = tone_u32(b_sat, params.gamma);
 
     // Pack RGB into output (we'll store 3 bytes per pixel, but use u32 for alignment)
     let out_idx = (y * w + x) as usize;
     rgb_output[out_idx] = (r_u8 << 16) | (g_u8 << 8) | b_u8;
+}
+
+/// Horizontal resize pass (src_width -> dst_width, height unchanged)
+/// Input: packed RGB pixels (0x00RRGGBB)
+/// Output: horizontally resized packed RGB pixels
+#[spirv(compute(threads(16, 16)))]
+pub fn resize_horizontal_kernel(
+    #[spirv(global_invocation_id)] id: UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &ResizeParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] input: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] output: &mut [u32],
+) {
+    let dst_x = id.x;
+    let dst_y = id.y;
+
+    // Bounds check
+    if dst_x >= params.dst_width || dst_y >= params.src_height {
+        return;
+    }
+
+    // Map output coord to input coord (center of filter)
+    let src_x_f = (dst_x as f32 + 0.5) * params.scale_x - 0.5;
+    let src_x_center = src_x_f as i32;
+    let radius = params.filter_radius as i32;
+
+    let mut sum_r = 0.0f32;
+    let mut sum_g = 0.0f32;
+    let mut sum_b = 0.0f32;
+    let mut weight_sum = 0.0f32;
+
+    // Sample pixels within filter radius
+    let mut i = -radius;
+    while i <= radius {
+        let src_x = clamp_i32(src_x_center + i, 0, (params.src_width - 1) as i32) as u32;
+        let dist = (src_x_center + i) as f32 - src_x_f;
+        let weight = lanczos_weight(dist, params.filter_radius);
+
+        let pixel = input[(dst_y * params.src_width + src_x) as usize];
+        sum_r += ((pixel >> 16) & 0xFF) as f32 * weight;
+        sum_g += ((pixel >> 8) & 0xFF) as f32 * weight;
+        sum_b += (pixel & 0xFF) as f32 * weight;
+        weight_sum += weight;
+
+        i += 1;
+    }
+
+    // Normalize and clamp
+    let inv = 1.0 / max_f32(weight_sum, 0.0001);
+    let r = clamp_u8((sum_r * inv + 0.5) as i32);
+    let g = clamp_u8((sum_g * inv + 0.5) as i32);
+    let b = clamp_u8((sum_b * inv + 0.5) as i32);
+
+    output[(dst_y * params.dst_width + dst_x) as usize] = (r << 16) | (g << 8) | b;
+}
+
+/// Vertical resize pass (height: src_height -> dst_height, width unchanged)
+/// Input: horizontally resized packed RGB pixels (0x00RRGGBB)
+/// Output: fully resized packed RGB pixels
+#[spirv(compute(threads(16, 16)))]
+pub fn resize_vertical_kernel(
+    #[spirv(global_invocation_id)] id: UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &ResizeParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] input: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] output: &mut [u32],
+) {
+    let dst_x = id.x;
+    let dst_y = id.y;
+
+    // Bounds check
+    if dst_x >= params.dst_width || dst_y >= params.dst_height {
+        return;
+    }
+
+    // Map output coord to input coord (center of filter)
+    let src_y_f = (dst_y as f32 + 0.5) * params.scale_y - 0.5;
+    let src_y_center = src_y_f as i32;
+    let radius = params.filter_radius as i32;
+
+    let mut sum_r = 0.0f32;
+    let mut sum_g = 0.0f32;
+    let mut sum_b = 0.0f32;
+    let mut weight_sum = 0.0f32;
+
+    // Sample pixels within filter radius
+    let mut i = -radius;
+    while i <= radius {
+        let src_y = clamp_i32(src_y_center + i, 0, (params.src_height - 1) as i32) as u32;
+        let dist = (src_y_center + i) as f32 - src_y_f;
+        let weight = lanczos_weight(dist, params.filter_radius);
+
+        // Input width is dst_width (from horizontal pass)
+        let pixel = input[(src_y * params.dst_width + dst_x) as usize];
+        sum_r += ((pixel >> 16) & 0xFF) as f32 * weight;
+        sum_g += ((pixel >> 8) & 0xFF) as f32 * weight;
+        sum_b += (pixel & 0xFF) as f32 * weight;
+        weight_sum += weight;
+
+        i += 1;
+    }
+
+    // Normalize and clamp
+    let inv = 1.0 / max_f32(weight_sum, 0.0001);
+    let r = clamp_u8((sum_r * inv + 0.5) as i32);
+    let g = clamp_u8((sum_g * inv + 0.5) as i32);
+    let b = clamp_u8((sum_b * inv + 0.5) as i32);
+
+    output[(dst_y * params.dst_width + dst_x) as usize] = (r << 16) | (g << 8) | b;
 }

@@ -1,10 +1,11 @@
 use std::{fs::File, ptr::null_mut};
 
-use log::{LevelFilter, info};
+use tracing::info;
 
 use crate::{
     agno_image::{AgnoImage, load::load_agno_image_from_file, scale_image},
     exif::ExifData,
+    logging::{LogConfig, try_init},
     sony_jpeg::write_webp_from_rgb8_writer,
 };
 
@@ -13,7 +14,7 @@ macro_rules! ok_or_null {
         match $expr {
             Ok(val) => Box::into_raw(Box::new(val)),
             Err(e) => {
-                info!("Error occurred, returning null pointer: {:?}", e);
+                info!(error = ?e, "Error occurred, returning null pointer");
                 AgnoImage::null()
             }
         }
@@ -114,9 +115,7 @@ pub extern "C" fn free_agno_image(img: &AgnoImage) {
 #[unsafe(no_mangle)]
 pub extern "C" fn init_agno() {
     // Only initialize the logger once to avoid errors.
-    let _ = env_logger::builder()
-        .filter_level(LevelFilter::Info) // Set default log level
-        .try_init();
+    let _ = try_init(LogConfig::library());
 
     info!("Agno initialized");
 }

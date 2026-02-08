@@ -4,5 +4,7 @@
 //! for image processing operations when the `gpu` feature is enabled.
 
 pub mod context;
+pub mod pipeline;
 
 pub use context::GpuContext;
+pub use pipeline::*;

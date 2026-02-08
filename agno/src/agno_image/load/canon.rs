@@ -6,7 +6,7 @@ use std::{
     io::{Cursor, Seek, SeekFrom},
 };
 
-use log::debug;
+use tracing::debug;
 
 use crate::{
     agno_image::{AgnoImage, auto_rotate_image},
@@ -56,7 +56,7 @@ pub fn load_canon_raw(
 
     // Parse CR2 slice info for proper image reconstruction
     let slice_info = det.raw.cr2_slices.as_ref().map(|slices| {
-        debug!("CR2 raw slice tag: {:?}", slices);
+        debug!(slices = ?slices, "CR2 raw slice tag");
         Cr2SliceInfo::from_raw(slices, dims.raw_width)
     });
 
@@ -99,8 +99,10 @@ pub fn load_canon_raw(
     let wb = extract_canon_white_balance(&ctx);
 
     debug!(
-        "Canon WB gains: R={:.3}, G={:.3}, B={:.3}",
-        wb[0], wb[1], wb[2]
+        r_gain = wb[0],
+        g_gain = wb[1],
+        b_gain = wb[2],
+        "Canon WB gains"
     );
 
     // Extract color matrix from DNG tags
@@ -109,7 +111,7 @@ pub fn load_canon_raw(
         .or_else(|| ctx.get_tag_value(COLOR_MATRIX2))
         .and_then(|v| match v {
             ExifValue::SRational(vals) if vals.len() >= 9 => {
-                debug!("Found color matrix with {} values", vals.len());
+                debug!(values = vals.len(), "Found color matrix");
                 Some([
                     vals[0].0 as f32 / vals[0].1 as f32,
                     vals[1].0 as f32 / vals[1].1 as f32,
@@ -125,15 +127,13 @@ pub fn load_canon_raw(
             _ => None,
         })
         .unwrap_or_else(|| {
-            debug!("No color matrix found; using identity matrix");
+            debug!("No color matrix found, using identity matrix");
             [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         });
 
     debug!(
-        "Color matrix: [{:.4}, {:.4}, {:.4}; {:.4}, {:.4}, {:.4}; {:.4}, {:.4}, {:.4}]",
-        color_matrix[0], color_matrix[1], color_matrix[2],
-        color_matrix[3], color_matrix[4], color_matrix[5],
-        color_matrix[6], color_matrix[7], color_matrix[8]
+        matrix = ?color_matrix,
+        "Color matrix applied"
     );
 
     let gamma = 2.2;

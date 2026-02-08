@@ -4,7 +4,7 @@ use std::{
     io::{Cursor, Seek, SeekFrom},
 };
 
-use log::debug;
+use tracing::{debug, trace};
 
 use crate::{
     agno_image::{AgnoImage, auto_rotate_image},
@@ -120,7 +120,7 @@ pub fn load_sony_raw(
         .or_else(|| ctx.get_tag_value(COLOR_MATRIX2))
         .and_then(|v| match v {
             ExifValue::SRational(vals) if vals.len() >= 9 => {
-                debug!("Found color matrix as SRational with {} values", vals.len());
+                trace!(values = vals.len(), "Found color matrix as SRational");
                 Some([
                     vals[0].0 as f32 / vals[0].1 as f32,
                     vals[1].0 as f32 / vals[1].1 as f32,
@@ -135,7 +135,7 @@ pub fn load_sony_raw(
             }
             ExifValue::Short(vals) if vals.len() >= 9 => {
                 // Sony SR2ColorMatrix: 9 signed 16-bit integers scaled by 1024
-                debug!("Found color matrix as Short with {} values", vals.len());
+                trace!(values = vals.len(), "Found color matrix as Short");
                 Some([
                     vals[0] as i16 as f32 / 1024.0,
                     vals[1] as i16 as f32 / 1024.0,
@@ -151,16 +151,9 @@ pub fn load_sony_raw(
             _ => None,
         })
         .unwrap_or_else(|| {
-            debug!("No color matrix found in EXIF; using identity matrix");
+            debug!("No color matrix found in EXIF, using identity matrix");
             [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         });
-
-    debug!(
-        "Color matrix: [{:.4}, {:.4}, {:.4}; {:.4}, {:.4}, {:.4}; {:.4}, {:.4}, {:.4}]",
-        color_matrix[0], color_matrix[1], color_matrix[2],
-        color_matrix[3], color_matrix[4], color_matrix[5],
-        color_matrix[6], color_matrix[7], color_matrix[8]
-    );
 
     let rgb = demosaic_bilinear_to_rgb8(
         &decoded.pixels,

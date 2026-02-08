@@ -4,7 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bytemuck = { version = "1.21", features = ["derive"] }
+bytemuck = { version = "1.21", features = ["derive"], optional = true }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", optional = true }
 
-[target.'cfg(target_arch = "spirv")'.dependencies]
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu" }
+[features]
+default = []
+gpu = ["dep:spirv-std"]
+std = ["dep:bytemuck"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(target_arch, values(\"spirv\"))"] }

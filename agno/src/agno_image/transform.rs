@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use image::{RgbImage, imageops};
-use log::debug;
+use tracing::debug;
 
 use crate::{
     agno_image::AgnoImage,
@@ -15,10 +15,35 @@ pub fn scale_image(
     new_height: u32,
 ) -> Result<AgnoImage, Box<dyn Error>> {
     debug!(
-        "Scaling image from {}x{} to {}x{}",
-        a_img.width, a_img.height, new_width, new_height
+        from_width = a_img.width,
+        from_height = a_img.height,
+        to_width = new_width,
+        to_height = new_height,
+        "Scaling image"
     );
 
+    // Try GPU resize first if available
+    #[cfg(feature = "gpu")]
+    if let Some(resized) = crate::resize_gpu::resize_gpu(
+        a_img.as_slice(),
+        a_img.width as u32,
+        a_img.height as u32,
+        new_width,
+        new_height,
+    ) {
+        debug!("GPU resize complete");
+        let exif = a_img.exif.clone();
+        AgnoImage::free(&a_img);
+        return Ok(AgnoImage::new(
+            resized,
+            new_width as u64,
+            new_height as u64,
+            exif,
+        ));
+    }
+
+    // CPU fallback
+    debug!("Using CPU resize");
     let rgb = RgbImage::from_raw(
         a_img.width as u32,
         a_img.height as u32,
@@ -56,8 +81,6 @@ pub fn auto_rotate_image(
         Some(ExifValue::Short(v)) if !v.is_empty() => v[0] as u8,
         _ => 1, // Default to normal orientation
     };
-
-    debug!("EXIF orientation: {}", orientation);
 
     // Create image from raw RGB data
     let img = RgbImage::from_raw(

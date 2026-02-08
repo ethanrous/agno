@@ -4,8 +4,8 @@ use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
-use log::debug;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::agno_image::load::{ImageType, detect_image_type};
 use crate::exif::spec::ExifField;
@@ -13,6 +13,7 @@ use crate::sony_decoder::{SonyDecryptor, decrypt_sr2_data};
 
 pub mod spec;
 
+#[allow(dead_code)]
 #[repr(C)] // Ensure C-compatible layout
 pub struct ExifData {
     pub data: *mut u32,
@@ -20,6 +21,7 @@ pub struct ExifData {
     pub typ: u16,
 }
 
+#[allow(dead_code)]
 impl ExifData {
     pub fn null() -> Self {
         ExifData {
@@ -62,7 +64,7 @@ impl ExifData {
                 typ: 3,
             },
             ExifValue::Long(v) => {
-                debug!("Got long! {}", v.len());
+                debug!(count = v.len(), "Got long value");
                 let mut bytes = Vec::with_capacity(v.len() * 4);
                 for n in v {
                     bytes.extend_from_slice(&n.to_le_bytes());
@@ -71,7 +73,7 @@ impl ExifData {
                 ExifData::from_bytes(&bytes)
             }
             ExifValue::Rational(v) => {
-                debug!("Got rational! {}", v.len());
+                debug!(count = v.len(), "Got rational value");
                 let mut bytes = Vec::with_capacity(v.len() * 8);
                 for (num, den) in v {
                     bytes.extend_from_slice(&num.to_le_bytes());
@@ -81,7 +83,7 @@ impl ExifData {
                 ExifData::from_bytes(&bytes)
             }
             ExifValue::SLong(v) => {
-                debug!("Got slong! {}", v.len());
+                debug!(count = v.len(), "Got slong value");
                 let mut bytes = Vec::with_capacity(v.len() * 4);
                 for n in v {
                     bytes.extend_from_slice(&n.to_le_bytes());
@@ -90,7 +92,7 @@ impl ExifData {
                 ExifData::from_bytes(&bytes)
             }
             ExifValue::SRational(v) => {
-                debug!("Got srational! {}", v.len());
+                debug!(count = v.len(), "Got srational value");
                 let mut bytes = Vec::with_capacity(v.len() * 8);
                 for (num, den) in v {
                     bytes.extend_from_slice(&num.to_le_bytes());
@@ -179,41 +181,6 @@ pub enum ExifValue {
     SRational(Vec<(i32, i32)>), // SRATIONAL(10)
 }
 
-pub struct ExifKVPair {
-    pub name: String,
-    pub value: ExifValue,
-}
-
-impl fmt::Display for ExifKVPair {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let name = &self.name;
-        match &self.value {
-            ExifValue::Ascii(s) => write!(f, "{name:<30}: {value}", value = s),
-
-            ExifValue::Rational(v) if !v.is_empty() => {
-                let (num, den) = v[0];
-                write!(f, "{name:<30}: {num}/{den}")
-            }
-            ExifValue::SRational(v) if !v.is_empty() => {
-                let (num, den) = v[0];
-                write!(f, "{name:<30}: {num}/{den} (signed)")
-            }
-            ExifValue::Short(v) if !v.is_empty() => write!(f, "{name:<30}: {}", v[0]),
-            ExifValue::Long(v) if !v.is_empty() => write!(f, "{name:<30}: {}", v[0]),
-            ExifValue::Byte(v) => {
-                write!(
-                    f,
-                    "{name:<30}: {:?} ({} bytes)",
-                    &v[..v.len().min(8)],
-                    v.len()
-                )
-            }
-            _ => write!(f, "{name:<30}: <value>"),
-        }
-    }
-}
-
-trait ReadSeeker: Read + Seek {}
 
 #[derive(Debug, Clone)]
 #[repr(C)] // Ensure C-compatible layout
@@ -245,11 +212,6 @@ impl ExifContext {
             endian: Endian::Little,
             exif_values: HashMap::new(),
         }
-    }
-
-    pub fn from_path_auto(path: &str) -> Result<Self, ExifError> {
-        let mut file = File::open(path)?;
-        ExifContext::from_reader_auto(&mut file)
     }
 
     pub fn from_reader_auto(reader: &mut File) -> Result<Self, ExifError> {
@@ -522,16 +484,10 @@ impl ExifContext {
         });
 
         if let (Some(offset), Some(length), Some(key)) = (sr2_offset, sr2_length, sr2_key) {
-            debug!(
-                "Found SR2SubIFD: offset={}, length={}, key=0x{:08x}",
-                offset, length, key
-            );
-
             // Read encrypted SR2SubIFD data
             if let Ok(sr2_tags) =
                 parse_encrypted_sr2_subifd(reader, tiff_base, offset, length, key, endian)
             {
-                debug!("Extracted {} tags from SR2SubIFD", sr2_tags.len());
                 exif_values.extend(sr2_tags);
             }
         }
@@ -539,20 +495,17 @@ impl ExifContext {
         Ok((tiff_base, endian, exif_values))
     }
 
-    pub fn to_json(&mut self) -> Result<String, ExifError> {
-        let s = serde_json::to_string(&self.exif_values)?;
-        Ok(s)
-    }
-
     pub fn get_tag_value(&self, field: ExifField) -> Option<&ExifValue> {
         self.exif_values.get(&field.tag)
     }
 
+    #[allow(dead_code)]
     pub fn get_tag_value_by_tag(&self, tag: u16) -> Option<&ExifValue> {
         self.exif_values.get(&tag)
     }
 
     /// Returns all EXIF values as (name, tag, value) tuples
+    #[allow(dead_code)]
     pub fn iter_all(&self) -> impl Iterator<Item = (&'static str, u16, &ExifValue)> + '_ {
         self.exif_values.iter().map(|(&tag, val)| {
             let name = spec::get_exif_field(tag)
@@ -899,8 +852,6 @@ fn parse_ifd_from_bytes(
         )));
     }
 
-    debug!("Parsing SR2SubIFD with {} entries", count);
-
     for i in 0..count {
         let base = header_size + i * entry_size;
 
@@ -964,11 +915,11 @@ fn parse_ifd_from_bytes(
 
             if rel_offset < 0 || rel_offset as usize + total_size > data.len() {
                 debug!(
-                    "SR2SubIFD tag 0x{:04x}: offset {} out of bounds (sr2_start={}, data_len={})",
-                    tag,
-                    value_or_offset,
-                    sr2_offset,
-                    data.len()
+                    tag = format_args!("0x{:04x}", tag),
+                    offset = value_or_offset,
+                    sr2_start = sr2_offset,
+                    data_len = data.len(),
+                    "SR2SubIFD tag offset out of bounds"
                 );
                 continue;
             }
@@ -996,7 +947,7 @@ fn parse_ifd_from_bytes(
 fn parse_sony_makernotes(
     reader: &mut File,
     offset: u64,
-    length: usize,
+    _length: usize,
 ) -> Result<HashMap<u16, ExifValue>, ExifError> {
     // Sony MakerNotes uses little-endian and offsets are relative to file start (tiff_base=0)
     let endian = Endian::Little;

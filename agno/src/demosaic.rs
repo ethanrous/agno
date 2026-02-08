@@ -6,10 +6,17 @@ use rayon::{
 // Minimal dependencies: adjust imports/types to your crate as needed.
 use crate::sony_decoder::Dimensions;
 
-// "Camera look" defaults - hardcoded for simplicity
+// Import shared constants when GPU feature is enabled
+#[cfg(feature = "gpu")]
+use agno_gpu_shared::{EXPOSURE_EV, SATURATION};
+
+// "Camera look" defaults - hardcoded for non-GPU builds
+#[cfg(not(feature = "gpu"))]
 const EXPOSURE_EV: f32 = 1.2; // Sony RAW significantly underexposed
+#[cfg(not(feature = "gpu"))]
 const SATURATION: f32 = 1.25; // 25% saturation boost
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BayerPattern {
     RGGB, // Sony and Canon sensors
@@ -147,7 +154,7 @@ pub fn demosaic_bilinear_to_rgb8(
     color_matrix: [f32; 9],
     gamma: f32,
 ) -> Vec<u8> {
-    log::debug!("CHECKING GPU AVAILABLE");
+    tracing::debug!("Checking GPU availability");
 
     // Try GPU path first if feature is enabled
     #[cfg(feature = "gpu")]
@@ -161,12 +168,12 @@ pub fn demosaic_bilinear_to_rgb8(
         color_matrix,
         gamma,
     ) {
-        log::debug!("Using GPU-accelerated demosaic");
+        tracing::debug!("Using GPU-accelerated demosaic");
         return result;
     }
 
     #[cfg(feature = "gpu")]
-    log::debug!("GPU unavailable, falling back to CPU demosaic");
+    tracing::debug!("GPU unavailable, falling back to CPU demosaic");
 
     demosaic_bilinear_to_rgb8_cpu(
         raw,

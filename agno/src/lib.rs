@@ -1,6 +1,8 @@
 mod agno_image;
 mod lib_interface;
 
+pub mod logging;
+
 mod canon_decoder;
 mod demosaic;
 mod exif;
@@ -12,3 +14,5 @@ mod tiff;
 mod demosaic_gpu;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
+mod resize_gpu;

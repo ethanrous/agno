@@ -2,15 +2,16 @@ use std::env;
 use std::error::Error;
 use std::fs::File;
 
-use log::LevelFilter;
-
 use crate::agno_image::load::load_agno_image_from_file;
+use crate::agno_image::transform::scale_image;
 use crate::exif::{ExifContext, ExifValue};
+use crate::logging::{LogConfig, init};
 
 mod agno_image;
 mod canon_decoder;
 mod demosaic;
 mod exif;
+mod logging;
 mod sony_decoder;
 mod sony_jpeg;
 mod tiff;
@@ -19,24 +20,26 @@ mod tiff;
 mod demosaic_gpu;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
+mod resize_gpu;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let _ = env_logger::builder()
-        .filter_level(LevelFilter::Debug) // Set default log level
-        .try_init();
+    init(LogConfig::cli());
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
         eprintln!("Usage: {} <command> [args...]", args[0]);
         eprintln!("Commands:");
-        eprintln!("  exif <file>                 Print EXIF data for a file");
-        eprintln!("  convert <input> <output>    Convert image between formats");
+        eprintln!("  exif <file>                              Print EXIF data for a file");
+        eprintln!("  convert <input> <output>                 Convert image between formats");
+        eprintln!("  resize <input> <width> <height> <output> Resize image to specified dimensions");
         return Ok(());
     }
 
     match args[1].as_str() {
         "exif" => cmd_exif(&args[2..]),
         "convert" => cmd_convert(&args[2..]),
+        "resize" => cmd_resize(&args[2..]),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             Err("Unknown command".into())
@@ -143,5 +146,29 @@ fn cmd_convert(args: &[String]) -> Result<(), Box<dyn Error>> {
     img.to_jpeg_file(100, output_path)?;
 
     println!("Converted {} -> {}", input_path, output_path);
+    Ok(())
+}
+
+fn cmd_resize(args: &[String]) -> Result<(), Box<dyn Error>> {
+    if args.len() < 4 {
+        eprintln!("Usage: agno resize <input> <width> <height> <output>");
+        return Err("Missing arguments".into());
+    }
+
+    let input_path = &args[0];
+    let width: u32 = args[1].parse().map_err(|_| "Invalid width")?;
+    let height: u32 = args[2].parse().map_err(|_| "Invalid height")?;
+    let output_path = &args[3];
+
+    // Load image (auto-detects format)
+    let img = load_agno_image_from_file(input_path)?;
+
+    // Scale using GPU-accelerated resize (with CPU fallback)
+    let resized = scale_image(img, width, height)?;
+
+    // Write output as JPEG
+    resized.to_jpeg_file(100, output_path)?;
+
+    println!("Resized {} ({}x{}) -> {}", input_path, width, height, output_path);
     Ok(())
 }

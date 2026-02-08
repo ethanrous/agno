@@ -35,6 +35,6 @@ pub fn load_pdf(path: &str, exif: ExifContext) -> Result<AgnoImage, Box<dyn Erro
 }
 
 #[cfg(not(feature = "pdf"))]
-pub fn load_pdf(path: &str, exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
+pub fn load_pdf(_path: &str, _exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
     Err("PDF support is not enabled. Please enable the 'pdf' feature.".into())
 }
