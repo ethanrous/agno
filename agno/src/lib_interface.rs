@@ -1,6 +1,6 @@
 use std::{fs::File, ptr::null_mut};
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     agno_image::{AgnoImage, load::load_agno_image_from_file, scale_image},
@@ -93,11 +93,15 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
 
     let ret = match data {
         Some(value) => ExifData::from_exif_value(value),
-        None => ExifData {
-            data: null_mut(),
-            len: 0,
-            typ: 0,
-        },
+        None => {
+            warn!("Tag {img_tag} not found in EXIF data");
+
+            ExifData {
+                data: null_mut(),
+                len: 0,
+                typ: 0,
+            }
+        }
     };
 
     if ret.len == 0 {
@@ -105,6 +109,60 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
     }
 
     ret
+}
+
+#[repr(C)]
+pub struct GpsCoordinates {
+    pub lat: f64,
+    pub lon: f64,
+    pub valid: u8, // 1 = valid coords, 0 = no GPS data
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn get_gps_coordinates(img: &AgnoImage) -> GpsCoordinates {
+    match img.exif.get_gps_coordinates() {
+        Some((lat, lon)) => GpsCoordinates { lat, lon, valid: 1 },
+        None => GpsCoordinates {
+            lat: 0.0,
+            lon: 0.0,
+            valid: 0,
+        },
+    }
+}
+
+#[repr(C)]
+pub struct AgnoBuffer {
+    data: *mut u8,
+    len: usize,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) -> AgnoBuffer {
+    match img.to_jpeg(quality) {
+        Ok(mut buf) => {
+            buf.shrink_to_fit();
+            let data = buf.as_mut_ptr();
+            let len = buf.len();
+            std::mem::forget(buf);
+            AgnoBuffer { data, len }
+        }
+        Err(e) => {
+            warn!(error = ?e, "Failed to encode JPEG");
+            AgnoBuffer {
+                data: null_mut(),
+                len: 0,
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn free_agno_buffer(buf: AgnoBuffer) {
+    if !buf.data.is_null() && buf.len > 0 {
+        unsafe {
+            drop(Vec::from_raw_parts(buf.data, buf.len, buf.len));
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

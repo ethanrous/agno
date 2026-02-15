@@ -31,7 +31,24 @@ void write_agno_image_to_webp(char *path, size_t len, struct AgnoImage *img);
 
 void free_agno_image(struct AgnoImage *img);
 
+struct AgnoBuffer {
+  unsigned char *data;
+  size_t len;
+};
+
+struct AgnoBuffer write_agno_image_to_jpeg_buffer(struct AgnoImage *img,
+                                                  uint8_t quality);
+void free_agno_buffer(struct AgnoBuffer buf);
+
 struct ExifData get_exif_value(struct AgnoImage *img, int16_t img_tag);
+
+struct GpsCoordinates {
+  double lat;
+  double lon;
+  unsigned char valid;
+};
+
+struct GpsCoordinates get_gps_coordinates(struct AgnoImage *img);
 
 #ifdef __cplusplus
 }

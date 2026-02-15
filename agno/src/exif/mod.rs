@@ -31,7 +31,7 @@ impl ExifData {
         }
     }
 
-    fn from_bytes(bytes: &Vec<u8>) -> Self {
+    fn from_bytes(bytes: &Vec<u8>, typ: u16) -> Self {
         let len = bytes.len();
         let data = unsafe { libc::malloc(len) as *mut u32 };
         if data.is_null() {
@@ -40,7 +40,7 @@ impl ExifData {
         unsafe {
             data.copy_from_nonoverlapping(bytes.as_ptr() as *mut u32, len);
         }
-        ExifData { data, len, typ: 0 }
+        ExifData { data, len, typ }
     }
 
     pub fn from_exif_value(v: &ExifValue) -> Self {
@@ -70,7 +70,7 @@ impl ExifData {
                     bytes.extend_from_slice(&n.to_le_bytes());
                 }
 
-                ExifData::from_bytes(&bytes)
+                ExifData::from_bytes(&bytes, 4)
             }
             ExifValue::Rational(v) => {
                 debug!(count = v.len(), "Got rational value");
@@ -80,7 +80,7 @@ impl ExifData {
                     bytes.extend_from_slice(&den.to_le_bytes());
                 }
 
-                ExifData::from_bytes(&bytes)
+                ExifData::from_bytes(&bytes, 5)
             }
             ExifValue::SLong(v) => {
                 debug!(count = v.len(), "Got slong value");
@@ -89,7 +89,7 @@ impl ExifData {
                     bytes.extend_from_slice(&n.to_le_bytes());
                 }
 
-                ExifData::from_bytes(&bytes)
+                ExifData::from_bytes(&bytes, 9)
             }
             ExifValue::SRational(v) => {
                 debug!(count = v.len(), "Got srational value");
@@ -99,7 +99,7 @@ impl ExifData {
                     bytes.extend_from_slice(&den.to_le_bytes());
                 }
 
-                ExifData::from_bytes(&bytes)
+                ExifData::from_bytes(&bytes, 10)
             }
         }
     }
@@ -502,6 +502,54 @@ impl ExifContext {
     #[allow(dead_code)]
     pub fn get_tag_value_by_tag(&self, tag: u16) -> Option<&ExifValue> {
         self.exif_values.get(&tag)
+    }
+
+    /// Extract GPS coordinates as decimal degrees (latitude, longitude).
+    /// Returns `None` if the required GPS tags are missing or malformed.
+    pub fn get_gps_coordinates(&self) -> Option<(f64, f64)> {
+        // GPS tags in the GPS sub-IFD:
+        // 0x0001 = GPSLatitudeRef (ASCII: "N" or "S")
+        // 0x0002 = GPSLatitude (RATIONAL x3: degrees, minutes, seconds)
+        // 0x0003 = GPSLongitudeRef (ASCII: "E" or "W")
+        // 0x0004 = GPSLongitude (RATIONAL x3: degrees, minutes, seconds)
+        let lat_ref = match self.exif_values.get(&0x0001)? {
+            ExifValue::Ascii(s) => s.trim().to_uppercase(),
+            _ => return None,
+        };
+        let lat_rationals = match self.exif_values.get(&0x0002)? {
+            ExifValue::Rational(v) if v.len() >= 3 => v,
+            _ => return None,
+        };
+        let lon_ref = match self.exif_values.get(&0x0003)? {
+            ExifValue::Ascii(s) => s.trim().to_uppercase(),
+            _ => return None,
+        };
+        let lon_rationals = match self.exif_values.get(&0x0004)? {
+            ExifValue::Rational(v) if v.len() >= 3 => v,
+            _ => return None,
+        };
+
+        let to_decimal = |rats: &[(u32, u32)]| -> Option<f64> {
+            if rats[0].1 == 0 || rats[1].1 == 0 || rats[2].1 == 0 {
+                return None;
+            }
+            let deg = rats[0].0 as f64 / rats[0].1 as f64;
+            let min = rats[1].0 as f64 / rats[1].1 as f64;
+            let sec = rats[2].0 as f64 / rats[2].1 as f64;
+            Some(deg + min / 60.0 + sec / 3600.0)
+        };
+
+        let mut lat = to_decimal(lat_rationals)?;
+        let mut lon = to_decimal(lon_rationals)?;
+
+        if lat_ref == "S" {
+            lat = -lat;
+        }
+        if lon_ref == "W" {
+            lon = -lon;
+        }
+
+        Some((lat, lon))
     }
 
     /// Returns all EXIF values as (name, tag, value) tuples
