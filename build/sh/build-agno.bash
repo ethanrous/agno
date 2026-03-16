@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This script builds a fully static version of libagno by merging the main Rust static library with all of its transitive static dependencies (notably libheif and its codecs). The resulting archive can be linked into other projects without needing to worry about dynamic dependencies.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
 ARCHITECTURE="${ARCHITECTURE:-$(uname -m)}"
 
 case "$ARCHITECTURE" in
 x86_64)
-    # Target glibc for compatibility with Debian-based containers and NVIDIA drivers
     TARGET_TRIPLE="x86_64-unknown-linux-gnu"
     ;;
 arm64 | aarch64)
@@ -21,47 +26,92 @@ arm64 | aarch64)
     ;;
 esac
 
-[ -z "${DO_PDF+x}" ] && DO_PDF=false
-if [[ $DO_PDF == true ]]; then
-    echo "NOT BUILDING AGNO WITH PDF SUPPORT YET"
-    exit 1
-    # 3) Make Cargo use the C++ linker driver for this target
-    export ${CARGO_LINKER_ENV_VAR}="${MUSL_PREFIX}-linux-musl-g++"
+OUTPUT_PATH="$1"
 
-    # 4) Ensure any C/C++ built by Cargo build scripts uses the same musl toolchain
-    export CC_${TARGET_TRIPLE//-/_}="${MUSL_PREFIX}-linux-musl-gcc"
-    export CXX_${TARGET_TRIPLE//-/_}="${MUSL_PREFIX}-linux-musl-g++"
-    export AR_${TARGET_TRIPLE//-/_}="${MUSL_PREFIX}-linux-musl-ar"
-    export RANLIB_${TARGET_TRIPLE//-/_}="${MUSL_PREFIX}-linux-musl-ranlib"
-
-    # 5) Tame fortify/assertions that can introduce __*chk and __glibcxx_assert_fail
-    export CFLAGS_${TARGET_TRIPLE//-/_}="-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
-    export CXXFLAGS_${TARGET_TRIPLE//-/_}="-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -D_GLIBCXX_NO_ASSERTIONS -U_GLIBCXX_ASSERTIONS -D_GLIBCXX_ASSERTIONS=0"
-    export CFLAGS="-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
-    export CXXFLAGS="-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -D_GLIBCXX_NO_ASSERTIONS -U_GLIBCXX_ASSERTIONS -D_GLIBCXX_ASSERTIONS=0"
-
-    # 6) Tell pdfium-render to use your prebuilt PDFium (and not fetch/build anything)
-    export PDFIUM_STATIC_LIB_PATH="/lib/libpdfium" # must contain libpdfium.a
-
-    # 7) Link settings for Rust (musl dynamic, force-link pdfium + stdc++)
-    RUSTFLAGS_COMMON="-C target-feature=-crt-static -C link-arg=-Wl,--no-as-needed"
-    RUSTFLAGS_LIBS="-C link-arg=-lpdfium"
-    # RUSTFLAGS_LIBS="-C link-arg=-lpdfium -C link-arg=-lc++ link-arg=-lstdc++ -C link-arg=-lm -C link-arg=-lpthread -C link-arg=-ldl -C link-arg=-latomic"
-
-    export RUSTFLAGS="${RUSTFLAGS_COMMON} ${RUSTFLAGS_LIBS}"
-else
-    RUSTFLAGS_LIBS=""
-fi
-
-# Ensure the target is installed (needed for cross-compilation)
+# ---------------------------------------------------------------------------
+# 1) Ensure target triple is installed
+# ---------------------------------------------------------------------------
 rustup target add "${TARGET_TRIPLE}" 2>/dev/null || true
 
-# 9) Clean up any previous build artifacts
+# ---------------------------------------------------------------------------
+# 2) Build the static lib
+# ---------------------------------------------------------------------------
 rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
-
-# 10) Build the Rust static library that links PDFium statically
-# Ensure Cargo.toml:
 cargo build --release --features gpu --target "${TARGET_TRIPLE}"
 
-# 11) Copy the resulting static library to a known location
-cp "target/${TARGET_TRIPLE}/release/libagno.a" "$1"
+# ---------------------------------------------------------------------------
+# 3) Collect all libheif transitive static deps and merge into libagno.a
+#
+#    libheif links against codecs (libde265, x265, aom, etc.) whose symbols
+#    must be present in the final archive. We parse pkg-config to discover
+#    the full set of -l flags, locate the corresponding .a files, and merge
+#    them all into the output archive alongside libagno.a.
+# ---------------------------------------------------------------------------
+TARGET_ARCHIVE="target/${TARGET_TRIPLE}/release/libagno.a"
+MERGE_LIBS=("${TARGET_ARCHIVE}")
+
+# Parse -l flags from pkg-config (skip system libs provided by the OS)
+SYSTEM_LIBS="c++ stdc++ dl m pthread"
+
+find_static_lib() {
+    local name="$1"
+    # Use pkg-config lib dirs as search roots
+    local search_dirs
+    search_dirs=$(pkg-config --libs-only-L libheif 2>/dev/null | tr ' ' '\n' | sed 's/^-L//')
+
+    for dir in $search_dirs /opt/homebrew/lib /usr/local/lib /usr/lib; do
+        [[ -f "$dir/lib${name}.a" ]] && echo "$dir/lib${name}.a" && return
+    done
+
+    # Homebrew Cellar fallback (static libs sometimes aren't symlinked)
+    local result
+    result=$(find /opt/homebrew/Cellar -name "lib${name}.a" -print -quit 2>/dev/null || true)
+    [[ -n "$result" ]] && echo "$result" && return
+
+    return 1
+}
+
+# Extract library names from pkg-config
+LINK_FLAGS=$(pkg-config --libs --static libheif 2>/dev/null || true)
+
+if [[ -n "$LINK_FLAGS" ]]; then
+    for flag in $LINK_FLAGS; do
+        # Only process -l flags
+        [[ "$flag" != -l* ]] && continue
+        libname="${flag#-l}"
+
+        # Skip system libs
+        skip=false
+        for sys in $SYSTEM_LIBS; do
+            [[ "$libname" == "$sys" ]] && skip=true && break
+        done
+        $skip && continue
+
+        static_path=$(find_static_lib "$libname" || true)
+        if [[ -n "$static_path" ]]; then
+            MERGE_LIBS+=("$static_path")
+            echo "  Found: lib${libname}.a -> ${static_path}"
+        else
+            echo "  Warning: lib${libname}.a not found (will need dynamic linking)" >&2
+        fi
+    done
+else
+    echo "Warning: pkg-config failed for libheif, archive may have unresolved symbols" >&2
+fi
+
+echo "--- Merging ${#MERGE_LIBS[@]} archives into ${OUTPUT_PATH} ---"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    libtool -static -o "${OUTPUT_PATH}" "${MERGE_LIBS[@]}"
+else
+    MERGE_TMP=$(mktemp -d)
+    for lib in "${MERGE_LIBS[@]}"; do
+        cd "$MERGE_TMP"
+        ar x "$lib"
+    done
+    cd "$MERGE_TMP"
+    ar rcs "${OUTPUT_PATH}" ./*.o
+    rm -rf "$MERGE_TMP"
+fi
+
+echo "--- Done: ${OUTPUT_PATH} ($(du -h "${OUTPUT_PATH}" | cut -f1)) ---"

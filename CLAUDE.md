@@ -39,12 +39,14 @@ The project is a Cargo workspace with three crates:
 ### GPU Pipeline
 
 When `gpu` feature is enabled:
+
 1. `agno/build.rs` uses `spirv-builder` to compile `agno-gpu-kernels` to SPIR-V
 2. The SPIR-V binary is embedded via `include_bytes!(env!("GPU_KERNELS_SPV_PATH"))`
 3. At runtime, wgpu loads the SPIR-V and dispatches compute shaders
 4. All GPU operations fall back to CPU implementations if GPU is unavailable
 
 Key GPU modules:
+
 - `gpu/context.rs` - Singleton wgpu device/queue initialization
 - `gpu/pipeline.rs` - Shared utilities for compute dispatch
 - `demosaic_gpu.rs` - GPU Bayer demosaicing
@@ -53,6 +55,7 @@ Key GPU modules:
 ### C FFI
 
 `lib_interface.rs` exposes C functions for foreign language integration:
+
 - `load_image_from_path()` - Load and decode image files
 - `resize_image()` - Scale images (uses GPU when available)
 - `write_agno_image_to_webp()` - Export to WebP
@@ -63,6 +66,7 @@ Key GPU modules:
 ### Image Loading
 
 `agno_image/load/` contains format-specific loaders:
+
 - `load.rs` - Auto-detection and standard formats (JPEG, PNG, WebP via the `image` crate)
 - `sony.rs` - Sony ARW RAW files
 - `canon.rs` - Canon CR2 RAW files
@@ -77,3 +81,17 @@ This project requires a specific nightly Rust toolchain for rust-gpu SPIR-V comp
 
 - `gpu` (default) - Enable GPU acceleration via wgpu/SPIR-V
 - `pdf` - Enable PDF rendering via pdfium (currently incomplete)
+
+## Development Workflow: Test-Driven Development (MANDATORY)
+
+Every bug fix and feature MUST follow this sequence. Do not skip steps.
+
+1. **Understand** — Read the relevant code. Use plan mode for non-trivial work. Identify the root cause (bug) or the exact behavior change (feature).
+2. **Design the solution** — Decide what to change, but **do NOT write implementation code yet**.
+3. **Write the test first** — Add a test that captures the expected behavior. Extend an existing test file whenever possible. Do not create new test files unless the domain is genuinely new.
+4. **Run the test — watch it fail** — Confirm the test fails for the right reason (not a syntax error or import issue). This validates the test actually tests something.
+5. **Implement the fix/feature** — Write the minimum code to make the test pass.
+6. **Run the test — watch it pass** — If it fails, fix the implementation, not the test (unless the test itself was wrong, but be very sure the test is wrong, it is likely the implementation is the issue).
+7. **Run the full relevant test suite.**
+
+**Why this order matters:** Writing the test first forces you to define the expected behavior precisely before touching implementation code. It catches regressions, prevents over-engineering, and proves the fix actually works. Skipping to implementation and writing tests after is not TDD — it's rationalization.

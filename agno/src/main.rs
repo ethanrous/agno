@@ -32,7 +32,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("Commands:");
         eprintln!("  exif <file>                              Print EXIF data for a file");
         eprintln!("  convert <input> <output>                 Convert image between formats");
-        eprintln!("  resize <input> <width> <height> <output> Resize image to specified dimensions");
+        eprintln!(
+            "  resize <input> <width> <height> <output> Resize image to specified dimensions"
+        );
         return Ok(());
     }
 
@@ -169,6 +171,9 @@ fn cmd_resize(args: &[String]) -> Result<(), Box<dyn Error>> {
     // Write output as JPEG
     resized.to_jpeg_file(100, output_path)?;
 
-    println!("Resized {} ({}x{}) -> {}", input_path, width, height, output_path);
+    println!(
+        "Resized {} ({}x{}) -> {}",
+        input_path, width, height, output_path
+    );
     Ok(())
 }

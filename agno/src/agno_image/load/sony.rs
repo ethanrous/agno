@@ -7,7 +7,7 @@ use std::{
 use tracing::{debug, trace};
 
 use crate::{
-    agno_image::{AgnoImage, auto_rotate_image},
+    agno_image::AgnoImage,
     demosaic::{BayerPattern, demosaic_bilinear_to_rgb8},
     exif::{
         ExifContext, ExifValue,
@@ -42,7 +42,7 @@ pub fn load_sony_raw(
     let mut cursor = Cursor::new(buf);
 
     file.seek(SeekFrom::Start(0))?;
-    let mut ctx = ExifContext::from_reader_auto(&mut file)?;
+    let ctx = ExifContext::from_reader_auto(&mut file)?;
 
     // Extract Sony variant from maker
     let variant = match det.maker {
@@ -166,11 +166,8 @@ pub fn load_sony_raw(
         gamma,
     );
 
-    // Auto-rotate based on EXIF Orientation tag
-    let img = auto_rotate_image(&mut ctx, &rgb, &mut dims)?;
-
     Ok(AgnoImage::new(
-        img,
+        rgb,
         dims.output_width as u64,
         dims.output_height as u64,
         exif,

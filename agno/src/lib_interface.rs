@@ -94,7 +94,7 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
     let ret = match data {
         Some(value) => ExifData::from_exif_value(value),
         None => {
-            warn!("Tag {img_tag} not found in EXIF data");
+            warn!("Tag {img_tag} not found in EXIF data ({} tags present)", img.exif.tag_count());
 
             ExifData {
                 data: null_mut(),

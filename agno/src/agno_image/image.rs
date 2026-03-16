@@ -62,6 +62,46 @@ impl AgnoImage {
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
 
+    /// Apply EXIF orientation transform in-place, then no-op on future calls.
+    pub fn auto_rotate(&mut self) -> Result<(), Box<dyn Error>> {
+        use crate::exif::{ExifValue, spec::ORIENTATION};
+        use crate::sony_decoder::Dimensions;
+
+        let orientation = match self.exif.get_tag_value(ORIENTATION) {
+            Some(ExifValue::Short(v)) if !v.is_empty() => v[0] as u8,
+            _ => return Ok(()),
+        };
+        if orientation == 1 {
+            return Ok(());
+        }
+
+        let mut dims = Dimensions {
+            raw_width: self.width as usize,
+            raw_height: self.height as usize,
+            output_width: self.width as usize,
+            output_height: self.height as usize,
+        };
+        let data = self.as_slice().to_vec();
+        let rotated = super::auto_rotate_image(&mut self.exif, &data, &mut dims)?;
+
+        unsafe {
+            if !self.data.is_null() {
+                libc::free(self.data as *mut c_void);
+            }
+            let new_ptr = libc::malloc(rotated.len()) as *mut c_uchar;
+            new_ptr.copy_from_nonoverlapping(rotated.as_ptr(), rotated.len());
+            self.data = new_ptr;
+            self.len = rotated.len();
+        }
+        self.width = dims.output_width as u64;
+        self.height = dims.output_height as u64;
+
+        // Mark orientation as applied so no downstream consumer re-rotates
+        self.exif.set_tag_value(ORIENTATION, ExifValue::Short(vec![1]));
+
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
         let img = image::RgbImage::from_raw(
