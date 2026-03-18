@@ -4,83 +4,72 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Agno is a general-purpose Rust image processing library with GPU acceleration. It supports standard formats (JPEG, PNG, WebP) as well as RAW camera files (Sony ARW, Canon CR2). The library can be used as a Rust crate or as a static library (`libagno.a`) with C FFI for integration with other languages.
+Agno is a Rust image processing library with GPU acceleration. Supports JPEG, PNG, WebP, HEIC, and RAW camera files (Sony ARW, Canon CR2). Used as a Rust crate or static library (`libagno.a`) with C FFI for Go integration in the Weblens project.
 
-## Build Commands
+## Build & Test
 
 ```bash
-# Build with GPU support (default)
-cargo build -p agno --features gpu
+# Build (GPU enabled by default)
+cargo build -p agno
 
 # Build without GPU (CPU-only)
 cargo build -p agno --no-default-features
 
-# Build release static library for current platform
+# Build release static library
 ./build/sh/build-agno.bash /path/to/output/libagno.a
 
-# Build shared crate only
-cargo build -p agno-gpu-shared
+# Run tests
+cargo test -p agno
+cargo test -p agno --test encoder_tests
 
-# Run the CLI tool
+# Run CLI
 cargo run -p agno -- exif <file>
 cargo run -p agno -- convert <input> <output>
+
+# Lint
+cargo clippy -p agno
 ```
 
-## Architecture
+## Workspace Structure
 
-### Workspace Structure
+Three crates in a Cargo workspace:
 
-The project is a Cargo workspace with three crates:
+- **agno** — Main crate: format decoding/encoding, EXIF, image transforms, C FFI. Produces lib + staticlib + binary.
+- **agno-gpu-shared** — Shared types with identical layout on CPU and GPU (SPIR-V). Dual `no_std`/`std`.
+- **agno-gpu-kernels** — GPU compute kernels (Rust → SPIR-V via rust-gpu at build time).
 
-- **agno** - Main crate: RAW decoding, EXIF parsing, image transforms, C FFI. Produces both library and binary.
-- **agno-gpu-shared** - Shared types/functions that must have identical layout on CPU and GPU (SPIR-V). Uses `#![cfg_attr(target_arch = "spirv", no_std)]`.
-- **agno-gpu-kernels** - GPU compute kernels written in Rust, compiled to SPIR-V via rust-gpu at build time.
+## Key Architecture Decisions
 
-### GPU Pipeline
-
-When `gpu` feature is enabled:
-
-1. `agno/build.rs` uses `spirv-builder` to compile `agno-gpu-kernels` to SPIR-V
-2. The SPIR-V binary is embedded via `include_bytes!(env!("GPU_KERNELS_SPV_PATH"))`
-3. At runtime, wgpu loads the SPIR-V and dispatches compute shaders
-4. All GPU operations fall back to CPU implementations if GPU is unavailable
-
-Key GPU modules:
-
-- `gpu/context.rs` - Singleton wgpu device/queue initialization
-- `gpu/pipeline.rs` - Shared utilities for compute dispatch
-- `demosaic_gpu.rs` - GPU Bayer demosaicing
-- `resize_gpu.rs` - GPU Lanczos3 resize (two-pass separable filter)
-
-### C FFI
-
-`lib_interface.rs` exposes C functions for foreign language integration:
-
-- `load_image_from_path()` - Load and decode image files
-- `resize_image()` - Scale images (uses GPU when available)
-- `write_agno_image_to_webp()` - Export to WebP
-- `get_exif_value()` - Read EXIF metadata
-- `free_agno_image()` - Memory cleanup
-- `init_agno()` - Initialize logging
-
-### Image Loading
-
-`agno_image/load/` contains format-specific loaders:
-
-- `load.rs` - Auto-detection and standard formats (JPEG, PNG, WebP via the `image` crate)
-- `sony.rs` - Sony ARW RAW files
-- `canon.rs` - Canon CR2 RAW files
-
-For RAW files, the pipeline is: parse EXIF → extract RAW data → demosaic (Bayer to RGB) → apply color matrix/white balance → optional transforms.
-
-## Toolchain Requirements
-
-This project requires a specific nightly Rust toolchain for rust-gpu SPIR-V compilation. The version is pinned in `rust-toolchain.toml`. The toolchain will be automatically installed when you run cargo commands.
+- **GPU-first with CPU fallback**: All GPU operations return `Option` — caller always provides CPU fallback path. GPU unavailability is normal (Docker, CI), not an error.
+- **Native codecs**: JPEG, WebP, PNG, and HEVC decoders/encoders are implemented from scratch in `codec/` (no C library dependencies). This keeps the static library self-contained.
+- **C FFI with dual allocators**: `AgnoImage` buffers use `libc::malloc()` for C/Go interop; `AgnoBuffer` (in-memory encoding) uses Rust's allocator. Each has its own free function. See `.claude/rules/ffi-interface.md`.
+- **Format auto-detection**: `agno_image/load/load.rs` detects format by magic bytes, not file extension.
+- **EXIF-driven transforms**: Orientation, white balance, color matrix all sourced from EXIF metadata.
 
 ## Feature Flags
 
-- `gpu` (default) - Enable GPU acceleration via wgpu/SPIR-V
-- `pdf` - Enable PDF rendering via pdfium (currently incomplete)
+| Flag | Default | What it enables |
+|------|---------|-----------------|
+| `gpu` | yes | wgpu + SPIR-V GPU acceleration |
+| `jpeg` | yes | Native JPEG encode/decode |
+| `png` | yes | Native PNG decode |
+| `webp` | yes | Native WebP encode/decode |
+| `pdf` | no | PDF rendering via pdfium (incomplete) |
+
+## Toolchain
+
+Requires nightly Rust pinned in `rust-toolchain.toml` (for rust-gpu SPIR-V compilation). Auto-installed on first cargo command.
+
+## Detailed Rules (auto-loaded from `.claude/rules/`)
+
+| File | Contents |
+|------|----------|
+| `architecture.md` | Module map, image pipeline stages, crate relationships |
+| `coding-conventions.md` | Error handling, naming, unsafe code, feature flags |
+| `codec-guide.md` | Codec structure, how to add new format support |
+| `gpu-pipeline.md` | GPU build pipeline, runtime context, fallback pattern |
+| `ffi-interface.md` | C FFI conventions, memory management, adding functions |
+| `testing.md` | Running tests, test data, quality validation |
 
 ## Development Workflow: Test-Driven Development (MANDATORY)
 
