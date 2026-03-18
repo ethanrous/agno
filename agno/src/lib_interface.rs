@@ -6,8 +6,9 @@ use crate::{
     agno_image::{AgnoImage, load::load_agno_image_from_file, scale_image},
     exif::ExifData,
     logging::{LogConfig, try_init},
-    sony_jpeg::write_webp_from_rgb8_writer,
 };
+#[cfg(feature = "webp")]
+use crate::sony_jpeg::write_webp_from_rgb8_writer;
 
 macro_rules! ok_or_null {
     ($expr:expr) => {
@@ -55,6 +56,7 @@ pub extern "C" fn load_image_from_path(path: *const u8, len: usize) -> *mut Agno
     ok_or_null!(load_agno_image_from_file(wrapped_path.as_str()))
 }
 
+#[cfg(feature = "webp")]
 #[unsafe(no_mangle)]
 pub extern "C" fn write_agno_image_to_webp(path: *const u8, len: usize, img: &mut AgnoImage) {
     let wrapped_path = CString::new(path, len);
@@ -136,6 +138,7 @@ pub struct AgnoBuffer {
     len: usize,
 }
 
+#[cfg(feature = "jpeg")]
 #[unsafe(no_mangle)]
 pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) -> AgnoBuffer {
     match img.to_jpeg(quality) {

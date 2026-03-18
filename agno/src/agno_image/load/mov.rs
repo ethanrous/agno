@@ -4,13 +4,11 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 
-use libheif_rs::{ColorSpace, DecodingOptions, HeifContext, LibHeif, RgbChroma};
-
 use crate::{
     agno_image::AgnoImage,
-    exif::{
-        ExifContext, isobmff_find_box, isobmff_find_item_extent, isobmff_find_item_id_by_type,
-    },
+    codec::hevc::decode_hevc_still,
+    codec::isobmff::{isobmff_find_box, isobmff_find_item_extent, isobmff_find_item_id_by_type},
+    exif::ExifContext,
 };
 
 /// Extract a thumbnail from a MOV/MP4 ISOBMFF container.
@@ -19,7 +17,7 @@ use crate::{
 /// 1. HEIF-style item references (iPhone MOV with top-level `meta` box)
 /// 2. Thumbnail track (`pict` or small `vide` handler in `moov/trak`)
 /// 3. JPEG scan in `moov/udta`
-/// 4. Decode first HEVC keyframe via libheif (constructs a minimal HEIF wrapper)
+/// 4. Decode first HEVC keyframe natively
 ///
 /// Returns an error if no strategy succeeds.
 pub fn load_mov_thumbnail(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
@@ -318,19 +316,19 @@ fn read_bytes_at(file: &mut File, offset: u64, len: usize) -> Result<Vec<u8>, Bo
     Ok(buf)
 }
 
+#[cfg(feature = "jpeg")]
 fn decode_jpeg_thumbnail(data: &[u8], exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
-    let decoded = image::load_from_memory(data)?.to_rgb8();
-    let (width, height) = decoded.dimensions();
-    Ok(AgnoImage::new(
-        decoded.into_raw(),
-        width as u64,
-        height as u64,
-        exif,
-    ))
+    let (rgb, width, height) = crate::codec::jpeg::decode_jpeg(data)?;
+    Ok(AgnoImage::new(rgb, width as u64, height as u64, exif))
+}
+
+#[cfg(not(feature = "jpeg"))]
+fn decode_jpeg_thumbnail(_data: &[u8], _exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
+    Err("JPEG decoding is not enabled. Please enable the 'jpeg' feature.".into())
 }
 
 /// Strategy D: Extract the first HEVC keyframe from the video track and decode
-/// it by constructing a minimal HEIF file in memory and using libheif.
+/// it using the native HEVC decoder.
 fn try_hevc_keyframe(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
     let file_end = file.seek(SeekFrom::End(0))?;
 
@@ -414,9 +412,8 @@ fn try_decode_hevc_from_trak(
 
     let sample_data = read_bytes_at(file, offset, size)?;
 
-    // Build a minimal HEIF file and decode via libheif
-    let heif_bytes = build_heif_from_hevc(&hvcc_data, &sample_data, width, height);
-    decode_heif_bytes(&heif_bytes, exif.clone()).map(Some)
+    // Decode HEVC keyframe natively
+    decode_hevc_sample(&hvcc_data, &sample_data, exif.clone()).map(Some)
 }
 
 /// Extract the raw hvcC box data (full box content) from stsd > hvc1 > hvcC.
@@ -475,218 +472,20 @@ fn read_stsd_dimensions(file: &mut File, stsd_start: u64) -> Result<(u16, u16), 
 }
 
 /// Construct a minimal valid HEIF file from an hvcC config and one HEVC sample.
-fn build_heif_from_hevc(hvcc_data: &[u8], sample_data: &[u8], width: u16, height: u16) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(sample_data.len() + 1024);
-
-    // 1. ftyp box
-    let ftyp: &[u8] = &[
-        0x00, 0x00, 0x00, 0x18, // size = 24
-        b'f', b't', b'y', b'p', // type
-        b'h', b'e', b'i', b'c', // major_brand
-        0x00, 0x00, 0x00, 0x00, // minor_version
-        b'h', b'e', b'i', b'c', // compatible_brands[0]
-        b'h', b'e', b'v', b'c', // compatible_brands[1]
-    ];
-    buf.extend_from_slice(ftyp);
-
-    // 2. meta box (FullBox)
-    // We need: hdlr, pitm, iinf(infe), iloc, iprp(ipco(ispe, hvcC), ipma)
-    let meta_content = build_meta_box(hvcc_data, sample_data.len() as u64, width, height);
-    let meta_size = (8 + 4 + meta_content.len()) as u32; // box header + fullbox header + content
-    buf.extend_from_slice(&meta_size.to_be_bytes());
-    buf.extend_from_slice(b"meta");
-    buf.extend_from_slice(&[0u8; 4]); // version=0, flags=0
-    buf.extend_from_slice(&meta_content);
-
-    // 3. mdat box
-    let mdat_size = (8 + sample_data.len()) as u32;
-    buf.extend_from_slice(&mdat_size.to_be_bytes());
-    buf.extend_from_slice(b"mdat");
-    buf.extend_from_slice(sample_data);
-
-    // Patch iloc offset: mdat content starts at this position
-    let mdat_data_offset = (buf.len() - sample_data.len()) as u32;
-    patch_iloc_offset(&mut buf, mdat_data_offset);
-
-    buf
-}
-
-fn build_meta_box(hvcc_data: &[u8], sample_len: u64, width: u16, height: u16) -> Vec<u8> {
-    let mut meta = Vec::new();
-
-    // hdlr box (handler = pict)
-    let hdlr: &[u8] = &[
-        0x00, 0x00, 0x00, 0x21, // size = 33
-        b'h', b'd', b'l', b'r',
-        0x00, 0x00, 0x00, 0x00, // version=0, flags=0
-        0x00, 0x00, 0x00, 0x00, // pre_defined
-        b'p', b'i', b'c', b't', // handler_type
-        0x00, 0x00, 0x00, 0x00, // reserved
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, // name (null terminated)
-    ];
-    meta.extend_from_slice(hdlr);
-
-    // dinf/dref box (data is self-contained in this file)
-    let dinf: &[u8] = &[
-        0x00, 0x00, 0x00, 0x24, // dinf size = 36
-        b'd', b'i', b'n', b'f',
-        0x00, 0x00, 0x00, 0x1C, // dref size = 28
-        b'd', b'r', b'e', b'f',
-        0x00, 0x00, 0x00, 0x00, // version=0, flags=0
-        0x00, 0x00, 0x00, 0x01, // entry_count = 1
-        0x00, 0x00, 0x00, 0x0C, // url box size = 12
-        b'u', b'r', b'l', b' ',
-        0x00, 0x00, 0x00, 0x01, // version=0, flags=1 (self-contained)
-    ];
-    meta.extend_from_slice(dinf);
-
-    // pitm box (primary item ID = 1)
-    let pitm: &[u8] = &[
-        0x00, 0x00, 0x00, 0x0E, // size = 14
-        b'p', b'i', b't', b'm',
-        0x00, 0x00, 0x00, 0x00, // version=0, flags=0
-        0x00, 0x01,             // item_id = 1
-    ];
-    meta.extend_from_slice(pitm);
-
-    // iinf box with one infe entry (item_id=1, type=hvc1)
-    // iinf version=0 uses 2-byte entry_count
-    let infe: &[u8] = &[
-        0x00, 0x00, 0x00, 0x15, // size = 21
-        b'i', b'n', b'f', b'e',
-        0x02, 0x00, 0x00, 0x00, // version=2, flags=0
-        0x00, 0x01,             // item_id = 1
-        0x00, 0x00,             // item_protection_index
-        b'h', b'v', b'c', b'1', // item_type
-        0x00,                   // item_name (null)
-    ];
-    let iinf_size = (8 + 4 + 2 + infe.len()) as u32; // header + fullbox + entry_count(u16) + infe
-    meta.extend_from_slice(&iinf_size.to_be_bytes());
-    meta.extend_from_slice(b"iinf");
-    meta.extend_from_slice(&[0u8; 4]); // version=0, flags=0
-    meta.extend_from_slice(&[0x00, 0x01]); // entry_count = 1 (2 bytes for version 0)
-    meta.extend_from_slice(infe);
-
-    // iloc box (item_id=1 -> offset in mdat, length = sample_len)
-    // version=1, offset_size=4, length_size=4, base_offset_size=0, index_size=0
-    let sample_len_u32 = sample_len as u32;
-    let iloc_entry = [
-        0x00, 0x01,                                         // item_id = 1
-        0x00, 0x00,                                         // construction_method = 0
-        0x00, 0x00,                                         // data_reference_index = 0
-        0x00, 0x01,                                         // extent_count = 1
-        0xDE, 0xAD, 0xBE, 0xEF,                             // extent_offset (placeholder, patched later)
-        sample_len_u32.to_be_bytes()[0],
-        sample_len_u32.to_be_bytes()[1],
-        sample_len_u32.to_be_bytes()[2],
-        sample_len_u32.to_be_bytes()[3],                     // extent_length
-    ];
-    let iloc_size = (8 + 4 + 2 + 2 + iloc_entry.len()) as u32;
-    meta.extend_from_slice(&iloc_size.to_be_bytes());
-    meta.extend_from_slice(b"iloc");
-    meta.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version=1, flags=0
-    meta.extend_from_slice(&[0x44, 0x00]);               // offset_size=4, length_size=4, base_offset_size=0, index_size=0
-    meta.extend_from_slice(&[0x00, 0x01]);               // item_count = 1
-    meta.extend_from_slice(&iloc_entry);
-
-    // iprp box containing ipco and ipma
-    let mut ipco = Vec::new();
-
-    // Property 1: hvcC (decoder configuration — must come first)
-    let hvcc_box_size = (8 + hvcc_data.len()) as u32;
-    ipco.extend_from_slice(&hvcc_box_size.to_be_bytes());
-    ipco.extend_from_slice(b"hvcC");
-    ipco.extend_from_slice(hvcc_data);
-
-    // Property 2: ispe (image spatial extents)
-    let w32 = width as u32;
-    let h32 = height as u32;
-    let ispe_content = [
-        0x00, 0x00, 0x00, 0x00, // version=0, flags=0
-        w32.to_be_bytes()[0], w32.to_be_bytes()[1], w32.to_be_bytes()[2], w32.to_be_bytes()[3],
-        h32.to_be_bytes()[0], h32.to_be_bytes()[1], h32.to_be_bytes()[2], h32.to_be_bytes()[3],
-    ];
-    let ispe_size = (8 + ispe_content.len()) as u32;
-    ipco.extend_from_slice(&ispe_size.to_be_bytes());
-    ipco.extend_from_slice(b"ispe");
-    ipco.extend_from_slice(&ispe_content);
-
-    // Property 3: pixi (pixel information)
-    let pixi: &[u8] = &[
-        0x00, 0x00, 0x00, 0x10, // size = 16
-        b'p', b'i', b'x', b'i',
-        0x00, 0x00, 0x00, 0x00, // version=0, flags=0
-        0x03,                   // num_channels = 3
-        0x08, 0x08, 0x08,       // 8 bits per channel (RGB)
-    ];
-    ipco.extend_from_slice(pixi);
-
-    let ipco_size = (8 + ipco.len()) as u32;
-
-    // ipma: associate item 1 with properties 1(hvcC), 2(ispe), 3(pixi)
-    let ipma_content: &[u8] = &[
-        0x00, 0x00, 0x00, 0x00, // version=0, flags=0
-        0x00, 0x00, 0x00, 0x01, // entry_count = 1
-        0x00, 0x01,             // item_id = 1
-        0x03,                   // association_count = 3
-        0x81,                   // essential=1, property_index=1 (hvcC)
-        0x82,                   // essential=1, property_index=2 (ispe)
-        0x03,                   // essential=0, property_index=3 (pixi)
-    ];
-    let ipma_size = (8 + ipma_content.len()) as u32;
-
-    let iprp_size = 8 + ipco_size + ipma_size;
-    meta.extend_from_slice(&iprp_size.to_be_bytes());
-    meta.extend_from_slice(b"iprp");
-    meta.extend_from_slice(&ipco_size.to_be_bytes());
-    meta.extend_from_slice(b"ipco");
-    meta.extend_from_slice(&ipco);
-    meta.extend_from_slice(&ipma_size.to_be_bytes());
-    meta.extend_from_slice(b"ipma");
-    meta.extend_from_slice(ipma_content);
-
-    meta
-}
-
-/// Find and patch the iloc extent_offset placeholder (0xDEADBEEF) with the actual mdat offset.
-fn patch_iloc_offset(buf: &mut [u8], mdat_data_offset: u32) {
-    let marker = [0xDE, 0xAD, 0xBE, 0xEF];
-    if let Some(pos) = buf.windows(4).position(|w| w == marker) {
-        buf[pos..pos + 4].copy_from_slice(&mdat_data_offset.to_be_bytes());
-    }
-}
-
-/// Decode a HEIF byte buffer via libheif and return an AgnoImage.
-fn decode_heif_bytes(heif_bytes: &[u8], exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
-    let ctx = HeifContext::read_from_bytes(heif_bytes)?;
-    let handle = ctx.primary_image_handle()?;
-
-    let mut decode_options = DecodingOptions::new()
-        .ok_or("Failed to create HEIC decoding options")?;
-    decode_options.set_ignore_transformations(true);
-
-    let lib_heif = LibHeif::new();
-    let image = lib_heif.decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), Some(decode_options))?;
-
-    let planes = image.planes();
-    let plane = planes
-        .interleaved
-        .ok_or("No interleaved RGB plane")?;
-
-    let width = handle.ispe_width() as u64;
-    let height = handle.ispe_height() as u64;
-    let stride = plane.stride;
-
-    let mut rgb = Vec::with_capacity((width * height * 3) as usize);
-    for row in 0..height as usize {
-        let start = row * stride;
-        let end = start + width as usize * 3;
-        rgb.extend_from_slice(&plane.data[start..end]);
-    }
-
-    Ok(AgnoImage::new(rgb, width, height, exif))
+/// Decode HEVC sample data using the native decoder.
+fn decode_hevc_sample(
+    hvcc_data: &[u8],
+    sample_data: &[u8],
+    exif: ExifContext,
+) -> Result<AgnoImage, Box<dyn Error>> {
+    let picture = decode_hevc_still(hvcc_data, sample_data)?;
+    let rgb = picture.to_rgb8();
+    Ok(AgnoImage::new(
+        rgb,
+        picture.width as u64,
+        picture.height as u64,
+        exif,
+    ))
 }
 
 #[cfg(test)]

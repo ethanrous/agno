@@ -1,13 +1,13 @@
 use std::error::Error;
 
-use image::{RgbImage, imageops};
 use tracing::debug;
 
 use crate::{
     agno_image::AgnoImage,
     exif::{ExifContext, ExifValue, spec::ORIENTATION},
-    sony_decoder::{DecodeError, Dimensions},
+    sony_decoder::Dimensions,
 };
+use super::ops;
 
 pub fn scale_image(
     a_img: AgnoImage,
@@ -44,28 +44,17 @@ pub fn scale_image(
 
     // CPU fallback
     debug!("Using CPU resize");
-    let rgb = RgbImage::from_raw(
-        a_img.width as u32,
-        a_img.height as u32,
-        a_img.as_slice().to_vec(),
-    )
-    .ok_or(DecodeError::CorruptData(
-        "Failed to create image from RGB data",
-    ))?;
-
-    let resized_img = image::imageops::resize(
-        &rgb,
-        new_width,
-        new_height,
-        image::imageops::FilterType::Lanczos3,
+    let resized = ops::resize_lanczos3(
+        a_img.as_slice(),
+        a_img.width as usize,
+        a_img.height as usize,
+        new_width as usize,
+        new_height as usize,
     );
-
     let exif = a_img.exif.clone();
-
     AgnoImage::free(&a_img);
-
     Ok(AgnoImage::new(
-        resized_img.into_raw(),
+        resized,
         new_width as u64,
         new_height as u64,
         exif,
@@ -79,49 +68,39 @@ pub fn auto_rotate_image(
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let orientation = match ctx.get_tag_value(ORIENTATION) {
         Some(ExifValue::Short(v)) if !v.is_empty() => v[0] as u8,
-        _ => 1, // Default to normal orientation
+        _ => 1,
     };
 
-    // Create image from raw RGB data
-    let img = RgbImage::from_raw(
-        dims.output_width as u32,
-        dims.output_height as u32,
-        rgb.to_vec(),
-    )
-    .ok_or(DecodeError::CorruptData(
-        "Failed to create image from RGB data",
-    ))?;
+    let w = dims.output_width;
+    let h = dims.output_height;
 
     let result = match orientation {
-        1 => img, // Normal - no transform
-        2 => imageops::flip_horizontal(&img),
-        3 => imageops::rotate180(&img),
-        4 => imageops::flip_vertical(&img),
+        1 => rgb.to_vec(),
+        2 => ops::flip_horizontal(rgb, w, h),
+        3 => ops::rotate180(rgb, w, h),
+        4 => ops::flip_vertical(rgb, w, h),
         5 => {
-            // Transpose: rotate 90 CCW then flip horizontal
-            let rotated = imageops::rotate270(&img);
-            imageops::flip_horizontal(&rotated)
+            let (rotated, _, _) = ops::rotate270(rgb, w, h);
+            ops::flip_horizontal(&rotated, h, w)
         }
         6 => {
-            // Rotate 90 CW
-            imageops::rotate90(&img)
+            let (rotated, _, _) = ops::rotate90(rgb, w, h);
+            rotated
         }
         7 => {
-            // Transverse: rotate 90 CW then flip horizontal
-            let rotated = imageops::rotate90(&img);
-            imageops::flip_horizontal(&rotated)
+            let (rotated, _, _) = ops::rotate90(rgb, w, h);
+            ops::flip_horizontal(&rotated, h, w)
         }
         8 => {
-            // Rotate 90 CCW (270 CW)
-            imageops::rotate270(&img)
+            let (rotated, _, _) = ops::rotate270(rgb, w, h);
+            rotated
         }
-        _ => img, // Unknown - no transform
+        _ => rgb.to_vec(),
     };
 
-    // Update dimensions if rotated 90 or 270 degrees
     if matches!(orientation, 5 | 6 | 7 | 8) {
         std::mem::swap(&mut dims.output_width, &mut dims.output_height);
     }
 
-    Ok(result.into_raw())
+    Ok(result)
 }

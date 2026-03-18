@@ -3,5 +3,5 @@
 # Note: The specific nightly version should match what rust-gpu main branch supports.
 
 [toolchain]
-channel = "nightly-2025-06-30"
-components = ["rust-src", "rustfmt", "clippy", "rustc-dev", "llvm-tools-preview"]
+channel = "nightly-2025-11-13"
+components = ["rust-src", "rustfmt", "clippy", "rustc-dev", "llvm-tools"]

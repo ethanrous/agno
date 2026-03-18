@@ -9,18 +9,14 @@ crate-type = ["lib", "staticlib"]
 
 [dependencies]
 anyhow = { version = "1.0.99", features = ["backtrace"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 libc = "0.2.175"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-pdf = "0.9.0"
 pdfium-render = { version = "0.8.35", features = ["static"], optional = true }
 rayon = "1.11.0"
 serde = { version = "^1.0.220", features = ["derive"] }
 serde_json = "1.0.143"
-tiff = "0.10.0"
-webp = "0.3.0"
-libheif-rs = "2"
+miniz_oxide = { version = "0.8", optional = true }
 
 # GPU dependencies (optional)
 agno-gpu-shared = { path = "../agno-gpu-shared", features = ["std"], optional = true }
@@ -34,7 +30,13 @@ spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu", optional = true 
 [package.metadata.cross]
 target = "x86_64-unknown-linux-musl"
 
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+
 [features]
+jpeg = []
+png = ["dep:miniz_oxide"]
+webp = []
 pdf = ["dep:pdfium-render"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:agno-gpu-shared", "dep:spirv-builder"]
-default = ["gpu"]
+default = ["gpu", "jpeg", "png", "webp"]

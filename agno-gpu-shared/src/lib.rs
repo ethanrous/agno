@@ -338,3 +338,30 @@ impl ResizeParams {
         }
     }
 }
+
+/// Parameters for the JPEG GPU DCT+quantize kernel.
+#[repr(C, align(16))]
+#[derive(Copy, Clone)]
+#[cfg_attr(feature = "std", derive(bytemuck::Pod, bytemuck::Zeroable))]
+pub struct JpegDctParams {
+    pub width: u32,       // 0: image width in pixels
+    pub height: u32,      // 4: image height in pixels
+    pub blocks_x: u32,    // 8: number of 8x8 blocks horizontally
+    pub blocks_y: u32,    // 12: number of 8x8 blocks vertically
+    pub component: u32,   // 16: 0=Y, 1=Cb, 2=Cr
+    pub _pad0: u32,       // 20
+    pub _pad1: u32,       // 24
+    pub _pad2: u32,       // 28
+    pub quant_table: [u32; 64], // 32-287: quantization table (scaled)
+}
+
+/// Parameters for the RGB color conversion kernel.
+#[repr(C, align(16))]
+#[derive(Copy, Clone)]
+#[cfg_attr(feature = "std", derive(bytemuck::Pod, bytemuck::Zeroable))]
+pub struct ColorConvertParams {
+    pub width: u32,      // 0
+    pub height: u32,     // 4
+    pub _pad0: u32,      // 8
+    pub _pad1: u32,      // 12
+}

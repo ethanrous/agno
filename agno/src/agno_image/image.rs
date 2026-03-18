@@ -102,22 +102,13 @@ impl AgnoImage {
         Ok(())
     }
 
+    #[cfg(feature = "jpeg")]
     #[allow(dead_code)]
     pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
-        let img = image::RgbImage::from_raw(
-            self.width as u32,
-            self.height as u32,
-            self.as_slice().to_vec(),
-        )
-        .unwrap();
-        let mut buf = Vec::new();
-        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
-
-        encoder.encode_image(&img)?;
-
-        Ok(buf)
+        crate::codec::jpeg::encode_jpeg(self.as_slice(), self.width as u32, self.height as u32, quality)
     }
 
+    #[cfg(feature = "jpeg")]
     #[allow(dead_code)]
     pub fn to_jpeg_file(&self, quality: u8, path: &str) -> Result<(), Box<dyn Error>> {
         let buf = self.to_jpeg(quality)?;

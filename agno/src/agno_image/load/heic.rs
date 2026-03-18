@@ -1,43 +1,65 @@
 use std::error::Error;
+use std::fs::File;
+use std::io::Seek;
 
-use libheif_rs::{ColorSpace, DecodingOptions, HeifContext, LibHeif, RgbChroma};
+use crate::agno_image::AgnoImage;
+use crate::codec::heif::parse_heif;
+use crate::codec::hevc::decode_hevc_still;
+use crate::exif::ExifContext;
 
-use crate::{agno_image::AgnoImage, exif::ExifContext};
+pub fn load_heic(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
+    file.rewind()?;
+    let heif = parse_heif(file)?;
 
-pub fn load_heic(path: &str, exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
-    let ctx = HeifContext::read_from_file(path)?;
-    let handle = ctx.primary_image_handle()?;
+    if heif.grid_cols == 1 && heif.grid_rows == 1 {
+        // Single-tile image
+        let picture = decode_hevc_still(&heif.hvcc, &heif.tiles[0])?;
+        let rgb = picture.to_rgb8();
+        Ok(AgnoImage::new(rgb, picture.width as u64, picture.height as u64, exif))
+    } else {
+        // Grid image: decode each tile and stitch
+        let out_w = heif.width as usize;
+        let out_h = heif.height as usize;
+        let cols = heif.grid_cols as usize;
+        let rows = heif.grid_rows as usize;
 
-    // Disable container transforms (irot/imir) so libheif returns raw
-    // untransformed pixels. Rotation is handled centrally by auto_rotate
-    // via the EXIF orientation tag, same as every other format.
-    let mut decode_options = DecodingOptions::new()
-        .ok_or("Failed to create HEIC decoding options")?;
-    decode_options.set_ignore_transformations(true);
+        // Decode all tiles
+        let mut tile_rgbs: Vec<(Vec<u8>, u32, u32)> = Vec::with_capacity(heif.tiles.len());
+        for tile_data in &heif.tiles {
+            let pic = decode_hevc_still(&heif.hvcc, tile_data)?;
+            let w = pic.width;
+            let h = pic.height;
+            tile_rgbs.push((pic.to_rgb8(), w, h));
+        }
 
-    let lib_heif = LibHeif::new();
-    let image = lib_heif.decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), Some(decode_options))?;
+        // Stitch tiles into output image
+        let mut rgb = vec![0u8; out_w * out_h * 3];
+        for tile_row in 0..rows {
+            for tile_col in 0..cols {
+                let idx = tile_row * cols + tile_col;
+                if idx >= tile_rgbs.len() { break; }
+                let (ref tile_rgb, tw, th) = tile_rgbs[idx];
+                let tw = tw as usize;
+                let th = th as usize;
+                let ox = tile_col * tw;
+                let oy = tile_row * th;
 
-    let planes = image.planes();
-    let plane = planes
-        .interleaved
-        .ok_or("No interleaved RGB plane in HEIC")?;
+                for ty in 0..th {
+                    let dy = oy + ty;
+                    if dy >= out_h { break; }
+                    for tx in 0..tw {
+                        let dx = ox + tx;
+                        if dx >= out_w { break; }
+                        let src = (ty * tw + tx) * 3;
+                        let dst = (dy * out_w + dx) * 3;
+                        rgb[dst..dst + 3].copy_from_slice(&tile_rgb[src..src + 3]);
+                    }
+                }
+            }
+        }
 
-    // Use ispe (coded) dimensions since container transforms are disabled.
-    // handle.width()/height() returns post-transform dims regardless.
-    let width = handle.ispe_width() as u64;
-    let height = handle.ispe_height() as u64;
-    let stride = plane.stride;
-
-    // Handle stride padding (stride may be > width*3)
-    let mut rgb = Vec::with_capacity((width * height * 3) as usize);
-    for row in 0..height as usize {
-        let start = row * stride;
-        let end = start + width as usize * 3;
-        rgb.extend_from_slice(&plane.data[start..end]);
+        Ok(AgnoImage::new(rgb, out_w as u64, out_h as u64, exif))
     }
-
-    Ok(AgnoImage::new(rgb, width, height, exif))
 }
 
 #[cfg(test)]

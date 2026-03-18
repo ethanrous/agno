@@ -1,4 +1,5 @@
 mod agno_image;
+pub mod codec;
 mod lib_interface;
 
 pub mod logging;
@@ -14,5 +15,9 @@ mod tiff;
 mod demosaic_gpu;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(all(feature = "gpu", feature = "jpeg"))]
+mod jpeg_gpu;
 #[cfg(feature = "gpu")]
 mod resize_gpu;
+#[cfg(all(feature = "gpu", feature = "webp"))]
+mod webp_gpu;
