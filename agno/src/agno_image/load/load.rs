@@ -7,7 +7,7 @@ use std::{
 use crate::{
     agno_image::{
         AgnoImage,
-        load::{load_canon_raw, load_heic, load_pdf, load_sony_raw},
+        load::{load_canon_raw, load_heic, load_mov_thumbnail, load_pdf, load_sony_raw},
     },
     exif::ExifContext,
     tiff::{detect_raw, RawMaker, TiffDetectResult},
@@ -19,6 +19,8 @@ pub enum ImageType {
     Webp,
     Pdf,
     Heic,
+    QuickTimeMov,
+    Mp4,
     SonyRaw(TiffDetectResult),
     CanonRaw(TiffDetectResult),
 }
@@ -45,8 +47,18 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
             if &buf[4..8] == b"ftyp" {
                 match &buf[8..12] {
                     b"heic" | b"heix" | b"heim" | b"heis" | b"mif1" => Ok(ImageType::Heic),
-                    _ => Err("Unsupported ISOBMFF format".into()),
+                    b"qt  " => Ok(ImageType::QuickTimeMov),
+                    // All other ISOBMFF are treated as MP4-family
+                    _ => Ok(ImageType::Mp4),
                 }
+            } else if &buf[4..8] == b"wide"
+                || &buf[4..8] == b"mdat"
+                || &buf[4..8] == b"moov"
+                || &buf[4..8] == b"free"
+                || &buf[4..8] == b"skip"
+            {
+                // Classic QuickTime MOV without ftyp box
+                Ok(ImageType::QuickTimeMov)
             } else {
                 Err("Unsupported image format".into())
             }
@@ -90,6 +102,7 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         ImageType::SonyRaw(det) => load_sony_raw(det, &mut file, exif),
         ImageType::CanonRaw(det) => load_canon_raw(det, &mut file, exif),
         ImageType::Heic => load_heic(path, exif),
+        ImageType::QuickTimeMov | ImageType::Mp4 => load_mov_thumbnail(&mut file, exif),
     }?;
 
     img.auto_rotate()?;
