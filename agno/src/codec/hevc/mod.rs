@@ -47,7 +47,7 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
     };
 
     let nal_length_size = parse_hvcc_nal_length_size(hvcc_data)?;
-    let slice_nals = extract_slice_nals(bitstream, nal_length_size)?;
+    let slice_nals = extract_slice_nals_with_type(bitstream, nal_length_size)?;
 
     if slice_nals.is_empty() {
         bail!("No slice NAL units found in bitstream");
@@ -59,11 +59,12 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
         sps.pic_height_in_luma_samples,
         bit_depth,
     );
+    pic.init_metadata(sps.min_cb_log2_size());
 
     // Decode each slice (typically just one for still images)
-    for slice_data in &slice_nals {
-        let rbsp = remove_emulation_prevention(slice_data);
-        decode_slice(&rbsp, &sps, &pps, &mut pic)
+    // Pass raw coded data — decode_slice handles EP removal per-substream for WPP
+    for (nal_type, slice_data) in &slice_nals {
+        decode_slice(slice_data, &sps, &pps, &mut pic, *nal_type)
             .context("Failed to decode slice")?;
     }
 
@@ -143,7 +144,8 @@ fn parse_hvcc_nal_length_size(hvcc: &[u8]) -> Result<usize> {
 }
 
 /// Extract slice NAL units from length-prefixed bitstream data.
-fn extract_slice_nals(data: &[u8], length_size: usize) -> Result<Vec<Vec<u8>>> {
+/// Returns `(nal_type, payload)` tuples so callers can propagate the NAL unit type.
+fn extract_slice_nals_with_type(data: &[u8], length_size: usize) -> Result<Vec<(u8, Vec<u8>)>> {
     let mut nals = Vec::new();
     let mut pos = 0;
 
@@ -167,8 +169,8 @@ fn extract_slice_nals(data: &[u8], length_size: usize) -> Result<Vec<Vec<u8>>> {
             // TRAIL_N=0, TRAIL_R=1, TSA_N=2, TSA_R=3, STSA_N=4, STSA_R=5,
             // BLA_W_LP=16, BLA_W_RADL=17, BLA_N_LP=18
             if nal_type <= 21 {
-                // Skip 2-byte NAL header
-                nals.push(data[pos + 2..pos + nal_len].to_vec());
+                // Skip 2-byte NAL header, keep nal_type for downstream use
+                nals.push((nal_type as u8, data[pos + 2..pos + nal_len].to_vec()));
             }
         }
 
@@ -223,5 +225,24 @@ mod tests {
 
         hvcc[21] = 0xFC; // lengthSizeMinusOne = 0 → length_size = 1
         assert_eq!(parse_hvcc_nal_length_size(&hvcc).unwrap(), 1);
+    }
+
+    #[test]
+    fn extract_slice_nals_returns_nal_type() {
+        let nal_type: u8 = 19; // IDR_W_RADL
+        let header_byte0 = nal_type << 1;
+        let header_byte1 = 0x01u8;
+        let payload = [0xAA, 0xBB];
+        let nal_len = 2 + payload.len();
+        let mut data = Vec::new();
+        data.extend_from_slice(&(nal_len as u32).to_be_bytes());
+        data.push(header_byte0);
+        data.push(header_byte1);
+        data.extend_from_slice(&payload);
+
+        let result = extract_slice_nals_with_type(&data, 4).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 19);
+        assert_eq!(result[0].1, payload.to_vec());
     }
 }

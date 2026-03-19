@@ -65,6 +65,8 @@ Not all codecs have both (PNG is decode-only).
 
 HEIF is a container format (parses to tile bitstreams), HEVC is the actual image decoder. They work together: `parse_heif()` → `decode_hevc_still()` per tile → stitch grid.
 
+**HEVC decoder is under active development** — see `hevc-decoder.md` for detailed status, known bugs, and debugging methodology.
+
 ## Quality Validation for Codecs
 
 Encoder tests use PSNR (Peak Signal-to-Noise Ratio) to validate quality:

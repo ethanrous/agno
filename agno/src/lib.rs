@@ -1,4 +1,4 @@
-mod agno_image;
+pub mod agno_image;
 pub mod codec;
 mod lib_interface;
 

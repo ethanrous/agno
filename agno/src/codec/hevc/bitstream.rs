@@ -74,6 +74,8 @@ pub struct BitReader<'a> {
     bit_pos: u8,
     /// Count of consecutive 0x00 bytes seen, for emulation prevention detection.
     num_zeros: u32,
+    /// When true, skip emulation prevention byte removal (data is already RBSP).
+    skip_ep: bool,
 }
 
 impl<'a> BitReader<'a> {
@@ -83,6 +85,18 @@ impl<'a> BitReader<'a> {
             byte_pos: 0,
             bit_pos: 0,
             num_zeros: 0,
+            skip_ep: false,
+        }
+    }
+
+    /// Create a BitReader for already-cleaned RBSP data (no EP removal).
+    pub fn new_rbsp(data: &'a [u8]) -> Self {
+        Self {
+            data,
+            byte_pos: 0,
+            bit_pos: 0,
+            num_zeros: 0,
+            skip_ep: true,
         }
     }
 
@@ -112,7 +126,7 @@ impl<'a> BitReader<'a> {
         let mut current_byte = self.data[self.byte_pos];
 
         // At the start of a new byte, check for emulation prevention (0x00 0x00 0x03)
-        if self.bit_pos == 0 && self.num_zeros >= 2 && current_byte == 0x03 {
+        if !self.skip_ep && self.bit_pos == 0 && self.num_zeros >= 2 && current_byte == 0x03 {
             self.byte_pos += 1;
             ensure!(
                 self.byte_pos < self.data.len(),
@@ -238,6 +252,7 @@ impl<'a> BitReader<'a> {
             byte_pos: self.byte_pos,
             bit_pos: self.bit_pos,
             num_zeros: self.num_zeros,
+            skip_ep: self.skip_ep,
         };
         snapshot.read_bit()
     }

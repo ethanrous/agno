@@ -67,6 +67,7 @@ Requires nightly Rust pinned in `rust-toolchain.toml` (for rust-gpu SPIR-V compi
 | `architecture.md` | Module map, image pipeline stages, crate relationships |
 | `coding-conventions.md` | Error handling, naming, unsafe code, feature flags |
 | `codec-guide.md` | Codec structure, how to add new format support |
+| `hevc-decoder.md` | HEVC decoder status, CABAC bugs (fixed and remaining), debugging methodology |
 | `gpu-pipeline.md` | GPU build pipeline, runtime context, fallback pattern |
 | `ffi-interface.md` | C FFI conventions, memory management, adding functions |
 | `testing.md` | Running tests, test data, quality validation |

@@ -98,8 +98,10 @@ fn clip_residual(x: i32, bit_depth: u8) -> i32 {
 /// - `bit_depth`: luma or chroma bit depth (typically 8 or 10)
 /// - `log2_size`: log2 of the transform block width (2 for 4x4, 3 for 8x8, etc.)
 pub fn dequantize(coeffs: &mut [i32], qp: i32, bit_depth: u8, log2_size: u32) {
-    let qp_per = qp / 6;
-    let qp_rem = (qp % 6) as usize;
+    // Clamp QP to valid range (0..51 + bit_depth extensions) to prevent shift overflow
+    let qp_clamped = qp.clamp(0, 51 + 6 * (bit_depth as i32 - 8));
+    let qp_per = qp_clamped / 6;
+    let qp_rem = (qp_clamped % 6) as usize;
     let scale = LEVEL_SCALE[qp_rem];
 
     // Default (flat) scaling matrix value per spec.

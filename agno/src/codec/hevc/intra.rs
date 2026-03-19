@@ -71,7 +71,10 @@ struct RefSamples {
 
 /// Read a sample from the correct plane of the picture.
 ///
-/// Returns `None` when `(sx, sy)` is outside the plane bounds.
+/// Returns `None` when `(sx, sy)` is outside the plane bounds or when the
+/// sample has not yet been decoded (H.265 8.4.4.2.2 availability check).
+/// Uses the CU depth map to determine whether a sample position has been
+/// reconstructed: positions with depth 0xFF have not been decoded yet.
 fn read_sample(pic: &Picture, comp: Component, sx: i32, sy: i32) -> Option<i16> {
     if sx < 0 || sy < 0 {
         return None;
@@ -82,12 +85,28 @@ fn read_sample(pic: &Picture, comp: Component, sx: i32, sy: i32) -> Option<i16> 
     if ux >= pw || uy >= ph {
         return None;
     }
+
+    // Check whether this position has been decoded using the CU depth map.
+    // The depth map operates in luma coordinates at MinCB granularity.
+    // Only perform this check when metadata has been initialized (during
+    // actual HEVC slice decoding). When metadata is absent (unit tests,
+    // standalone prediction), all in-bounds samples are considered available.
+    if pic.has_metadata() {
+        let (luma_x, luma_y) = match comp {
+            Component::Y => (ux, uy),
+            Component::Cb | Component::Cr => (ux * 2, uy * 2),
+        };
+        if pic.cu_depth_at(luma_x, luma_y).is_none() {
+            return None;
+        }
+    }
+
     let val = match comp {
         Component::Y => pic.y_at(ux, uy),
         Component::Cb => pic.cb_at(ux, uy),
         Component::Cr => pic.cr_at(ux, uy),
     };
-    let _ = stride; // used only for bounds; accessor handles stride internally
+    let _ = stride;
     Some(val)
 }
 
