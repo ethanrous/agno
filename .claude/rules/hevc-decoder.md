@@ -56,13 +56,20 @@ The CU structure for CTU 0 is: single 32x32 CU, planar mode, all cbf=true, qp_de
 
 ## Remaining Quality Issues
 
-CABAC parsing is verified correct for WPP row 0 (all 2656 context-coded decisions match FFmpeg). The first WPP row decodes at >40 dB PSNR per CTU, confirming that reconstruction (prediction + transform + dequant) is correct when CABAC decisions are correct. The remaining ~10 dB overall Y PSNR gap is primarily from subsequent WPP rows where CABAC context-selection bugs produce wrong decisions, leading to incorrect reconstruction.
+CABAC parsing is verified correct for both WPP row 0 (2656 decisions) and WPP row 1 (2813 decisions) -- all context-coded decisions match FFmpeg exactly. Dequantized coefficients and inverse transform residuals also match FFmpeg for verified blocks. Y PSNR is ~24.87 dB (target >30 dB). First 4 WPP rows decode at >60 dB per CTU row; later rows degrade due to CABAC context-selection bugs causing per-substream desync.
 
-Key remaining issues:
-- CABAC context bugs in rows 1+ cause cascading errors
+### Fixed reconstruction bugs:
+- **MPM third candidate formula**: Was `2 + ((a + 30) % 32)` = `2 + ((a-2) % 32)`, must be `2 + ((a - 2 + 1) & 31)` = `2 + ((a-1) & 31)` per H.265 8.4.2
+- **MPM above-neighbor CTU row boundary**: Was reading above neighbor mode across CTU row boundaries; must treat above as unavailable (DC=1) when in different CTU row per H.265 8.4.2
+- **Mode 10/26 edge filter applied to 32x32 blocks**: Was applied unconditionally; must only apply for luma blocks with size < 32 per H.265 8.4.4.2.7 / FFmpeg pred_template.c line 477
+- **Reference sample filtering (H.265 8.4.4.2.3)**: Was completely missing. Added mode-dependent [1,2,1]/4 low-pass filter for luma blocks >= 8x8 when prediction mode is far from pure horizontal (10) or vertical (26). Uses distance threshold table `[7, 1, 0]` indexed by `log2(nTbS)-3`. Strong intra smoothing (32x32 linear interpolation) now correctly checks both top and left deviation independently (was checking a combined condition). First Y divergence moved from (192, 26) to (288, 63).
+
+### Remaining issues:
+- Per-WPP-row CABAC desync causes degradation in rows 4+ (each row decodes its own substream independently). Rows 0-3 are >60 dB; rows 4+ have variable quality (row 13 worst at 16 dB). This is NOT cascading intra prediction error -- WPP resets CABAC per row.
 - sig_coeff_flag context (simplified derivation)
 - coeff_abs_level_greater1 ctxSet (needs previous sub-block state)
 - coded_sub_block_flag context (needs neighbor flags)
+- These context bugs affect renormalization timing, causing small per-decision bit differences that accumulate within each WPP substream.
 
 ## Key SPS/PPS Parameters for Test Images
 

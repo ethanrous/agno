@@ -54,12 +54,13 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
     }
 
     let bit_depth = (sps.bit_depth_luma_minus8 + 8) as u8;
+    let slice_qp = 26 + pps.init_qp_minus26;
     let mut pic = Picture::new(
         sps.pic_width_in_luma_samples,
         sps.pic_height_in_luma_samples,
         bit_depth,
     );
-    pic.init_metadata(sps.min_cb_log2_size());
+    pic.init_metadata(sps.min_cb_log2_size(), slice_qp);
 
     // Decode each slice (typically just one for still images)
     // Pass raw coded data — decode_slice handles EP removal per-substream for WPP
@@ -70,8 +71,7 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
 
     // Apply in-loop filters
     if !pps.pps_deblocking_filter_disabled_flag {
-        let slice_qp = 26 + pps.init_qp_minus26;
-        filter::deblock(&mut pic, &sps, &pps, slice_qp);
+        filter::deblock(&mut pic, &sps, &pps);
     }
 
     // SAO is applied per-CTU during slice decoding (stored in pic.sao_params)

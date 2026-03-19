@@ -132,7 +132,6 @@ fn build_reference_samples(
     by: u32,
     n_tb_s: u32,
     comp: Component,
-    strong_intra_smoothing: bool,
 ) -> RefSamples {
     let n = n_tb_s as i32;
     let total_side = 2 * n; // number of top or left reference samples
@@ -200,43 +199,6 @@ fn build_reference_samples(
     let mut top: Vec<i16> = raw_top.into_iter().map(|v| v.unwrap_or(fallback)).collect();
     let mut left: Vec<i16> = raw_left.into_iter().map(|v| v.unwrap_or(fallback)).collect();
 
-    // ------------------------------------------------------------------
-    // 3. Optional strong intra smoothing (H.265 8.4.4.2.3).
-    //
-    // Applied only when:
-    //   - n_tb_s >= 32
-    //   - strong_intra_smoothing flag is set
-    //   - All original reference samples were available (simplified here as:
-    //     we always apply when flag is set and block is large enough)
-    //   - The reference samples are "not too textured":
-    //     |p[-1][nTbS-1] + p[nTbS-1][-1] - 2*p[-1][-1]| < threshold
-    //     where threshold = 1 << (bit_depth - 5)
-    // ------------------------------------------------------------------
-    if strong_intra_smoothing && n_tb_s >= 32 {
-        let threshold = 1i32 << (pic.bit_depth.saturating_sub(5));
-        let deviation = (left[(n_tb_s - 1) as usize] as i32
-            + top[(n_tb_s - 1) as usize] as i32
-            - 2 * top_left as i32)
-            .abs();
-        if deviation < threshold {
-            let p_top_right = top[(2 * n_tb_s - 1) as usize] as i32;
-            let p_bottom_left = left[(2 * n_tb_s - 1) as usize] as i32;
-            let tl = top_left as i32;
-            let size = (2 * n_tb_s) as i32;
-
-            // Linearly interpolate the top row from top_left to top[2*nTbS-1]
-            for i in 0..size as usize {
-                let k = (i as i32) + 1;
-                top[i] = (((size - k) * tl + k * p_top_right + (size >> 1)) / size) as i16;
-            }
-            // Linearly interpolate the left column from top_left to left[2*nTbS-1]
-            for j in 0..size as usize {
-                let k = (j as i32) + 1;
-                left[j] = (((size - k) * tl + k * p_bottom_left + (size >> 1)) / size) as i16;
-            }
-        }
-    }
-
     RefSamples {
         top_left,
         top,
@@ -267,6 +229,131 @@ fn find_first_available(
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Reference sample filtering (H.265 8.4.4.2.3)
+// ---------------------------------------------------------------------------
+
+/// Threshold table for deciding whether to filter reference samples.
+/// Indexed by log2(nTbS) - 3: nTbS=8 → index 0, nTbS=16 → 1, nTbS=32 → 2.
+const INTRA_HOR_VER_DIST_THRESH: [u32; 3] = [7, 1, 0];
+
+/// Apply reference sample filtering based on prediction mode (H.265 8.4.4.2.3).
+///
+/// For luma blocks of size >= 8, if the mode is "far enough" from pure
+/// horizontal (10) or pure vertical (26), apply either:
+///   - Strong intra smoothing: linear interpolation (32x32 blocks only)
+///   - Standard smoothing: [1, 2, 1] / 4 low-pass filter
+///
+/// DC mode (1) and 4x4 blocks are never filtered.
+fn filter_reference_samples(
+    refs: &mut RefSamples,
+    n_tb_s: u32,
+    mode: u8,
+    comp: Component,
+    strong_intra_smoothing_enabled: bool,
+    bit_depth: u8,
+) {
+    // Only luma for 4:2:0 (chroma_format_idc != 3)
+    if comp != Component::Y {
+        return;
+    }
+    // DC and 4x4 blocks are never filtered
+    if mode == 1 || n_tb_s < 8 {
+        return;
+    }
+
+    let log2n = log2_floor(n_tb_s);
+    let thresh_idx = (log2n - 3) as usize;
+    if thresh_idx >= INTRA_HOR_VER_DIST_THRESH.len() {
+        return;
+    }
+
+    let dist_vert = (mode as i32 - 26).unsigned_abs();
+    let dist_horiz = (mode as i32 - 10).unsigned_abs();
+    let min_dist = dist_vert.min(dist_horiz);
+
+    if min_dist <= INTRA_HOR_VER_DIST_THRESH[thresh_idx] {
+        return;
+    }
+
+    let size2 = (2 * n_tb_s) as usize; // length of top[] and left[]
+    let tl = refs.top_left as i32;
+
+    // Try strong intra smoothing first (32x32 luma only)
+    if strong_intra_smoothing_enabled && log2n == 5 {
+        let threshold = 1i32 << (bit_depth.saturating_sub(5));
+        let top_dev = (tl + refs.top[size2 - 1] as i32
+            - 2 * refs.top[(n_tb_s - 1) as usize] as i32)
+            .abs();
+        let left_dev = (tl + refs.left[size2 - 1] as i32
+            - 2 * refs.left[(n_tb_s - 1) as usize] as i32)
+            .abs();
+
+        if top_dev < threshold && left_dev < threshold {
+            let p_top_end = refs.top[size2 - 1] as i32;
+            let p_left_end = refs.left[size2 - 1] as i32;
+
+            // Interpolate top[0..size2-2], preserve top[size2-1]
+            for i in 0..size2 - 1 {
+                let k = (i as i32) + 1;
+                refs.top[i] = (((size2 as i32 - k) * tl
+                    + k * p_top_end
+                    + (size2 as i32 >> 1))
+                    / size2 as i32) as i16;
+            }
+            // Interpolate left[0..size2-2], preserve left[size2-1]
+            for j in 0..size2 - 1 {
+                let k = (j as i32) + 1;
+                refs.left[j] = (((size2 as i32 - k) * tl
+                    + k * p_left_end
+                    + (size2 as i32 >> 1))
+                    / size2 as i32) as i16;
+            }
+            return;
+        }
+    }
+
+    // Standard [1, 2, 1] / 4 low-pass filter
+    let mut filtered_top = vec![0i16; size2];
+    let mut filtered_left = vec![0i16; size2];
+
+    // Last element is preserved
+    filtered_left[size2 - 1] = refs.left[size2 - 1];
+    filtered_top[size2 - 1] = refs.top[size2 - 1];
+
+    // Filter left: left[i] = (left[i+1] + 2*left[i] + left[i-1] + 2) >> 2
+    // where left[-1] = top_left
+    for i in (0..size2 - 1).rev() {
+        let above = if i == 0 {
+            tl
+        } else {
+            refs.left[i - 1] as i32
+        };
+        filtered_left[i] =
+            ((refs.left[i + 1] as i32 + 2 * refs.left[i] as i32 + above + 2) >> 2) as i16;
+    }
+
+    // Filtered top_left = (left[0] + 2*top_left + top[0] + 2) >> 2
+    let filtered_tl =
+        ((refs.left[0] as i32 + 2 * tl + refs.top[0] as i32 + 2) >> 2) as i16;
+
+    // Filter top: top[i] = (top[i+1] + 2*top[i] + top[i-1] + 2) >> 2
+    // where top[-1] = top_left
+    for i in (0..size2 - 1).rev() {
+        let left_of = if i == 0 {
+            tl
+        } else {
+            refs.top[i - 1] as i32
+        };
+        filtered_top[i] =
+            ((refs.top[i + 1] as i32 + 2 * refs.top[i] as i32 + left_of + 2) >> 2) as i16;
+    }
+
+    refs.top_left = filtered_tl;
+    refs.top = filtered_top;
+    refs.left = filtered_left;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,22 +471,34 @@ pub fn predict_intra(
     // Ensure chroma block size is at least 2 (minimum meaningful size)
     let bs = bs.max(2);
 
-    let refs = build_reference_samples(pic, bx, by, bs, component, strong_intra_smoothing);
+    let mut refs = build_reference_samples(pic, bx, by, bs, component);
+
+    // Reference sample filtering (H.265 8.4.4.2.3)
+    filter_reference_samples(
+        &mut refs,
+        bs,
+        mode,
+        component,
+        strong_intra_smoothing,
+        pic.bit_depth,
+    );
+
+    // Edge filter for modes 10/26: luma only, block size < 32 (H.265 8.4.4.2.7)
+    let edge_filter = component == Component::Y && bs < 32;
 
     match mode {
         0 => predict_planar(&refs, bs),
         1 => predict_dc(&refs, bs, component),
         2..=34 => {
-            // For angular modes with negative angles, the main reference array
-            // may have extra entries prepended. We need to handle the offset.
-            predict_angular_with_offset(&refs, bs, mode)
+            predict_angular_with_offset(&refs, bs, mode, edge_filter, pic.bit_depth)
         }
         _ => unreachable!(),
     }
 }
 
 /// Angular prediction that correctly handles the offset for negative-angle modes.
-fn predict_angular_with_offset(refs: &RefSamples, n_tb_s: u32, mode: u8) -> Vec<i16> {
+/// `apply_edge_filter` should be true only for luma blocks smaller than 32.
+fn predict_angular_with_offset(refs: &RefSamples, n_tb_s: u32, mode: u8, apply_edge_filter: bool, bit_depth: u8) -> Vec<i16> {
     let n = n_tb_s as usize;
     let angle_idx = (mode - 2) as usize;
     let angle = INTRA_PRED_ANGLE[angle_idx];
@@ -465,12 +564,12 @@ fn predict_angular_with_offset(refs: &RefSamples, n_tb_s: u32, mode: u8) -> Vec<
             }
         }
 
-        // Post-filter for pure vertical (mode 26)
-        if mode == 26 {
+        // Post-filter for pure vertical (mode 26) — luma only, size < 32
+        if mode == 26 && apply_edge_filter {
             for y in 0..n {
                 pred[y * n] = clip_to_bit_depth(
                     refs.top[0] as i32 + ((refs.left[y] as i32 - refs.top_left as i32) >> 1),
-                    16,
+                    bit_depth as u32,
                 );
             }
         }
@@ -533,12 +632,12 @@ fn predict_angular_with_offset(refs: &RefSamples, n_tb_s: u32, mode: u8) -> Vec<
             }
         }
 
-        // Post-filter for pure horizontal (mode 10)
-        if mode == 10 {
+        // Post-filter for pure horizontal (mode 10) — luma only, size < 32
+        if mode == 10 && apply_edge_filter {
             for x in 0..n {
                 pred[x] = clip_to_bit_depth(
                     refs.left[0] as i32 + ((refs.top[x] as i32 - refs.top_left as i32) >> 1),
-                    16,
+                    bit_depth as u32,
                 );
             }
         }
@@ -637,7 +736,7 @@ mod tests {
         fill_luma_constant(&mut pic, 100);
         pic.set_y(3, 3, 42); // block at (4,4) has this as top-left neighbor
 
-        let refs = build_reference_samples(&pic, 4, 4, 4, Component::Y, false);
+        let refs = build_reference_samples(&pic, 4, 4, 4, Component::Y);
         // top_left = p[-1][-1] = p[3][3] = 42
         assert_eq!(refs.top_left, 42);
         // top[0] = p[4][-1] = p[4][3] = 100
@@ -654,7 +753,7 @@ mod tests {
         let mut pic = make_test_pic(8, 8);
         fill_luma_constant(&mut pic, 55);
 
-        let refs = build_reference_samples(&pic, 0, 0, 4, Component::Y, false);
+        let refs = build_reference_samples(&pic, 0, 0, 4, Component::Y);
         // No neighbors available → substitution with mid-range (1 << 3 = 128 for 8-bit)
         // Actually, the fallback is 1 << (bit_depth - 1) = 128
         assert_eq!(refs.top_left, 128);
@@ -672,7 +771,7 @@ mod tests {
         let mut pic = make_test_pic(16, 16);
         fill_luma_constant(&mut pic, 80);
 
-        let refs = build_reference_samples(&pic, 0, 4, 4, Component::Y, false);
+        let refs = build_reference_samples(&pic, 0, 4, 4, Component::Y);
         // top_left = p[-1][3] → x=-1, out of bounds → substituted
         // top[i] = p[i][3] → in bounds, = 80
         // left[j] = p[-1][4+j] → x=-1, out of bounds → substituted

@@ -294,6 +294,12 @@ impl QpState {
         }
     }
 
+    /// H.265 8.6.1: Reset qPY_PREV to SliceQpY at CTU row boundaries.
+    fn reset_for_row(&mut self, slice_qp: i32) {
+        self.is_cu_qp_delta_coded = false;
+        self.current_qp = slice_qp;
+    }
+
     /// Reset for a new quantization group (called at CU boundaries aligned to QG).
     fn reset_for_qg(&mut self) {
         self.is_cu_qp_delta_coded = false;
@@ -318,9 +324,9 @@ fn decode_cu_qp_delta(cab: &mut CabacReader) -> i32 {
     // If prefix saturated (all 5 bins = 1), decode EG(k=0) suffix via bypass
     if abs_val == 5 {
         let mut k = 0u32;
-        while cab.decode_bypass() != 0 { k += 1; }
+        while k < 31 && cab.decode_bypass() != 0 { k += 1; } // cap to prevent overflow
         if k > 0 {
-            abs_val += (1u32 << k) - 1 + cab.decode_bypass_bits(k);
+            abs_val = abs_val.saturating_add((1u32 << k) - 1 + cab.decode_bypass_bits(k));
         }
     }
 
@@ -389,6 +395,29 @@ fn sub_block_scan_idx(sub_x: u32, sub_y: u32, spr: u32) -> u32 {
         }
     }
     sub_y * spr + sub_x // fallback
+}
+
+/// Remove emulation prevention bytes and return a mapping from coded byte position
+/// to RBSP byte position. `map[coded_pos]` = RBSP byte at that coded position.
+fn remove_ep_with_map(data: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let mut out = Vec::with_capacity(data.len());
+    let mut map = Vec::with_capacity(data.len() + 1);
+    let mut i = 0;
+    while i < data.len() {
+        map.push(out.len());
+        if i + 2 < data.len() && data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x03 {
+            out.push(0x00);
+            out.push(0x00);
+            map.push(out.len()); // map position i+1
+            i += 3; // skip the 03
+            // map position i+2 (the 03) will be pushed at next iteration start
+        } else {
+            out.push(data[i]);
+            i += 1;
+        }
+    }
+    map.push(out.len()); // map for position == data.len()
+    (out, map)
 }
 
 /// Decode a single slice from raw coded data (before EP removal).
@@ -557,25 +586,41 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
     let header_bits = coded.len() * 8 - br.bits_remaining();
     let cabac_start_coded = header_bits / 8;
 
-    // Split coded CABAC data into per-WPP-row substreams, then EP-remove each
+    // EP-remove the ENTIRE coded CABAC data, then split into substreams using
+    // mapped RBSP byte offsets. This avoids the per-substream EP removal bug where
+    // a 00 00 | 03 sequence spanning a substream boundary gets missed.
     let wpp_enabled = pps._entropy_coding_sync_enabled_flag;
-    let mut substreams: Vec<Vec<u8>> = Vec::new();
+    let cabac_coded = &coded[cabac_start_coded..];
+
+    // Build coded→RBSP byte offset map: for each coded byte position,
+    // track the corresponding RBSP byte position
+    let (rbsp_data, coded_to_rbsp) = remove_ep_with_map(cabac_coded);
+
+    let mut substreams: Vec<&[u8]> = Vec::new();
     if wpp_enabled && !entry_point_offsets.is_empty() {
-        let mut off = cabac_start_coded;
+        // Convert coded byte offsets to RBSP byte offsets
+        let mut coded_off = 0usize;
+        let mut rbsp_offsets = vec![0usize]; // first substream starts at RBSP byte 0
         for &ep_size in &entry_point_offsets {
-            let end = (off + ep_size).min(coded.len());
-            substreams.push(super::remove_emulation_prevention(&coded[off..end]));
-            off = end;
+            coded_off += ep_size;
+            // Map coded offset to RBSP offset
+            let rbsp_off = if coded_off < coded_to_rbsp.len() {
+                coded_to_rbsp[coded_off]
+            } else {
+                rbsp_data.len()
+            };
+            rbsp_offsets.push(rbsp_off);
         }
-        // Last substream: from last entry point to end of coded data
-        substreams.push(super::remove_emulation_prevention(&coded[off..]));
+        rbsp_offsets.push(rbsp_data.len()); // end of last substream
+
+        for i in 0..rbsp_offsets.len() - 1 {
+            substreams.push(&rbsp_data[rbsp_offsets[i]..rbsp_offsets[i + 1]]);
+        }
     } else {
-        // No WPP: single substream
-        substreams.push(super::remove_emulation_prevention(&coded[cabac_start_coded..]));
+        substreams.push(&rbsp_data);
     }
 
-    let first_rbsp = &substreams[0];
-    let mut cab = CabacReader::new(first_rbsp, 0);
+    let mut cab = CabacReader::new(substreams[0], 0);
     cab.init_contexts(slice_qp);
 
     let ctb = sps.ctb_size();
@@ -600,16 +645,20 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
             let substream_idx = cy as usize;
             if substream_idx < substreams.len() {
                 let mut new_cab = CabacReader::new(&substreams[substream_idx], 0);
-                new_cab.init_contexts(slice_qp); // allocate context slots
+                new_cab.init_contexts(slice_qp);
                 if let Some(ref saved) = wpp_saved_ctx {
-                    new_cab.restore_contexts(saved); // overwrite with saved state
+                    new_cab.restore_contexts(saved);
                 }
                 cab = new_cab;
             }
         }
 
-        // Reset QP delta state at each CTU boundary
-        qps.reset_for_qg();
+        // H.265 8.6.1: qPY_PREV = SliceQpY at start of each CTU row
+        if cx == 0 {
+            qps.reset_for_row(slice_qp);
+        } else {
+            qps.reset_for_qg();
+        }
 
         if sps.sample_adaptive_offset_enabled_flag {
             pic.sao_params[addr] = decode_sao(&mut cab, sao_luma, sao_chroma, cx, cy);
@@ -623,22 +672,17 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
             wpp_saved_ctx = Some(cab.save_contexts());
         }
 
-        // H.265: end_of_slice_segment_data (decode_terminate) checked at each CTU.
-        // For WPP: only terminate at row ends (each row is a separate substream).
-        // Mid-row termination from CABAC desync should be ignored, not cause a break.
-        if wpp_enabled {
-            let is_row_end = cx == w_ctbs - 1;
-            if is_row_end && cy < h_ctbs - 1 {
-                let _term = cab.decode_terminate(); // consume end-of-substream
-            } else if is_row_end {
-                // Last CTU of last row: terminate ends the slice
-                let _ = cab.decode_terminate();
-            }
-            // Non-row-end CTUs in WPP: skip terminate check entirely
-        } else {
-            if cab.decode_terminate() {
+
+
+        // H.265: end_of_slice_segment_data (decode_terminate) MUST be called at
+        // every CTU — it modifies CABAC range/offset even when returning false.
+        if cab.decode_terminate() {
+            if !wpp_enabled {
                 break;
             }
+            // WPP: terminate at row end is expected (end of substream).
+            // Terminate mid-row means CABAC desync — don't break, let WPP
+            // row switch at next cx==0 reset the engine from the substream.
         }
     }
     Ok(())
@@ -794,7 +838,7 @@ fn decode_cu(
     } else { false };
 
     if !is_nxn {
-        let lm = decode_intra_mode(cab, pic, x0, y0);
+        let lm = decode_intra_mode(cab, pic, x0, y0, sps.ctb_log2_size());
         pic.set_intra_mode(x0, y0, size, lm);
         let cm = decode_chroma_mode(cab, lm);
         decode_tt(cab, pic, sps, pps, x0, y0, log2, 0, lm, cm, qps, cb_qp, cr_qp, true, true);
@@ -814,7 +858,7 @@ fn decode_cu(
         // Step 2: Decode all 4 rem/mpm modes (bypass-coded)
         for i in 0..4 {
             let (px, py) = pos[i];
-            let mpm = derive_mpm(pic, px, py);
+            let mpm = derive_mpm(pic, px, py, sps.ctb_log2_size());
             lm[i] = if prev_flag[i] {
                 let idx = if cab.decode_bypass() == 0 { 0 }
                     else if cab.decode_bypass() == 0 { 1 } else { 2 };
@@ -848,19 +892,25 @@ fn decode_cu(
                           qps, cb_qp, cr_qp, cbf_cb, cbf_cr, x0, y0, i as u8);
         }
     }
+
+    // Store per-CU QP for deblocking filter (H.265 8.7.2.4)
+    pic.set_qp_y(x0, y0, size, qps.current_qp);
 }
 
 /// Derive Most Probable Modes from left/above neighbors (H.265 8.4.2).
-fn derive_mpm(pic: &Picture, x0: u32, y0: u32) -> [u8; 3] {
+/// The above neighbor is unavailable if it lies in a different CTU row.
+fn derive_mpm(pic: &Picture, x0: u32, y0: u32, ctb_log2: u32) -> [u8; 3] {
     let cand_a = if x0 > 0 { pic.intra_mode_at(x0 - 1, y0) } else { 1 };
-    let cand_b = if y0 > 0 { pic.intra_mode_at(x0, y0 - 1) } else { 1 };
+    let cand_b = if y0 > 0 && (y0 >> ctb_log2) == ((y0 - 1) >> ctb_log2) {
+        pic.intra_mode_at(x0, y0 - 1)
+    } else { 1 };
 
     if cand_a == cand_b {
         if cand_a < 2 {
             [0, 1, 26]
         } else {
             let a = cand_a as u32;
-            [cand_a, 2 + ((a + 29) % 32) as u8, 2 + ((a + 30) % 32) as u8]
+            [cand_a, 2 + ((a - 2 + 31) & 31) as u8, 2 + ((a - 2 + 1) & 31) as u8]
         }
     } else {
         let (a, b) = (cand_a, cand_b);
@@ -871,8 +921,8 @@ fn derive_mpm(pic: &Picture, x0: u32, y0: u32) -> [u8; 3] {
     }
 }
 
-fn decode_intra_mode(cab: &mut CabacReader, pic: &Picture, x0: u32, y0: u32) -> u8 {
-    let mpm = derive_mpm(pic, x0, y0);
+fn decode_intra_mode(cab: &mut CabacReader, pic: &Picture, x0: u32, y0: u32, ctb_log2: u32) -> u8 {
+    let mpm = derive_mpm(pic, x0, y0, ctb_log2);
     if cab.decode_decision(CTX_PREV_INTRA_PRED) != 0 {
         let idx = if cab.decode_bypass() == 0 { 0 }
             else if cab.decode_bypass() == 0 { 1 } else { 2 };
@@ -1079,7 +1129,6 @@ fn decode_tu(
     if cbf_y {
         let mut c = vec![0i32; (size*size) as usize];
         decode_residual(cab, &mut c, log2, 0);
-
         transform::dequantize(&mut c, qp, bd, log2);
         transform::inverse_transform(&mut c, size, size == 4, bd);
         for py in 0..size { for px in 0..size {
@@ -1411,15 +1460,14 @@ fn decode_last_suffix(cab: &mut CabacReader, pfx: u32) -> u32 {
 
 fn decode_remaining(cab: &mut CabacReader, rice: u32) -> u32 {
     let mut pfx = 0u32;
-    for _ in 0..32 { if cab.decode_bypass() == 0 { break; } pfx += 1; }
+    for _ in 0..31 { if cab.decode_bypass() == 0 { break; } pfx += 1; }
     if pfx < 3 {
         let sfx = cab.decode_bypass_bits(rice);
         (pfx << rice) + sfx
     } else {
-        // H.265 Section 9.3.3.11: suffix length = (prefix - 3) + cRiceParam
-        let sl = pfx - 3 + rice;
+        let sl = (pfx - 3 + rice).min(31); // cap to prevent overflow
         let sfx = cab.decode_bypass_bits(sl);
-        ((1u32 << sl) - (1u32 << rice) + sfx).wrapping_add(3 << rice)
+        ((1u32 << sl).wrapping_sub(1u32 << rice.min(31)) + sfx).wrapping_add(3u32.wrapping_shl(rice))
     }
 }
 

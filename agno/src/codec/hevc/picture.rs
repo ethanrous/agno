@@ -52,6 +52,8 @@ pub struct Picture {
     cu_depth: Vec<u8>,
     /// Luma intra prediction mode at MinCB granularity (0..34).
     intra_mode: Vec<u8>,
+    /// Luma QP (QpY) at MinCB granularity, used by deblocking filter.
+    qp_y: Vec<i32>,
     /// Grid width for cu_depth/intra_mode maps: ceil(pic_width / min_cb_size).
     depth_stride: u32,
     /// log2 of the minimum coding block size (needed by accessors).
@@ -83,6 +85,7 @@ impl Picture {
             sao_params: Vec::new(),
             cu_depth: Vec::new(),
             intra_mode: Vec::new(),
+            qp_y: Vec::new(),
             depth_stride: 0,
             min_cb_log2: 0,
         }
@@ -95,13 +98,15 @@ impl Picture {
     }
 
     /// Allocate per-CU metadata maps at MinCB granularity.
-    pub fn init_metadata(&mut self, min_cb_log2: u32) {
+    /// `default_qp` is the slice QP used to initialize the QP map.
+    pub fn init_metadata(&mut self, min_cb_log2: u32, default_qp: i32) {
         let min_cb = 1u32 << min_cb_log2;
         let w = (self.width + min_cb - 1) / min_cb;
         let h = (self.height + min_cb - 1) / min_cb;
         let len = (w * h) as usize;
         self.cu_depth = vec![0xFF; len];
         self.intra_mode = vec![0; len];
+        self.qp_y = vec![default_qp; len];
         self.depth_stride = w;
         self.min_cb_log2 = min_cb_log2;
     }
@@ -166,6 +171,37 @@ impl Picture {
         let gy = y / min_cb;
         let idx = (gy * self.depth_stride + gx) as usize;
         self.intra_mode.get(idx).copied().unwrap_or(0)
+    }
+
+    /// Store luma QP for all MinCB cells covered by a CU at (x0, y0) with given size.
+    pub fn set_qp_y(&mut self, x0: u32, y0: u32, cu_size: u32, qp: i32) {
+        if self.qp_y.is_empty() { return; }
+        let min_cb = 1u32 << self.min_cb_log2;
+        let gx = x0 / min_cb;
+        let gy = y0 / min_cb;
+        let cells = cu_size / min_cb;
+        for dy in 0..cells {
+            for dx in 0..cells {
+                let ix = gx + dx;
+                let iy = gy + dy;
+                if ix < self.depth_stride {
+                    let idx = (iy * self.depth_stride + ix) as usize;
+                    if idx < self.qp_y.len() {
+                        self.qp_y[idx] = qp;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read luma QP at sample position (x, y). Returns 0 if unavailable.
+    pub fn qp_y_at(&self, x: u32, y: u32) -> i32 {
+        if self.qp_y.is_empty() { return 0; }
+        let min_cb = 1u32 << self.min_cb_log2;
+        let gx = x / min_cb;
+        let gy = y / min_cb;
+        let idx = (gy * self.depth_stride + gx) as usize;
+        self.qp_y.get(idx).copied().unwrap_or(0)
     }
 
     /// Immutable slice of the full luma plane.

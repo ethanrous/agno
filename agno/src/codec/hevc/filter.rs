@@ -27,7 +27,8 @@ fn clip3(lo: i32, hi: i32, val: i32) -> i32 {
 ///
 /// Processes all 8x8 grid boundaries: vertical edges first, then horizontal.
 /// For all-intra content (HEIC), boundary strength is 2 at CU/PU boundaries.
-pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps, slice_qp: i32) {
+/// Per-CU QP is read from `pic.qp_y_at()` for each side of the edge (H.265 8.7.2.4).
+pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
     let bit_depth_y = sps.bit_depth_luma as i32;
     let bit_depth_c = sps.bit_depth_chroma as i32;
     let beta_offset = pps.pps_beta_offset_div2;
@@ -42,8 +43,10 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps, slice_qp: i32) {
         while y < height {
             let bs = 2i32; // All-intra: Bs = 2
 
-            let qp_l = slice_qp;
-            let qp_avg = (qp_l + qp_l + 1) >> 1;
+            // H.265 8.7.2.4: QP from each side of the vertical edge
+            let qp_left = pic.qp_y_at(x - 1, y);
+            let qp_right = pic.qp_y_at(x, y);
+            let qp_avg = (qp_left + qp_right + 1) >> 1;
 
             // Luma
             let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
@@ -75,7 +78,12 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps, slice_qp: i32) {
         let mut x = 0u32;
         while x < width {
             let bs = 2i32;
-            let qp_avg = (slice_qp + slice_qp + 1) >> 1;
+
+            // H.265 8.7.2.4: QP from each side of the horizontal edge
+            let qp_top = pic.qp_y_at(x, y - 1);
+            let qp_bottom = pic.qp_y_at(x, y);
+            let qp_avg = (qp_top + qp_bottom + 1) >> 1;
+
             let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
             let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
             let beta = BETA_TABLE[beta_idx as usize];
@@ -616,7 +624,13 @@ mod tests {
     }
 
     fn flat_picture(w: u32, h: u32, val: i16) -> Picture {
+        flat_picture_with_qp(w, h, val, 30)
+    }
+
+    fn flat_picture_with_qp(w: u32, h: u32, val: i16, qp: i32) -> Picture {
         let mut pic = Picture::new(w, h, 8);
+        // min_cb_log2=3 matches test_sps()
+        pic.init_metadata(3, qp);
         for s in pic.y_mut().iter_mut() {
             *s = val;
         }
@@ -654,9 +668,9 @@ mod tests {
     fn deblock_flat_picture_unchanged() {
         let sps = test_sps(16, 16);
         let pps = test_pps();
-        let mut pic = flat_picture(16, 16, 128);
+        let mut pic = flat_picture_with_qp(16, 16, 128, 30);
         let original: Vec<i16> = pic.y_mut().to_vec();
-        deblock(&mut pic, &sps, &pps, 30);
+        deblock(&mut pic, &sps, &pps);
         assert_eq!(pic.y_mut(), original.as_slice());
     }
 
@@ -664,8 +678,8 @@ mod tests {
     fn deblock_small_picture_no_panic() {
         let sps = test_sps(8, 8);
         let pps = test_pps();
-        let mut pic = flat_picture(8, 8, 100);
-        deblock(&mut pic, &sps, &pps, 25);
+        let mut pic = flat_picture_with_qp(8, 8, 100, 25);
+        deblock(&mut pic, &sps, &pps);
     }
 
     #[test]
@@ -673,6 +687,7 @@ mod tests {
         let sps = test_sps(16, 16);
         let pps = test_pps();
         let mut pic = Picture::new(16, 16, 8);
+        pic.init_metadata(3, 40);
         for y in 0..16u32 {
             for x in 0..16u32 {
                 pic.set_y(x, y, if x < 8 { 50 } else { 200 });
@@ -685,7 +700,7 @@ mod tests {
             *s = 128;
         }
 
-        deblock(&mut pic, &sps, &pps, 40);
+        deblock(&mut pic, &sps, &pps);
 
         let p0 = pic.y_at(7, 0);
         let q0 = pic.y_at(8, 0);
@@ -697,6 +712,7 @@ mod tests {
         let sps = test_sps(16, 16);
         let pps = test_pps();
         let mut pic = Picture::new(16, 16, 8);
+        pic.init_metadata(3, 40);
         for y in 0..16u32 {
             for x in 0..16u32 {
                 pic.set_y(x, y, if y < 8 { 50 } else { 200 });
@@ -709,7 +725,7 @@ mod tests {
             *s = 128;
         }
 
-        deblock(&mut pic, &sps, &pps, 40);
+        deblock(&mut pic, &sps, &pps);
 
         let p0 = pic.y_at(0, 7);
         let q0 = pic.y_at(0, 8);
@@ -721,6 +737,7 @@ mod tests {
         let sps = test_sps(16, 16);
         let pps = test_pps();
         let mut pic = Picture::new(16, 16, 8);
+        pic.init_metadata(3, 30);
         for y in 0..16u32 {
             for x in 0..16u32 {
                 pic.set_y(x, y, (120 + x) as i16);
@@ -734,7 +751,7 @@ mod tests {
         }
 
         let before_p2 = pic.y_at(5, 0);
-        deblock(&mut pic, &sps, &pps, 30);
+        deblock(&mut pic, &sps, &pps);
         let after_p2 = pic.y_at(5, 0);
         assert_ne!(before_p2, after_p2, "strong filter should modify p2");
     }
@@ -744,6 +761,7 @@ mod tests {
         let sps = test_sps_10bit(16, 16);
         let pps = test_pps();
         let mut pic = Picture::new(16, 16, 10);
+        pic.init_metadata(3, 35);
         for y in 0..16u32 {
             for x in 0..16u32 {
                 pic.set_y(x, y, if x < 8 { 200 } else { 800 });
@@ -756,7 +774,7 @@ mod tests {
             *s = 512;
         }
 
-        deblock(&mut pic, &sps, &pps, 35);
+        deblock(&mut pic, &sps, &pps);
 
         for y in 0..16u32 {
             for x in 0..16u32 {
@@ -771,6 +789,7 @@ mod tests {
         let sps = test_sps(16, 16);
         let pps = test_pps();
         let mut pic = Picture::new(16, 16, 8);
+        pic.init_metadata(3, 30);
         for s in pic.y_mut().iter_mut() {
             *s = 128;
         }
@@ -783,7 +802,7 @@ mod tests {
             }
         }
 
-        deblock(&mut pic, &sps, &pps, 30);
+        deblock(&mut pic, &sps, &pps);
 
         let cb_p0 = pic.cb_at(3, 0);
         let cb_q0 = pic.cb_at(4, 0);

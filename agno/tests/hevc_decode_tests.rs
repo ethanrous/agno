@@ -283,6 +283,18 @@ fn hevc_tile_y_plane() {
     eprintln!("Cb PSNR: {:.2} dB", cb_psnr);
     eprintln!("Cr PSNR: {:.2} dB", cr_psnr);
 
+    // Per-WPP-row Y PSNR (32 pixel rows per CTU row)
+    let ctu_rows = (h + 31) / 32;
+    for row in 0..ctu_rows {
+        let y_start = (row * 32) as usize;
+        let y_end = ((row + 1) * 32).min(h) as usize;
+        let row_len = (y_end - y_start) * w as usize;
+        let dec_row = &pic.y_plane()[y_start * w as usize .. y_start * w as usize + row_len];
+        let ref_row = &ref_y[y_start * w as usize .. y_start * w as usize + row_len];
+        let row_psnr = plane_psnr_i16(dec_row, ref_row, 8);
+        eprintln!("  WPP row {row}: Y PSNR = {row_psnr:.1} dB");
+    }
+
     if let Some((x, y, dec, exp)) = find_first_divergence(pic.y_plane(), &ref_y, w) {
         let ctu_x = x / 32;
         let ctu_y = y / 32;
