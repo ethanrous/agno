@@ -56,7 +56,19 @@ The CU structure for CTU 0 is: single 32x32 CU, planar mode, all cbf=true, qp_de
 
 ## Remaining Quality Issues
 
-CABAC parsing is verified correct for both WPP row 0 (2656 decisions) and WPP row 1 (2813 decisions) -- all context-coded decisions match FFmpeg exactly. Dequantized coefficients and inverse transform residuals also match FFmpeg for verified blocks. Y PSNR is ~24.87 dB (target >30 dB). First 4 WPP rows decode at >60 dB per CTU row; later rows degrade due to CABAC context-selection bugs causing per-substream desync.
+### Per-CTU CABAC operation count comparison (2026-03-19)
+
+Instrumented both FFmpeg and our decoder to count per-CTU decisions, bypass, and terminate operations. For sideways2.heic tile 0 (256 CTUs, 16x16 grid of 32x32 CTBs, WPP enabled):
+
+- **CTUs 0-110 (rows 0-6 complete)**: All dec/byp/trm counts match FFmpeg exactly. Zero divergence in 111 consecutive CTUs.
+- **CTU 111 (row 6, col 15)**: First divergence. FF: dec=193 byp=49. RS: dec=593 byp=223. Our decoder over-consumes by +400 decisions, +174 bypass.
+- **CTU 112 (row 7, col 0)**: Match resumes due to WPP CABAC reset at row start.
+- **Pattern**: The last CTU of each row diverges starting at row 6. By rows 11+, multiple CTUs per row diverge. The error grows progressively worse in later rows. WPP row resets at each row start bring counts back in sync for the first ~10 CTUs of each row.
+
+This proves:
+1. **The CABAC arithmetic engine is correct** -- it reads the exact same number of decision/bypass/terminate operations per CTU for the first 110 CTUs.
+2. **Context bugs cause the divergence**, not bit-count bugs. Wrong probability contexts cause different renormalization paths, which shift how many raw bits each decision consumes. This accumulates along each row and eventually causes the decoder to read the wrong number of operations for later CTUs.
+3. **The divergence is NOT from intra prediction cascading** -- it's from CABAC context state that propagates within each WPP row (not from pixel errors in reconstruction).
 
 ### Fixed reconstruction bugs:
 - **MPM third candidate formula**: Was `2 + ((a + 30) % 32)` = `2 + ((a-2) % 32)`, must be `2 + ((a - 2 + 1) & 31)` = `2 + ((a-1) & 31)` per H.265 8.4.2
@@ -64,12 +76,16 @@ CABAC parsing is verified correct for both WPP row 0 (2656 decisions) and WPP ro
 - **Mode 10/26 edge filter applied to 32x32 blocks**: Was applied unconditionally; must only apply for luma blocks with size < 32 per H.265 8.4.4.2.7 / FFmpeg pred_template.c line 477
 - **Reference sample filtering (H.265 8.4.4.2.3)**: Was completely missing. Added mode-dependent [1,2,1]/4 low-pass filter for luma blocks >= 8x8 when prediction mode is far from pure horizontal (10) or vertical (26). Uses distance threshold table `[7, 1, 0]` indexed by `log2(nTbS)-3`. Strong intra smoothing (32x32 linear interpolation) now correctly checks both top and left deviation independently (was checking a combined condition). First Y divergence moved from (192, 26) to (288, 63).
 
-### Remaining issues:
-- Per-WPP-row CABAC desync causes degradation in rows 4+ (each row decodes its own substream independently). Rows 0-3 are >60 dB; rows 4+ have variable quality (row 13 worst at 16 dB). This is NOT cascading intra prediction error -- WPP resets CABAC per row.
-- sig_coeff_flag context (simplified derivation)
-- coeff_abs_level_greater1 ctxSet (needs previous sub-block state)
-- coded_sub_block_flag context (needs neighbor flags)
-- These context bugs affect renormalization timing, causing small per-decision bit differences that accumulate within each WPP substream.
+### IDCT verified correct
+The 32-point butterfly IDCT in `transform.rs` was verified against both a direct matrix multiply (using the full 32x32 DCT matrix from H.265 Tables 8-3 through 8-6) and an FFmpeg-style simulation (int8_t transform coefficients, int16_t buffers). All three produce identical results for the specific 40-coefficient block from the CTU at pixel (288,0). The IDCT produces `residual[0][0]=0` with these coefficients; the row pass raw sum is 2034 vs the rounding threshold of 2048 (deficit of 14). Any single coefficient being off by +9 (one quantization step) would flip the result to 1. The 1-pixel error at (288,0) is therefore caused by upstream coefficient differences (CABAC context drift affecting decoded coefficient values), not by the IDCT implementation.
+
+### Remaining context bugs (fix priority order):
+1. **sig_coeff_flag context** (H.265 Table 9-39): Current `sig_ctx()` is simplified. Full derivation depends on sub-block position, coefficient position within sub-block, and neighbor significance state. This is the most frequently invoked context-coded element and likely the dominant source of accumulated drift.
+2. **coeff_abs_level_greater1 ctxSet** (H.265 9.3.3.8): Context set selection depends on sub-block index and whether previous sub-block had any coefficients > 1. Currently uses fixed offset.
+3. **coded_sub_block_flag context**: Should derive from neighbor sub-block coded flags (right/below). Currently uses fixed context per luma/chroma.
+4. **split_cu_flag context** (H.265 Table 9-5): Should use left/above CU depths from `Picture`. Currently simplified.
+
+The fact that the first 7 rows (110 CTUs) match perfectly means the accumulated context error is small for early rows. The WPP context save (at column 1) propagates slightly-wrong contexts to subsequent rows, amplifying the drift.
 
 ## Key SPS/PPS Parameters for Test Images
 

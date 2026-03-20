@@ -177,7 +177,7 @@ fn plane_psnr_i16(decoded: &[i16], reference: &[i16], bit_depth: u32) -> f64 {
 /// Find the coordinates of the first diverging sample between two planes.
 fn find_first_divergence(decoded: &[i16], reference: &[i16], stride: u32) -> Option<(u32, u32, i16, i16)> {
     for (i, (&d, &r)) in decoded.iter().zip(reference.iter()).enumerate() {
-        if (d - r).abs() > 1 {
+        if d != r {
             let x = (i as u32) % stride;
             let y = (i as u32) / stride;
             return Some((x, y, d, r));
@@ -267,11 +267,9 @@ fn hevc_tile_y_plane() {
     let heif = parse_heif(&mut file).unwrap();
     assert!(!heif.tiles.is_empty(), "No tiles found in HEIF");
 
-    eprintln!("tile[0] raw data len={}", heif.tiles[0].len());
     let pic = decode_hevc_still(&heif.hvcc, &heif.tiles[0]).unwrap();
     let w = pic.width;
     let h = pic.height;
-    eprintln!("Decoded tile: {}x{}, bit_depth={}", w, h, pic.bit_depth);
 
     let (ref_y, ref_cb, ref_cr) = load_yuv420p_reference(&ref_path, w, h);
 
@@ -283,25 +281,14 @@ fn hevc_tile_y_plane() {
     eprintln!("Cb PSNR: {:.2} dB", cb_psnr);
     eprintln!("Cr PSNR: {:.2} dB", cr_psnr);
 
-    // Per-WPP-row Y PSNR (32 pixel rows per CTU row)
-    let ctu_rows = (h + 31) / 32;
-    for row in 0..ctu_rows {
-        let y_start = (row * 32) as usize;
-        let y_end = ((row + 1) * 32).min(h) as usize;
-        let row_len = (y_end - y_start) * w as usize;
-        let dec_row = &pic.y_plane()[y_start * w as usize .. y_start * w as usize + row_len];
-        let ref_row = &ref_y[y_start * w as usize .. y_start * w as usize + row_len];
-        let row_psnr = plane_psnr_i16(dec_row, ref_row, 8);
-        eprintln!("  WPP row {row}: Y PSNR = {row_psnr:.1} dB");
-    }
-
     if let Some((x, y, dec, exp)) = find_first_divergence(pic.y_plane(), &ref_y, w) {
         let ctu_x = x / 32;
         let ctu_y = y / 32;
         let ctb_cols = (w + 31) / 32;
         let ctu_addr = ctu_y * ctb_cols + ctu_x;
         eprintln!(
-            "First Y divergence at ({x}, {y}): decoded={dec}, expected={exp}, CTU=({ctu_x},{ctu_y}) addr={ctu_addr}"
+            "First Y divergence at ({x}, {y}): decoded={dec}, expected={exp}, diff={}, CTU=({ctu_x},{ctu_y}) addr={ctu_addr}",
+            dec - exp
         );
     }
 

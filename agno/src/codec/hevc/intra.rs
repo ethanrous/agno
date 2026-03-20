@@ -407,6 +407,7 @@ fn predict_dc(refs: &RefSamples, n_tb_s: u32, comp: Component) -> Vec<i16> {
     }
     let dc_val = ((sum + n as i32) >> (log2n + 1)) as i16;
 
+
     let mut pred = vec![dc_val; n * n];
 
     // DC boundary filtering applies to luma only (H.265 8.4.4.2.5 note)

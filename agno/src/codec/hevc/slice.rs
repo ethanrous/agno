@@ -672,7 +672,11 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
             wpp_saved_ctx = Some(cab.save_contexts());
         }
 
-
+        // H.265 8.7: In-loop deblocking applied per-CTU so that subsequent CTUs
+        // use deblocked reference samples. Deblock the CURRENT CTU's edges.
+        if !pps.pps_deblocking_filter_disabled_flag {
+            super::filter::deblock_ctu(pic, sps, pps, x0, y0, ctb);
+        }
 
         // H.265: end_of_slice_segment_data (decode_terminate) MUST be called at
         // every CTU — it modifies CABAC range/offset even when returning false.
@@ -889,7 +893,8 @@ fn decode_cu(
             let (px, py) = pos[i];
             if px >= sps.pic_width_in_luma_samples || py >= sps.pic_height_in_luma_samples { continue; }
             decode_tu_nxn(cab, pic, sps, px, py, log2 - 1, lm[i], cm[i],
-                          qps, cb_qp, cr_qp, cbf_cb, cbf_cr, x0, y0, i as u8);
+                          qps, cb_qp, cr_qp, cbf_cb, cbf_cr, x0, y0, i as u8,
+                          pps._sign_data_hiding_enabled_flag);
         }
     }
 
@@ -953,7 +958,6 @@ fn decode_tt(
     parent_cbf_cb: bool, parent_cbf_cr: bool,
 ) {
     if x0 >= sps.pic_width_in_luma_samples || y0 >= sps.pic_height_in_luma_samples { return; }
-
     // H.265 Section 7.3.8.7: cbf_cb/cbf_cr are read at the TOP of transform_tree,
     // BEFORE the split decision, when log2TrafoSize > 2 and parent cbf allows it.
     let cbf_cb = if log2 > 2 && (depth == 0 || parent_cbf_cb) {
@@ -976,7 +980,8 @@ fn decode_tt(
         decode_tt(cab, pic, sps, pps, x0, y0+h, l, d, lm, cm, qps, cb_qp, cr_qp, cbf_cb, cbf_cr);
         decode_tt(cab, pic, sps, pps, x0+h, y0+h, l, d, lm, cm, qps, cb_qp, cr_qp, cbf_cb, cbf_cr);
     } else {
-        decode_tu(cab, pic, sps, x0, y0, log2, depth, lm, cm, qps, cb_qp, cr_qp, cbf_cb, cbf_cr);
+        decode_tu(cab, pic, sps, x0, y0, log2, depth, lm, cm, qps, cb_qp, cr_qp, cbf_cb, cbf_cr,
+                  pps._sign_data_hiding_enabled_flag);
     }
 }
 
@@ -989,6 +994,7 @@ fn decode_tu_nxn(
     lm: u8, cm: u8, qps: &mut QpState, cb_qp: i32, cr_qp: i32,
     cbf_cb: bool, cbf_cr: bool,
     x_base: u32, y_base: u32, blk_idx: u8,
+    sign_data_hiding: bool,
 ) {
     let size = 1u32 << log2;
     let bd = pic.bit_depth;
@@ -1013,7 +1019,7 @@ fn decode_tu_nxn(
     let pred = predict_intra(pic, x0, y0, size, lm, Component::Y, sps.strong_intra_smoothing_enabled_flag);
     if cbf_y {
         let mut c = vec![0i32; (size * size) as usize];
-        decode_residual(cab, &mut c, log2, 0);
+        decode_residual(cab, &mut c, log2, 0, sign_data_hiding);
         transform::dequantize(&mut c, qp, bd, log2);
         transform::inverse_transform(&mut c, size, size == 4, bd);
         for py in 0..size { for px in 0..size {
@@ -1050,7 +1056,7 @@ fn decode_tu_nxn(
     let pred_cb = predict_intra(pic, x_base, y_base, cu_size, cm, Component::Cb, false);
     if cbf_cb {
         let mut c = vec![0i32; (cs * cs) as usize];
-        decode_residual(cab, &mut c, cl, 1);
+        decode_residual(cab, &mut c, cl, 1, sign_data_hiding);
         transform::dequantize(&mut c, cb_qp_actual, bd, cl);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
@@ -1072,7 +1078,7 @@ fn decode_tu_nxn(
     let pred_cr = predict_intra(pic, x_base, y_base, cu_size, cm, Component::Cr, false);
     if cbf_cr {
         let mut c = vec![0i32; (cs * cs) as usize];
-        decode_residual(cab, &mut c, cl, 2);
+        decode_residual(cab, &mut c, cl, 2, sign_data_hiding);
         transform::dequantize(&mut c, cr_qp_actual, bd, cl);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
@@ -1098,6 +1104,7 @@ fn decode_tu(
     x0: u32, y0: u32, log2: u32, depth: u32,
     lm: u8, cm: u8, qps: &mut QpState, cb_qp: i32, cr_qp: i32,
     inherited_cbf_cb: bool, inherited_cbf_cr: bool,
+    sign_data_hiding: bool,
 ) {
     let size = 1u32 << log2;
     let bd = pic.bit_depth;
@@ -1128,7 +1135,7 @@ fn decode_tu(
     let pred = predict_intra(pic, x0, y0, size, lm, Component::Y, sps.strong_intra_smoothing_enabled_flag);
     if cbf_y {
         let mut c = vec![0i32; (size*size) as usize];
-        decode_residual(cab, &mut c, log2, 0);
+        decode_residual(cab, &mut c, log2, 0, sign_data_hiding);
         transform::dequantize(&mut c, qp, bd, log2);
         transform::inverse_transform(&mut c, size, size == 4, bd);
         for py in 0..size { for px in 0..size {
@@ -1159,7 +1166,7 @@ fn decode_tu(
     let pred_cb = predict_intra(pic, x0, y0, size, cm, Component::Cb, false);
     if cbf_cb {
         let mut c = vec![0i32; (cs*cs) as usize];
-        decode_residual(cab, &mut c, cl, 1);
+        decode_residual(cab, &mut c, cl, 1, sign_data_hiding);
         transform::dequantize(&mut c, cb_qp_actual, bd, cl);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
@@ -1182,7 +1189,7 @@ fn decode_tu(
     let pred_cr = predict_intra(pic, x0, y0, size, cm, Component::Cr, false);
     if cbf_cr {
         let mut c = vec![0i32; (cs*cs) as usize];
-        decode_residual(cab, &mut c, cl, 2);
+        decode_residual(cab, &mut c, cl, 2, sign_data_hiding);
         transform::dequantize(&mut c, cr_qp_actual, bd, cl);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
@@ -1206,7 +1213,7 @@ fn decode_tu(
 // Residual coding
 // ---------------------------------------------------------------------------
 
-fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: u8) {
+fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: u8, sign_data_hiding: bool) {
     // FFmpeg sig_coeff_flag context index maps (Table 9-39 derivation)
     #[rustfmt::skip]
     const CTX_IDX_MAP: [[u8; 16]; 5] = [
@@ -1404,11 +1411,28 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
             if cab.decode_decision(CTX_GT2 + ctx_set + gt2_chroma) != 0 { abs[p] = 3; }
         }
 
+        // Sign data hiding (H.265 7.4.9.11): determine if sign of first
+        // non-zero coefficient is inferred from parity rather than decoded.
+        let mut first_nz_pos: i32 = 16;
+        let mut last_nz_pos: i32 = -1;
+        for sp in 0..16 {
+            if sig[sp] {
+                if first_nz_pos == 16 { first_nz_pos = sp as i32; }
+                last_nz_pos = sp as i32;
+            }
+        }
+        let sign_hidden = sign_data_hiding && (last_nz_pos - first_nz_pos >= 4);
+
         let mut signs = [false; 16];
         for sp in (0..16).rev() {
-            if sig[sp] { signs[sp] = cab.decode_bypass() != 0; }
+            if !sig[sp] { continue; }
+            // Skip sign decode for first_nz_pos when sign is hidden
+            if sign_hidden && sp == first_nz_pos as usize { continue; }
+            signs[sp] = cab.decode_bypass() != 0;
         }
+
         let mut c_rice_param = 0u32;
+        let mut sum_abs = 0i32;
         for sp in (0..16).rev() {
             if !sig[sp] { continue; }
             let need_remaining = if had_gt1[sp] {
@@ -1427,7 +1451,15 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
             if abs_level > (3 << c_rice_param) && c_rice_param < 4 {
                 c_rice_param += 1;
             }
-            let c = if signs[sp] { -abs[sp] } else { abs[sp] };
+            sum_abs += abs[sp];
+            // Sign: inferred from parity for first_nz_pos, decoded for others
+            let c = if sign_hidden && sp == first_nz_pos as usize {
+                if (sum_abs & 1) != 0 { -abs[sp] } else { abs[sp] }
+            } else if signs[sp] {
+                -abs[sp]
+            } else {
+                abs[sp]
+            };
             let px = DIAG4[sp][0] as u32 + sx;
             let py = DIAG4[sp][1] as u32 + sy;
             if px < size && py < size {

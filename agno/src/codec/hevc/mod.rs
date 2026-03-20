@@ -32,8 +32,7 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
     let sps = if let Some(sps_data) = sps_nals.first() {
         let rbsp = remove_emulation_prevention(sps_data);
         let mut r = BitReader::new(&rbsp);
-        Sps::parse(&mut r, vps.max_sub_layers_minus1)
-            .context("Failed to parse SPS")?
+        Sps::parse(&mut r, vps.max_sub_layers_minus1).context("Failed to parse SPS")?
     } else {
         bail!("No SPS found in hvcC");
     };
@@ -48,33 +47,20 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
 
     let nal_length_size = parse_hvcc_nal_length_size(hvcc_data)?;
     let slice_nals = extract_slice_nals_with_type(bitstream, nal_length_size)?;
-
-    if slice_nals.is_empty() {
-        bail!("No slice NAL units found in bitstream");
-    }
+    if slice_nals.is_empty() { bail!("No slice NAL units found in bitstream"); }
 
     let bit_depth = (sps.bit_depth_luma_minus8 + 8) as u8;
     let slice_qp = 26 + pps.init_qp_minus26;
-    let mut pic = Picture::new(
-        sps.pic_width_in_luma_samples,
-        sps.pic_height_in_luma_samples,
-        bit_depth,
-    );
+    let mut pic = Picture::new(sps.pic_width_in_luma_samples, sps.pic_height_in_luma_samples, bit_depth);
     pic.init_metadata(sps.min_cb_log2_size(), slice_qp);
 
-    // Decode each slice (typically just one for still images)
-    // Pass raw coded data — decode_slice handles EP removal per-substream for WPP
     for (nal_type, slice_data) in &slice_nals {
         decode_slice(slice_data, &sps, &pps, &mut pic, *nal_type)
             .context("Failed to decode slice")?;
     }
 
-    // Apply in-loop filters
-    if !pps.pps_deblocking_filter_disabled_flag {
-        filter::deblock(&mut pic, &sps, &pps);
-    }
-
-    // SAO is applied per-CTU during slice decoding (stored in pic.sao_params)
+    // Deblocking is now applied per-CTU-row inside decode_slice (in-loop).
+    // Only SAO is applied post-slice here.
     if sps.sample_adaptive_offset_enabled_flag {
         filter::apply_sao(&mut pic, &sps);
     }

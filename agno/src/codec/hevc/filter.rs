@@ -25,6 +25,132 @@ fn clip3(lo: i32, hi: i32, val: i32) -> i32 {
 
 /// Apply the HEVC deblocking filter to the picture.
 ///
+/// Deblock edges within and around a single CTU at (ctu_x, ctu_y).
+/// Called after each CTU is decoded so subsequent CTUs use deblocked references.
+pub fn deblock_ctu(pic: &mut Picture, sps: &Sps, pps: &Pps, ctu_x: u32, ctu_y: u32, ctb_size: u32) {
+    let bit_depth_y = sps.bit_depth_luma as i32;
+    let bit_depth_c = sps.bit_depth_chroma as i32;
+    let beta_offset = pps.pps_beta_offset_div2;
+    let tc_offset = pps.pps_tc_offset_div2;
+    let width = pic.width;
+    let height = pic.height;
+
+    let x_start = ctu_x;
+    let x_end = (ctu_x + ctb_size).min(width);
+    let y_start = ctu_y;
+    let y_end = (ctu_y + ctb_size).min(height);
+
+    // Vertical edges within this CTU (and the left boundary shared with previous CTU)
+    let vx_start = if ctu_x == 0 { 8 } else { ctu_x };
+    let mut x = vx_start;
+    while x < x_end && x % 8 == 0 || x == vx_start {
+        if x % 8 != 0 { x = ((x / 8) + 1) * 8; continue; }
+        let mut y = y_start;
+        while y < y_end {
+            let bs = 2i32;
+            let qp_left = pic.qp_y_at(x - 1, y);
+            let qp_right = pic.qp_y_at(x, y);
+            let qp_avg = (qp_left + qp_right + 1) >> 1;
+            let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
+            let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
+            let beta = BETA_TABLE[beta_idx as usize];
+            let tc = TC_TABLE[tc_idx as usize];
+            if tc > 0 { deblock_luma_edge_v(pic, x, y, beta, tc, bit_depth_y); }
+            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (height + 1) / 2 {
+                let tc_c = TC_TABLE[clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1)) as usize];
+                if tc_c > 0 { deblock_chroma_edge_v(pic, x, y, tc_c, bit_depth_c); }
+            }
+            y += 4;
+        }
+        x += 8;
+    }
+
+    // Horizontal edges within this CTU (and the top boundary shared with previous row)
+    let hy_start = if ctu_y == 0 { 8 } else { ctu_y };
+    let mut y = hy_start;
+    while y < y_end {
+        if y % 8 != 0 { y = ((y / 8) + 1) * 8; continue; }
+        let mut x = x_start;
+        while x < x_end {
+            let bs = 2i32;
+            let qp_top = pic.qp_y_at(x, y.saturating_sub(1));
+            let qp_bot = pic.qp_y_at(x, y);
+            let qp_avg = (qp_top + qp_bot + 1) >> 1;
+            let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
+            let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
+            let beta = BETA_TABLE[beta_idx as usize];
+            let tc = TC_TABLE[tc_idx as usize];
+            if tc > 0 { deblock_luma_edge_h(pic, x, y, beta, tc, bit_depth_y); }
+            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (height + 1) / 2 {
+                let tc_c = TC_TABLE[clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1)) as usize];
+                if tc_c > 0 { deblock_chroma_edge_h(pic, x, y, tc_c, bit_depth_c); }
+            }
+            x += 4;
+        }
+        y += 8;
+    }
+}
+
+/// Deblock a single CTU row (y_start..y_end) so that subsequent rows'
+/// intra prediction uses deblocked reference samples (in-loop filtering).
+pub fn deblock_ctu_row(pic: &mut Picture, sps: &Sps, pps: &Pps, y_start: u32, y_end: u32) {
+    let bit_depth_y = sps.bit_depth_luma as i32;
+    let bit_depth_c = sps.bit_depth_chroma as i32;
+    let beta_offset = pps.pps_beta_offset_div2;
+    let tc_offset = pps.pps_tc_offset_div2;
+    let width = pic.width;
+
+    // Vertical edges within this row
+    let mut x = 8u32;
+    while x < width {
+        let mut y = y_start;
+        while y < y_end {
+            let bs = 2i32;
+            let qp_left = pic.qp_y_at(x - 1, y);
+            let qp_right = pic.qp_y_at(x, y);
+            let qp_avg = (qp_left + qp_right + 1) >> 1;
+
+            let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
+            let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
+            let beta = BETA_TABLE[beta_idx as usize];
+            let tc = TC_TABLE[tc_idx as usize];
+            if tc > 0 { deblock_luma_edge_v(pic, x, y, beta, tc, bit_depth_y); }
+
+            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (pic.height + 1) / 2 {
+                let tc_c = TC_TABLE[clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1)) as usize];
+                if tc_c > 0 { deblock_chroma_edge_v(pic, x, y, tc_c, bit_depth_c); }
+            }
+            y += 4;
+        }
+        x += 8;
+    }
+
+    // Horizontal edges within this row (skip y_start if it's row 0)
+    let mut y = if y_start == 0 { 8 } else { y_start };
+    while y < y_end {
+        let mut x = 0u32;
+        while x < width {
+            let bs = 2i32;
+            let qp_top = pic.qp_y_at(x, y.saturating_sub(1));
+            let qp_bot = pic.qp_y_at(x, y);
+            let qp_avg = (qp_top + qp_bot + 1) >> 1;
+
+            let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
+            let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
+            let beta = BETA_TABLE[beta_idx as usize];
+            let tc = TC_TABLE[tc_idx as usize];
+            if tc > 0 { deblock_luma_edge_h(pic, x, y, beta, tc, bit_depth_y); }
+
+            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (pic.height + 1) / 2 {
+                let tc_c = TC_TABLE[clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1)) as usize];
+                if tc_c > 0 { deblock_chroma_edge_h(pic, x, y, tc_c, bit_depth_c); }
+            }
+            x += 4;
+        }
+        y += 8;
+    }
+}
+
 /// Processes all 8x8 grid boundaries: vertical edges first, then horizontal.
 /// For all-intra content (HEIC), boundary strength is 2 at CU/PU boundaries.
 /// Per-CU QP is read from `pic.qp_y_at()` for each side of the edge (H.265 8.7.2.4).
