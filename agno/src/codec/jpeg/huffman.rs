@@ -135,6 +135,13 @@ impl<'a> JpegBitReader<'a> {
         self.bits_left = 0;
     }
 
+    /// Return the current byte position within the data slice.
+    /// This is the number of bytes consumed from entropy-coded data,
+    /// used by the progressive multi-scan loop to find the next marker.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
     /// Advance past the next restart marker in the stream.
     /// Returns the restart marker index (0-7), or an error if none found.
     pub fn skip_to_restart(&mut self) -> Result<u8, Box<dyn Error>> {

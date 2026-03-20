@@ -440,6 +440,37 @@ fn webp_cpu_roundtrip_psnr() {
     );
 }
 
+// --- Progressive JPEG Tests ---
+
+#[test]
+fn jpeg_decode_progressive() {
+    // Progressive JPEG (SOF2, 960x540, 12 scans)
+    let data = std::fs::read("../tests/data/progressive.jpeg").unwrap();
+    let (rgb, w, h) = jpeg::decode_jpeg(&data).unwrap();
+
+    assert_eq!(w, 960, "expected width 960");
+    assert_eq!(h, 540, "expected height 540");
+    assert_eq!(rgb.len(), (960 * 540 * 3) as usize);
+
+    // Compare with image crate as reference decoder
+    use image::ImageReader;
+    use std::io::Cursor;
+    let ref_img = ImageReader::new(Cursor::new(&data))
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .unwrap();
+    let ref_rgb = ref_img.to_rgb8().into_raw();
+
+    let psnr = compute_psnr(&rgb, &ref_rgb, (w * h) as usize);
+    eprintln!("Progressive JPEG PSNR vs reference: {:.1} dB", psnr);
+    assert!(
+        psnr > 40.0,
+        "Progressive JPEG PSNR vs reference {:.1}dB is too low",
+        psnr,
+    );
+}
+
 // --- Helpers ---
 
 fn contains_marker(data: &[u8], marker_byte: u8) -> bool {
