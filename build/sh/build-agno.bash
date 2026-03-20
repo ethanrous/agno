@@ -35,12 +35,12 @@ rustup target add "${TARGET_TRIPLE}" 2>/dev/null || true
 # 2) Build the static lib
 # ---------------------------------------------------------------------------
 rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
-# Select HEIC backend: "native" (default) or "libheif" (C library fallback)
-HEIC_BACKEND="${HEIC_BACKEND:-native}"
+# Select HEIC backend: "libheif" (default, production) or "native" (experimental)
+HEIC_BACKEND="${HEIC_BACKEND:-libheif}"
 EXTRA_FEATURES=""
-if [ "$HEIC_BACKEND" = "libheif" ]; then
-    EXTRA_FEATURES=",heic-c"
-    echo "Using libheif C library for HEIC decoding"
+if [ "$HEIC_BACKEND" = "native" ]; then
+    EXTRA_FEATURES=",heic-experimental-decoder"
+    echo "Using experimental native HEVC decoder for HEIC"
 fi
 
 cargo build --release --features "gpu${EXTRA_FEATURES}" --target "${TARGET_TRIPLE}"

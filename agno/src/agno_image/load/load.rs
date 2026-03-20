@@ -119,11 +119,11 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         ImageType::SonyRaw(det) => load_sony_raw(det, &mut file, exif),
         ImageType::CanonRaw(det) => load_canon_raw(det, &mut file, exif),
         ImageType::Heic => {
-            #[cfg(feature = "heic-c")]
+            #[cfg(all(feature = "heic-c", not(feature = "heic-experimental-decoder")))]
             {
                 super::heic_libheif::load_heic_libheif(&mut file, exif)
             }
-            #[cfg(not(feature = "heic-c"))]
+            #[cfg(any(not(feature = "heic-c"), feature = "heic-experimental-decoder"))]
             {
                 load_heic(&mut file, exif)
             }
