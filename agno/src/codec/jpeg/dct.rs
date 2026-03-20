@@ -138,15 +138,19 @@ fn fdct_1d_col(block: &mut [i32; 64], col: usize) {
 
 /// Quantize DCT coefficients in-place using the given table.
 /// Uses rounding division toward zero.
+/// AC coefficients are clamped to [-1023, 1023] (baseline JPEG category 10 limit).
 pub fn quantize_block(coeffs: &mut [i32; 64], qtable: &[u16; 64]) {
     for i in 0..64 {
         let q = qtable[i] as i32;
         let half = q / 2;
-        coeffs[i] = if coeffs[i] >= 0 {
+        let val = if coeffs[i] >= 0 {
             (coeffs[i] + half) / q
         } else {
             (coeffs[i] - half) / q
         };
+        // DC (index 0) can use categories 0-11, but AC coefficients are limited
+        // to category 10 (max |value| = 1023) by the standard JPEG Huffman tables.
+        coeffs[i] = if i == 0 { val } else { val.clamp(-1023, 1023) };
     }
 }
 

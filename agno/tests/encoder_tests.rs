@@ -232,6 +232,85 @@ fn jpeg_decode_camera_photo() {
     );
 }
 
+/// Quality 100 with high-contrast edges must produce a valid JPEG decodable by
+/// standard decoders. The AAN DCT can produce AC coefficients >= 1024 (category 11)
+/// which exceed the baseline JPEG Huffman table limit (category 10, max 1023).
+/// Encoder must clamp to avoid corrupting the bitstream.
+#[test]
+fn jpeg_quality_100_high_contrast_standard_decoder() {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    // Create a 64x64 image with sharp edges: 8px-wide B&W stripes + color gradient.
+    // This exercises high-frequency DCT content that can overflow at quality 100,
+    // while being more representative than single-pixel alternation.
+    let (width, height) = (64usize, 64usize);
+    let mut rgb = vec![0u8; width * height * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) * 3;
+            let stripe = if (x / 4) % 2 == 0 { 255u8 } else { 0u8 };
+            rgb[idx] = stripe;
+            rgb[idx + 1] = (y * 255 / (height - 1)) as u8;
+            rgb[idx + 2] = (x * 255 / (width - 1)) as u8;
+        }
+    }
+
+    let encoded = jpeg::encode_jpeg(&rgb, width as u32, height as u32, 100).unwrap();
+
+    // Decode with the `image` crate (standard decoder) — must not crash or produce garbage
+    let decoded_img = ImageReader::new(Cursor::new(&encoded))
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .expect("standard JPEG decoder must be able to decode quality 100 output");
+    let decoded_rgb = decoded_img.to_rgb8().into_raw();
+
+    assert_eq!(decoded_rgb.len(), width * height * 3);
+
+    let psnr = compute_psnr(&rgb, &decoded_rgb, width * height);
+    assert!(
+        psnr > 20.0,
+        "PSNR {psnr:.1}dB is too low for quality 100 — bitstream likely corrupt"
+    );
+}
+
+/// Our encoder's output must be decodable by standard JPEG decoders with correct
+/// spatial frequency placement (zigzag ordering).
+#[test]
+fn jpeg_zigzag_correctness_standard_decoder() {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    // Diagonal gradient — exercises multiple spatial frequencies
+    let (width, height) = (64usize, 64usize);
+    let mut rgb = vec![0u8; width * height * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) * 3;
+            let val = ((x + y) * 255 / (width + height - 2)) as u8;
+            rgb[idx] = val;
+            rgb[idx + 1] = val;
+            rgb[idx + 2] = val;
+        }
+    }
+
+    let encoded = jpeg::encode_jpeg(&rgb, width as u32, height as u32, 85).unwrap();
+
+    let decoded_img = ImageReader::new(Cursor::new(&encoded))
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .unwrap();
+    let decoded_rgb = decoded_img.to_rgb8().into_raw();
+
+    let psnr = compute_psnr(&rgb, &decoded_rgb, width * height);
+    assert!(
+        psnr > 25.0,
+        "PSNR {psnr:.1}dB is too low — zigzag ordering may be wrong"
+    );
+}
+
 // --- Helpers ---
 
 fn contains_marker(data: &[u8], marker_byte: u8) -> bool {

@@ -7,7 +7,7 @@ use std::error::Error;
 
 use super::dct::{dequantize_block, idct8x8};
 use super::huffman::{build_huffman_decode_table, HuffmanDecodeTable, JpegBitReader};
-use super::tables::DEZIGZAG;
+use super::tables::ZIGZAG;
 
 // ---- JPEG marker constants ----
 
@@ -183,10 +183,11 @@ fn parse_dqt(data: &[u8], pos: usize, ctx: &mut JpegContext) -> Result<usize, Bo
             p += 128;
         }
 
-        // Convert from zigzag order to natural order
+        // Convert from zigzag scan order to natural (row-major) order.
+        // ZIGZAG[scan_pos] = natural_idx
         let mut qt_natural = [0u16; 64];
-        for zigzag_pos in 0..64 {
-            qt_natural[DEZIGZAG[zigzag_pos]] = qt_zigzag[zigzag_pos];
+        for scan_pos in 0..64 {
+            qt_natural[ZIGZAG[scan_pos]] = qt_zigzag[scan_pos];
         }
         ctx.quant_tables[table_id] = qt_natural;
     }
@@ -457,10 +458,11 @@ fn decode_scan(
                             k += 1;
                         }
 
-                        // Dezigzag: reorder from zigzag to natural 8x8 order
+                        // Dezigzag: reorder from zigzag scan order to natural 8x8 order.
+                        // ZIGZAG[scan_pos] = natural_idx
                         let mut natural = [0i32; 64];
-                        for zz in 0..64 {
-                            natural[DEZIGZAG[zz]] = coeffs[zz];
+                        for scan_pos in 0..64 {
+                            natural[ZIGZAG[scan_pos]] = coeffs[scan_pos];
                         }
 
                         // Dequantize
@@ -762,7 +764,7 @@ mod tests {
 
     #[test]
     fn dezigzag_is_inverse_of_zigzag() {
-        use super::super::tables::ZIGZAG;
+        use super::super::tables::{DEZIGZAG, ZIGZAG};
         for natural in 0..64 {
             let zigzag_pos = ZIGZAG[natural];
             assert_eq!(

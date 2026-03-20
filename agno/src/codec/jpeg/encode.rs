@@ -226,11 +226,12 @@ pub fn encode_jpeg_from_ycbcr(
     Ok(out)
 }
 
-/// Reorder DCT coefficients from natural (row-major) order to zigzag order.
+/// Reorder DCT coefficients from natural (row-major) order to zigzag scan order.
+/// ZIGZAG[scan_pos] = natural_idx, so out[scan_pos] = block[natural_idx].
 fn zigzag_reorder(block: &[i32; 64]) -> [i16; 64] {
     let mut out = [0i16; 64];
-    for (natural_idx, &zigzag_pos) in ZIGZAG.iter().enumerate() {
-        out[zigzag_pos] = block[natural_idx] as i16;
+    for (scan_pos, &natural_idx) in ZIGZAG.iter().enumerate() {
+        out[scan_pos] = block[natural_idx] as i16;
     }
     out
 }
@@ -256,10 +257,10 @@ fn write_dqt(out: &mut Vec<u8>, table_id: u8, qtable: &[u16; 64]) -> Result<(), 
     out.write_all(&length.to_be_bytes())?;
     out.write_all(&[table_id])?; // 0 = 8-bit precision, low nibble = table id
 
-    // Write quantization values in zigzag order
+    // Write quantization values in zigzag scan order
     let mut zigzag_qt = [0u8; 64];
-    for (natural_idx, &zigzag_pos) in ZIGZAG.iter().enumerate() {
-        zigzag_qt[zigzag_pos] = qtable[natural_idx] as u8;
+    for (scan_pos, &natural_idx) in ZIGZAG.iter().enumerate() {
+        zigzag_qt[scan_pos] = qtable[natural_idx] as u8;
     }
     out.write_all(&zigzag_qt)?;
     Ok(())

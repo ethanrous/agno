@@ -26,7 +26,8 @@ pub const JPEG_CHROMA_QUANT: [u8; 64] = [
     99, 99, 99, 99, 99, 99, 99, 99,
 ];
 
-// Zigzag scan order: maps natural (row-major) index to zigzag position
+// Zigzag scan order: ZIGZAG[scan_pos] = natural_idx (row-major 8x8 index).
+// scan pos 0 → natural 0 (DC), scan pos 1 → natural 1 (0,1), scan pos 2 → natural 8 (1,0), ...
 pub const ZIGZAG: [usize; 64] = [
      0,  1,  8, 16,  9,  2,  3, 10,
     17, 24, 32, 25, 18, 11,  4,  5,
@@ -38,12 +39,8 @@ pub const ZIGZAG: [usize; 64] = [
     53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
-/// Inverse zigzag: maps zigzag scan position to natural (row-major) 8x8 index.
-/// `block[DEZIGZAG[scan_pos]] = coefficient` during decoding.
-///
-/// This is the inverse permutation of ZIGZAG:
-///   ZIGZAG[natural_idx] = zigzag_pos
-///   DEZIGZAG[zigzag_pos] = natural_idx
+/// Inverse zigzag: DEZIGZAG[natural_idx] = scan_pos.
+/// Inverse permutation of ZIGZAG (where ZIGZAG[scan_pos] = natural_idx).
 pub const DEZIGZAG: [usize; 64] = {
     let mut table = [0usize; 64];
     let mut i = 0;
