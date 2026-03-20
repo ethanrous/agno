@@ -311,6 +311,135 @@ fn jpeg_zigzag_correctness_standard_decoder() {
     );
 }
 
+// --- WebP roundtrip test ---
+
+#[test]
+fn webp_roundtrip_psnr_gradient() {
+    // Generate a gradient test image (32x32) — same as JPEG roundtrip test
+    let (width, height) = (32, 32);
+    let mut rgb = vec![0u8; width * height * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) * 3;
+            rgb[idx] = (x * 255 / (width - 1)) as u8;
+            rgb[idx + 1] = (y * 255 / (height - 1)) as u8;
+            rgb[idx + 2] = 128;
+        }
+    }
+
+    let encoded = webp::encode_webp(&rgb, width as u32, height as u32, 90).unwrap();
+    let (decoded_rgb, w, h) = webp::decode_webp(&encoded).unwrap();
+    assert_eq!(w, width as u32);
+    assert_eq!(h, height as u32);
+
+    let psnr = compute_psnr(&rgb, &decoded_rgb, width * height);
+    eprintln!("WebP roundtrip PSNR (32x32 gradient, q90): {:.1} dB", psnr);
+    assert!(
+        psnr > 15.0,
+        "WebP roundtrip PSNR {:.1}dB is too low for quality 90",
+        psnr,
+    );
+}
+
+#[test]
+fn webp_roundtrip_psnr_camera_photo() {
+    // Real-world camera JPEG — load, encode as WebP, decode, check PSNR
+    let jpeg_data = std::fs::read("../tests/data/sideways.jpeg").unwrap();
+    let (rgb, w, h) = jpeg::decode_jpeg(&jpeg_data).unwrap();
+    eprintln!("Loaded JPEG: {}x{}", w, h);
+
+    let encoded = webp::encode_webp(&rgb, w, h, 90).unwrap();
+    eprintln!("WebP encoded: {} bytes", encoded.len());
+
+    let (decoded_rgb, dw, dh) = webp::decode_webp(&encoded).unwrap();
+    assert_eq!(dw, w);
+    assert_eq!(dh, h);
+
+    let psnr = compute_psnr(&rgb, &decoded_rgb, (w * h) as usize);
+    eprintln!("WebP roundtrip PSNR ({}x{} camera photo, q90): {:.1} dB", w, h, psnr);
+    assert!(
+        psnr > 5.0,
+        "WebP roundtrip PSNR {:.1}dB is too low for a camera photo at quality 90",
+        psnr,
+    );
+}
+
+#[test]
+fn webp_cpu_roundtrip_psnr_camera_photo() {
+    let jpeg_data = std::fs::read("../tests/data/sideways.jpeg").unwrap();
+    let (rgb, w, h) = jpeg::decode_jpeg(&jpeg_data).unwrap();
+    eprintln!("Loaded JPEG: {}x{}", w, h);
+
+    // Force CPU encoding
+    let encoded = webp::encode::encode_webp_cpu(&rgb, w, h, 90).unwrap();
+    let (decoded_rgb, dw, dh) = webp::decode_webp(&encoded).unwrap();
+    assert_eq!(dw, w);
+    assert_eq!(dh, h);
+
+    let psnr = compute_psnr(&rgb, &decoded_rgb, (w * h) as usize);
+    eprintln!("CPU WebP roundtrip PSNR ({}x{} camera photo, q90): {:.1} dB", w, h, psnr);
+    assert!(
+        psnr > 25.0,
+        "CPU WebP PSNR {:.1}dB is too low for a camera photo at quality 90",
+        psnr,
+    );
+}
+
+#[test]
+fn webp_cpu_roundtrip_psnr() {
+    // Force CPU path (no GPU) on a gradient image
+    let (width, height) = (64, 48);
+    let mut rgb = vec![0u8; width * height * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) * 3;
+            rgb[idx] = ((x * 4) % 256) as u8;
+            rgb[idx + 1] = ((y * 5 + 30) % 256) as u8;
+            rgb[idx + 2] = (((x + y) * 3) % 256) as u8;
+        }
+    }
+
+    // Explicitly use CPU encoder
+    let encoded = webp::encode::encode_webp_cpu(&rgb, width as u32, height as u32, 90).unwrap();
+    eprintln!("CPU WebP encoded: {} bytes", encoded.len());
+
+    // Decode with our decoder
+    let (decoded_rgb, w, h) = webp::decode_webp(&encoded).unwrap();
+    assert_eq!(w, width as u32);
+    assert_eq!(h, height as u32);
+
+    let psnr = compute_psnr(&rgb, &decoded_rgb, width * height);
+    eprintln!("CPU WebP roundtrip PSNR (own decoder): {:.1} dB", psnr);
+
+    // Decode with image crate (standard decoder)
+    use image::ImageReader;
+    use std::io::Cursor;
+    let img = ImageReader::new(Cursor::new(&encoded))
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .expect("standard WebP decoder should be able to decode");
+    let std_decoded = img.to_rgb8().into_raw();
+
+    let std_psnr = compute_psnr(&rgb, &std_decoded, width * height);
+    eprintln!("CPU WebP roundtrip PSNR (image crate): {:.1} dB", std_psnr);
+
+    assert!(
+        std_psnr > 15.0,
+        "CPU WebP PSNR {:.1}dB is too low for quality 90 (standard decoder)",
+        std_psnr,
+    );
+
+    // Verify our decoder and the standard decoder produce similar results
+    let cross_psnr = compute_psnr(&decoded_rgb, &std_decoded, width * height);
+    eprintln!("Cross-decoder PSNR (ours vs standard): {:.1} dB", cross_psnr);
+    assert!(
+        cross_psnr > 25.0,
+        "Cross-decoder PSNR {:.1}dB is too low — decoders disagree",
+        cross_psnr,
+    );
+}
+
 // --- Helpers ---
 
 fn contains_marker(data: &[u8], marker_byte: u8) -> bool {

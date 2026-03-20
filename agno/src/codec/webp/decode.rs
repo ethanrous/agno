@@ -1,8 +1,23 @@
 use std::error::Error;
 
+use super::bitstream::{COEFF_UPDATE_PROBS, DEFAULT_COEFF_PROBS};
 use super::bool_dec::BoolDecoder;
 use super::predict::{predict_16x16, predict_chroma_8x8};
 use super::quantize::VpxQuantizer;
+
+/// VP8 zig-zag scan order for 4x4 blocks.
+const ZIGZAG: [usize; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
+
+/// Map from scan position (0-15) to coefficient band (0-7).
+const COEFF_BANDS: [usize; 16] = [0, 1, 2, 3, 6, 4, 5, 6, 6, 6, 6, 6, 6, 6, 6, 7];
+
+/// Category extra-bit probabilities from RFC 6386.
+const CAT1_PROB: [u8; 1] = [159];
+const CAT2_PROB: [u8; 2] = [165, 145];
+const CAT3_PROB: [u8; 3] = [173, 148, 140];
+const CAT4_PROB: [u8; 4] = [176, 155, 140, 135];
+const CAT5_PROB: [u8; 5] = [180, 157, 141, 134, 130];
+const CAT6_PROB: [u8; 11] = [254, 254, 243, 230, 196, 177, 153, 140, 133, 130, 129];
 
 /// Decode a lossy VP8 WebP image from raw file bytes.
 ///
@@ -10,7 +25,7 @@ use super::quantize::VpxQuantizer;
 /// bytes per pixel in row-major order.
 pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
     let vp8_data = parse_riff_webp(data)?;
-    let (header, first_part_data, token_part_data) = parse_frame_header(vp8_data)?;
+    let (header, first_part_data, token_part_data, coeff_probs) = parse_frame_header(vp8_data)?;
 
     let mb_width = ((header.width as usize) + 15) / 16;
     let mb_height = ((header.height as usize) + 15) / 16;
@@ -35,8 +50,9 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
     // Decode token partition and reconstruct macroblocks.
     let mut token_dec = BoolDecoder::new(token_part_data);
 
-    // The encoder quantizes Y2 with a single factor: max(y2_dc, y2_ac).
-    let y2_quant = quantizer.y2_dc.max(quantizer.y2_ac);
+    // Inter-block complexity tracking (matches encoder and standard decoder)
+    let mut top_complexity = vec![[0u8; 9]; mb_width];
+    let mut left_complexity = [0u8; 9];
 
     for mb_idx in 0..mb_count {
         let mb_row = mb_idx / mb_width;
@@ -78,34 +94,79 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
             has_left,
         );
 
+        // Reset left complexity at row start
+        if mb_col == 0 {
+            left_complexity = [0; 9];
+        }
+
         if skip_flags[mb_idx] {
             write_pred_y(&mut y_plane, y_stride, mb_row, mb_col, &y_pred);
             write_pred_uv(&mut u_plane, uv_stride, mb_row, mb_col, &u_pred);
             write_pred_uv(&mut v_plane, uv_stride, mb_row, mb_col, &v_pred);
+            top_complexity[mb_col] = [0; 9];
+            left_complexity = [0; 9];
             continue;
         }
 
-        // Decode 25 coefficient blocks: Y2(1), Y(16), U(4), V(4).
-        let y2_block = decode_coefficient_block(&mut token_dec);
+        // Decode 25 coefficient blocks using VP8 token tree with context tracking.
+        // Y2 block (type=1, starts at scan position 0)
+        let y2_init = (top_complexity[mb_col][0] + left_complexity[0]).min(2) as usize;
+        let (y2_block, y2_has) = decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 1, 0, y2_init);
+        let y2_c = u8::from(y2_has);
+        left_complexity[0] = y2_c;
+        top_complexity[mb_col][0] = y2_c;
 
+        // Y sub-blocks (type=0, starts at scan position 1)
         let mut y_blocks = [[0i16; 16]; 16];
-        for blk in y_blocks.iter_mut() {
-            *blk = decode_coefficient_block(&mut token_dec);
+        for y in 0..4usize {
+            let mut row_left = left_complexity[y + 1];
+            for x in 0..4usize {
+                let blk_idx = y * 4 + x;
+                let init = (top_complexity[mb_col][x + 1] + row_left).min(2) as usize;
+                let (blk, has) = decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 0, 1, init);
+                y_blocks[blk_idx] = blk;
+                let c = u8::from(has);
+                row_left = c;
+                top_complexity[mb_col][x + 1] = c;
+            }
+            left_complexity[y + 1] = row_left;
         }
 
+        // U sub-blocks (type=2, starts at scan position 0)
         let mut u_blocks = [[0i16; 16]; 4];
-        for blk in u_blocks.iter_mut() {
-            *blk = decode_coefficient_block(&mut token_dec);
+        for y in 0..2usize {
+            let mut row_left = left_complexity[y + 5];
+            for x in 0..2usize {
+                let blk_idx = y * 2 + x;
+                let init = (top_complexity[mb_col][x + 5] + row_left).min(2) as usize;
+                let (blk, has) = decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 2, 0, init);
+                u_blocks[blk_idx] = blk;
+                let c = u8::from(has);
+                row_left = c;
+                top_complexity[mb_col][x + 5] = c;
+            }
+            left_complexity[y + 5] = row_left;
         }
 
+        // V sub-blocks (type=2, starts at scan position 0)
         let mut v_blocks = [[0i16; 16]; 4];
-        for blk in v_blocks.iter_mut() {
-            *blk = decode_coefficient_block(&mut token_dec);
+        for y in 0..2usize {
+            let mut row_left = left_complexity[y + 7];
+            for x in 0..2usize {
+                let blk_idx = y * 2 + x;
+                let init = (top_complexity[mb_col][x + 7] + row_left).min(2) as usize;
+                let (blk, has) = decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 2, 0, init);
+                v_blocks[blk_idx] = blk;
+                let c = u8::from(has);
+                row_left = c;
+                top_complexity[mb_col][x + 7] = c;
+            }
+            left_complexity[y + 7] = row_left;
         }
 
-        // Y2: dequantize with the single uniform factor, then inverse WHT
+        // Y2: dequantize with y2_dc/y2_ac, then inverse WHT
         // to recover the 16 DC values for the Y sub-blocks.
-        let y2_dc_values = iwht4x4_dequant(&y2_block, y2_quant);
+        let y2_dc_values = iwht4x4_dequant_dc_ac(&y2_block, quantizer.y2_dc, quantizer.y2_ac);
 
         // Reconstruct 16 Y sub-blocks.
         for by in 0..4 {
@@ -192,7 +253,12 @@ struct FrameHeader {
 
 /// Parse the 3-byte frame tag and 7-byte key-frame header, then locate the
 /// first and token partitions within the VP8 data.
-fn parse_frame_header(vp8: &[u8]) -> Result<(FrameHeader, &[u8], &[u8]), Box<dyn Error>> {
+///
+/// Also reads and applies coefficient probability updates from the first partition,
+/// returning the (possibly modified) coefficient probability table.
+fn parse_frame_header(
+    vp8: &[u8],
+) -> Result<(FrameHeader, &[u8], &[u8], [[[[u8; 11]; 3]; 8]; 4]), Box<dyn Error>> {
     if vp8.len() < 10 {
         return Err("VP8 data too short".into());
     }
@@ -287,6 +353,21 @@ fn parse_frame_header(vp8: &[u8]) -> Result<(FrameHeader, &[u8], &[u8]), Box<dyn
     // refresh_entropy_probs
     let _refresh = dec.read_bit(128);
 
+    // Read coefficient probability updates (RFC 6386 Section 13.4)
+    let mut coeff_probs = DEFAULT_COEFF_PROBS;
+    for t in 0..4 {
+        for b in 0..8 {
+            for c in 0..3 {
+                for n in 0..11 {
+                    let update = dec.read_bit(COEFF_UPDATE_PROBS[t][b][c][n]);
+                    if update {
+                        coeff_probs[t][b][c][n] = dec.read_literal(8) as u8;
+                    }
+                }
+            }
+        }
+    }
+
     // mb_no_skip_coeff
     let mb_no_skip = dec.read_bit(128);
     let prob_skip_false = if mb_no_skip {
@@ -304,6 +385,7 @@ fn parse_frame_header(vp8: &[u8]) -> Result<(FrameHeader, &[u8], &[u8]), Box<dyn
         },
         first_part,
         token_part,
+        coeff_probs,
     ))
 }
 
@@ -362,6 +444,21 @@ fn decode_first_partition(
     }
     // refresh
     dec.read_bit(128);
+
+    // Read coefficient probability updates (must match parse_frame_header)
+    for t in 0..4 {
+        for b in 0..8 {
+            for c in 0..3 {
+                for n in 0..11 {
+                    let update = dec.read_bit(COEFF_UPDATE_PROBS[t][b][c][n]);
+                    if update {
+                        dec.read_literal(8);
+                    }
+                }
+            }
+        }
+    }
+
     // mb_no_skip + prob_skip_false
     let mb_no_skip = dec.read_bit(128);
     if mb_no_skip {
@@ -391,20 +488,37 @@ fn decode_first_partition(
 // Mode trees (inverse of encode_y_mode / encode_uv_mode in bitstream.rs)
 // ---------------------------------------------------------------------------
 
+/// Decode luma 16x16 mode from the keyframe Y mode tree.
+///
+/// KEYFRAME_YMODE_TREE = [-B_PRED, 2, 4, 6, -DC, -V, -H, -TM]
+/// Node 0 (prob 145): false=B_PRED(4), true -> Node 1
+/// Node 1 (prob 156): false -> Node 2, true -> Node 3
+/// Node 2 (prob 163): false=DC(0), true=V(1)
+/// Node 3 (prob 128): false=H(2), true=TM(3)
 fn decode_y_mode(dec: &mut BoolDecoder) -> u8 {
     if !dec.read_bit(145) {
-        return 0; // DC
+        return 4; // B_PRED (not used by our encoder)
     }
     if !dec.read_bit(156) {
+        // Node 2
+        if !dec.read_bit(163) {
+            return 0; // DC
+        }
         return 1; // V
     }
-    if dec.read_bit(163) {
-        2 // H
-    } else {
-        3 // TM
+    // Node 3
+    if !dec.read_bit(128) {
+        return 2; // H
     }
+    3 // TM
 }
 
+/// Decode chroma mode from the keyframe UV mode tree.
+///
+/// KEYFRAME_UV_MODE_TREE = [-DC, 2, -V, 4, -H, -TM]
+/// Node 0 (prob 142): false=DC(0), true -> Node 1
+/// Node 1 (prob 114): false=V(1), true -> Node 2
+/// Node 2 (prob 183): false=H(2), true=TM(3)
 fn decode_uv_mode(dec: &mut BoolDecoder) -> u8 {
     if !dec.read_bit(142) {
         return 0; // DC
@@ -412,7 +526,7 @@ fn decode_uv_mode(dec: &mut BoolDecoder) -> u8 {
     if !dec.read_bit(114) {
         return 1; // V
     }
-    if dec.read_bit(183) {
+    if !dec.read_bit(183) {
         2 // H
     } else {
         3 // TM
@@ -420,54 +534,150 @@ fn decode_uv_mode(dec: &mut BoolDecoder) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Coefficient block decoding (inverse of encode_coefficient_block)
+// VP8 coefficient block decoding using the standard token tree
 // ---------------------------------------------------------------------------
 
-/// VP8 zig-zag scan order for 4x4 blocks.
-const ZIGZAG: [usize; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
-
-fn decode_coefficient_block(dec: &mut BoolDecoder) -> [i16; 16] {
+/// Decode a single 4x4 coefficient block using the VP8 token tree.
+///
+/// `coeff_type`: 0=Y(AC), 1=Y2, 2=UV, 3=Y(full/B_PRED)
+/// `first_coeff`: index of the first coefficient in zigzag order (0 for most, 1 for Y AC)
+/// `init_ctx`: initial context from inter-block complexity (0, 1, or 2)
+///
+/// Returns `(coefficients, has_nonzero)`.
+fn decode_coefficient_block_vp8(
+    dec: &mut BoolDecoder,
+    coeff_probs: &[[[[u8; 11]; 3]; 8]; 4],
+    coeff_type: usize,
+    first_coeff: usize,
+    init_ctx: usize,
+) -> ([i16; 16], bool) {
     let mut coeffs = [0i16; 16];
 
-    for &coeff_idx in &ZIGZAG {
-        // "more coefficients?" -- false means EOB.
-        if !dec.read_bit(128) {
-            break;
+    // Context from inter-block complexity
+    let mut ctx: usize = init_ctx;
+    // After a ZERO token, skip the EOB node for the next coefficient
+    let mut skip_eob = false;
+    let mut has_nonzero = false;
+
+    for scan_pos in first_coeff..16 {
+        let band = COEFF_BANDS[scan_pos];
+        let probs = &coeff_probs[coeff_type][band][ctx];
+
+        if !skip_eob {
+            // Node 0: EOB vs more coefficients
+            if !dec.read_bit(probs[0]) {
+                break; // EOB
+            }
         }
-        // "is nonzero?"
-        if !dec.read_bit(128) {
+
+        // Node 1: ZERO vs nonzero
+        if !dec.read_bit(probs[1]) {
+            ctx = 0; // zero: context becomes 0
+            skip_eob = true;
             continue;
         }
-        let abs_val = decode_token_value(dec);
+
+        // Non-zero: decode magnitude via token tree
+        let abs_val = decode_token_tree_vp8(dec, probs);
+
+        // Sign bit (always at prob=128)
         let sign = dec.read_bit(128);
+        let coeff_idx = ZIGZAG[scan_pos];
         coeffs[coeff_idx] = if sign {
             -(abs_val as i16)
         } else {
             abs_val as i16
         };
+
+        has_nonzero = true;
+        ctx = if abs_val == 1 { 1 } else { 2 };
+        skip_eob = false;
     }
 
-    coeffs
+    (coeffs, has_nonzero)
 }
 
-/// Decode the magnitude of a non-zero coefficient.  Inverse of
-/// `encode_token_value` in bitstream.rs.
-fn decode_token_value(dec: &mut BoolDecoder) -> u32 {
-    if !dec.read_bit(128) {
-        return 1; // category 0
+/// Decode the magnitude of a non-zero coefficient from the VP8 token tree.
+///
+/// VP8 DCT token tree (RFC 6386 Section 13.2):
+///   Node 2 (prob[2]): false=ONE(1), true -> Node 3
+///   Node 3 (prob[3]): false -> Node 4 (TWO-FOUR), true -> Node 6 (CAT1-6)
+///   Node 4 (prob[4]): false=TWO(2), true -> Node 5
+///   Node 5 (prob[5]): false=THREE(3), true=FOUR(4)
+///   Node 6 (prob[6]): false -> Node 7 (CAT1-2), true -> Node 8 (CAT3-6)
+///   Node 7 (prob[7]): false=CAT1(5+extra), true=CAT2(7+extra)
+///   Node 8 (prob[8]): false -> Node 9 (CAT3-4), true -> Node 10 (CAT5-6)
+///   Node 9 (prob[9]): false=CAT3(11+extra), true=CAT4(19+extra)
+///   Node 10 (prob[10]): false=CAT5(35+extra), true=CAT6(67+extra)
+fn decode_token_tree_vp8(dec: &mut BoolDecoder, probs: &[u8; 11]) -> u32 {
+    // Node 2: ONE vs higher
+    if !dec.read_bit(probs[2]) {
+        return 1; // ONE
     }
-    if !dec.read_bit(128) {
-        return 2; // category 1
+
+    // Node 3: TWO-FOUR (false) vs CAT1-6 (true)
+    if !dec.read_bit(probs[3]) {
+        // Node 4: TWO vs THREE-FOUR
+        if !dec.read_bit(probs[4]) {
+            return 2; // TWO
+        }
+        // Node 5: THREE vs FOUR
+        if !dec.read_bit(probs[5]) {
+            return 3; // THREE
+        }
+        return 4; // FOUR
     }
-    if !dec.read_bit(128) {
-        return 3; // category 2
+
+    // Node 6: CAT1-2 (false) vs CAT3-6 (true)
+    if !dec.read_bit(probs[6]) {
+        // Node 7: CAT1 vs CAT2
+        if !dec.read_bit(probs[7]) {
+            // CAT1: base=5, 1 extra bit
+            let extra = dec.read_bit(CAT1_PROB[0]) as u32;
+            return 5 + extra;
+        }
+        // CAT2: base=7, 2 extra bits
+        let mut extra = 0u32;
+        extra = (extra << 1) | dec.read_bit(CAT2_PROB[0]) as u32;
+        extra = (extra << 1) | dec.read_bit(CAT2_PROB[1]) as u32;
+        return 7 + extra;
     }
-    if !dec.read_bit(128) {
-        return 4; // category 3
+
+    // Node 8: CAT3-4 (false) vs CAT5-6 (true)
+    if !dec.read_bit(probs[8]) {
+        // Node 9: CAT3 vs CAT4
+        if !dec.read_bit(probs[9]) {
+            // CAT3: base=11, 3 extra bits
+            let mut extra = 0u32;
+            for &p in &CAT3_PROB {
+                extra = (extra << 1) | dec.read_bit(p) as u32;
+            }
+            return 11 + extra;
+        }
+        // CAT4: base=19, 4 extra bits
+        let mut extra = 0u32;
+        for &p in &CAT4_PROB {
+            extra = (extra << 1) | dec.read_bit(p) as u32;
+        }
+        return 19 + extra;
     }
-    // Large value: 4-bit count followed by that many literal bits.
-    let bits_needed = dec.read_literal(4);
-    dec.read_literal(bits_needed as u8)
+
+    // Node 10: CAT5 vs CAT6
+    if !dec.read_bit(probs[10]) {
+        // CAT5: base=35, 5 extra bits
+        let mut extra = 0u32;
+        for &p in &CAT5_PROB {
+            extra = (extra << 1) | dec.read_bit(p) as u32;
+        }
+        return 35 + extra;
+    }
+
+    // CAT6: base=67, 11 extra bits
+    let mut extra = 0u32;
+    for &p in &CAT6_PROB {
+        extra = (extra << 1) | dec.read_bit(p) as u32;
+    }
+    67 + extra
 }
 
 // ---------------------------------------------------------------------------
@@ -475,25 +685,6 @@ fn decode_token_value(dec: &mut BoolDecoder) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// Inverse 4x4 DCT (VP8 specification, Sections 14.3-14.4).
-///
-/// Uses the same cosine constants as the forward DCT in transform.rs:
-///   cos(pi/8)*sqrt(2) ~= 2217   (the "sin" coefficient)
-///   sin(pi/8)*sqrt(2) ~= 5352   (the "cos" coefficient)
-///
-/// The forward transform is:
-///   tmp[0] = t0 + t1
-///   tmp[1] = (t2*2217 + t3*5352 + 14500) >> 12
-///   tmp[2] = t0 - t1
-///   tmp[3] = (t3*2217 - t2*5352 + 7500) >> 12
-/// where t0=a+d, t1=b+c, t2=b-c, t3=a-d.
-///
-/// The exact inverse (matching libvpx's "short IDCT") is:
-///   a1 = c0 + c2
-///   b1 = c0 - c2
-///   temp1 = (c1 * 35468 >> 16) - c3 - (c3 * 20091 >> 16)
-///   temp2 = c1 + (c1 * 20091 >> 16) + (c3 * 35468 >> 16)
-/// where 20091/65536 approximates 2*2217*5352/(2217^2+5352^2) and 35468/65536
-/// approximates (5352^2-2217^2)/(2217^2+5352^2) (scaled rotations).
 fn idct4x4(input: &[i32; 16]) -> [i32; 16] {
     let mut tmp = [0i32; 16];
 
@@ -537,13 +728,6 @@ fn idct4x4(input: &[i32; 16]) -> [i32; 16] {
 }
 
 /// Inverse 4x4 Walsh-Hadamard transform for Y2 DC coefficients.
-///
-/// The forward WHT in transform.rs is:
-///   row:  a+b+c+d, a+b-c-d, a-b-c+d, a-b+c-d
-///   col:  same sums, then >>2
-///
-/// The inverse is the same butterfly (WHT is its own inverse up to scale),
-/// with >>3 normalization in the column pass to undo both forward passes.
 fn iwht4x4(input: &[i16; 16]) -> [i16; 16] {
     let mut tmp = [0i32; 16];
 
@@ -574,13 +758,14 @@ fn iwht4x4(input: &[i16; 16]) -> [i16; 16] {
     result
 }
 
-/// Dequantize a Y2 block with a single uniform factor, then apply the
+/// Dequantize a Y2 block with separate DC/AC factors, then apply the
 /// inverse WHT.  Returns the 16 reconstructed DC values for the Y
 /// sub-blocks.
-fn iwht4x4_dequant(block: &[i16; 16], quant: i16) -> [i16; 16] {
+fn iwht4x4_dequant_dc_ac(block: &[i16; 16], dc_quant: i16, ac_quant: i16) -> [i16; 16] {
     let mut dq = [0i16; 16];
-    for i in 0..16 {
-        dq[i] = block[i].saturating_mul(quant);
+    dq[0] = block[0].saturating_mul(dc_quant);
+    for i in 1..16 {
+        dq[i] = block[i].saturating_mul(ac_quant);
     }
     iwht4x4(&dq)
 }
@@ -701,16 +886,6 @@ fn reconstruct_chroma(
 
 /// Convert YUV 4:2:0 planes to interleaved RGB using the inverse of the
 /// BT.601 matrix used by the encoder in encode.rs.
-///
-/// Encoder (encode.rs `rgb_to_yuv420`):
-///   Y  = ( 66*R + 129*G +  25*B + 128) >> 8 + 16
-///   Cb = (-38*R -  74*G + 112*B + 128) >> 8 + 128
-///   Cr = (112*R -  94*G -  18*B + 128) >> 8 + 128
-///
-/// Inverse (fixed-point, matching coefficients):
-///   R = clamp((298*(Y-16)              + 409*(Cr-128) + 128) >> 8)
-///   G = clamp((298*(Y-16) - 100*(Cb-128) - 208*(Cr-128) + 128) >> 8)
-///   B = clamp((298*(Y-16) + 516*(Cb-128)              + 128) >> 8)
 fn yuv420_to_rgb(
     y_plane: &[u8],
     u_plane: &[u8],
