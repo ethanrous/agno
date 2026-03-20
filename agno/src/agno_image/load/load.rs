@@ -118,7 +118,16 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         }
         ImageType::SonyRaw(det) => load_sony_raw(det, &mut file, exif),
         ImageType::CanonRaw(det) => load_canon_raw(det, &mut file, exif),
-        ImageType::Heic => load_heic(&mut file, exif),
+        ImageType::Heic => {
+            #[cfg(feature = "heic-c")]
+            {
+                super::heic_libheif::load_heic_libheif(&mut file, exif)
+            }
+            #[cfg(not(feature = "heic-c"))]
+            {
+                load_heic(&mut file, exif)
+            }
+        }
         ImageType::QuickTimeMov | ImageType::Mp4 => load_mov_thumbnail(&mut file, exif),
     }?;
 
