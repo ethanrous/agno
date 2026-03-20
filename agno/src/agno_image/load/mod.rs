@@ -1,5 +1,7 @@
 pub mod canon;
 pub mod heic;
+#[cfg(feature = "heic-c")]
+pub mod heic_libheif;
 pub mod load;
 pub mod mov;
 pub mod pdf;
