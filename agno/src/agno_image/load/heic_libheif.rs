@@ -8,7 +8,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
-use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
+use libheif_rs::{ColorSpace, DecodingOptions, HeifContext, LibHeif, RgbChroma};
 
 use crate::agno_image::AgnoImage;
 use crate::exif::ExifContext;
@@ -26,10 +26,17 @@ pub fn load_heic_libheif(file: &mut File, exif: ExifContext) -> Result<AgnoImage
     let ctx = HeifContext::read_from_bytes(&data)?;
     let handle = ctx.primary_image_handle()?;
 
-    let width = handle.width() as u64;
-    let height = handle.height() as u64;
+    // Use ISPE (original) dimensions since we skip ISOBMFF transforms.
+    let width = handle.ispe_width() as u64;
+    let height = handle.ispe_height() as u64;
 
-    let image = lib_heif.decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), None)?;
+    // Skip ISOBMFF transforms (irot/imir) so our pipeline handles EXIF
+    // orientation consistently via auto_rotate in load_agno_image_from_file.
+    let mut options = DecodingOptions::new()
+        .ok_or("Failed to allocate libheif DecodingOptions")?;
+    options.set_ignore_transformations(true);
+
+    let image = lib_heif.decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), Some(options))?;
     let planes = image.planes();
     let interleaved = planes
         .interleaved
