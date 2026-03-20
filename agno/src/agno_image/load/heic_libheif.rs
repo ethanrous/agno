@@ -6,7 +6,7 @@
 
 use std::error::Error;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 
 use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
 
@@ -18,6 +18,7 @@ use crate::exif::ExifContext;
 /// Reads the entire file into memory, passes it to libheif for decoding,
 /// and converts the result to an AgnoImage with RGB8 pixel data.
 pub fn load_heic_libheif(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
+    file.seek(SeekFrom::Start(0))?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
 
