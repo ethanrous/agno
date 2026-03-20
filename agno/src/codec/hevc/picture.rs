@@ -50,11 +50,16 @@ pub struct Picture {
     pub sao_params: Vec<CtuSaoParams>,
     /// CU quadtree depth at MinCB granularity (0xFF = unavailable).
     cu_depth: Vec<u8>,
-    /// Luma intra prediction mode at MinCB granularity (0..34).
+    /// Luma intra prediction mode at MinPU granularity (0..34).
+    /// MinPU = MinCB / 2 (FFmpeg: log2_min_pu_size = log2_min_cb_size - 1).
     intra_mode: Vec<u8>,
+    /// Stride for intra_mode grid: ceil(pic_width / min_pu_size).
+    intra_mode_stride: u32,
+    /// log2 of MinPU size for intra_mode grid.
+    intra_mode_log2: u32,
     /// Luma QP (QpY) at MinCB granularity, used by deblocking filter.
     qp_y: Vec<i32>,
-    /// Grid width for cu_depth/intra_mode maps: ceil(pic_width / min_cb_size).
+    /// Grid width for cu_depth/qp_y maps: ceil(pic_width / min_cb_size).
     depth_stride: u32,
     /// log2 of the minimum coding block size (needed by accessors).
     min_cb_log2: u32,
@@ -85,6 +90,8 @@ impl Picture {
             sao_params: Vec::new(),
             cu_depth: Vec::new(),
             intra_mode: Vec::new(),
+            intra_mode_stride: 0,
+            intra_mode_log2: 0,
             qp_y: Vec::new(),
             depth_stride: 0,
             min_cb_log2: 0,
@@ -105,10 +112,18 @@ impl Picture {
         let h = (self.height + min_cb - 1) / min_cb;
         let len = (w * h) as usize;
         self.cu_depth = vec![0xFF; len];
-        self.intra_mode = vec![0; len];
         self.qp_y = vec![default_qp; len];
         self.depth_stride = w;
         self.min_cb_log2 = min_cb_log2;
+
+        // Intra mode stored at MinPU granularity (MinCB / 2) for NxN sub-partition support
+        let min_pu_log2 = min_cb_log2 - 1;
+        let min_pu = 1u32 << min_pu_log2;
+        let iw = (self.width + min_pu - 1) / min_pu;
+        let ih = (self.height + min_pu - 1) / min_pu;
+        self.intra_mode = vec![0; (iw * ih) as usize];
+        self.intra_mode_stride = iw;
+        self.intra_mode_log2 = min_pu_log2;
     }
 
     /// Store CU depth for all MinCB cells covered by a CU at (x0, y0) with given size.
@@ -142,19 +157,19 @@ impl Picture {
         self.cu_depth.get(idx).copied().filter(|&d| d != 0xFF)
     }
 
-    /// Store intra prediction mode for all MinCB cells covered by a PU.
+    /// Store intra prediction mode for all MinPU cells covered by a PU.
     pub fn set_intra_mode(&mut self, x0: u32, y0: u32, pu_size: u32, mode: u8) {
         if self.intra_mode.is_empty() { return; }
-        let min_cb = 1u32 << self.min_cb_log2;
-        let gx = x0 / min_cb;
-        let gy = y0 / min_cb;
-        let cells = (pu_size + min_cb - 1) / min_cb;
+        let min_pu = 1u32 << self.intra_mode_log2;
+        let gx = x0 / min_pu;
+        let gy = y0 / min_pu;
+        let cells = (pu_size + min_pu - 1) / min_pu;
         for dy in 0..cells {
             for dx in 0..cells {
                 let ix = gx + dx;
                 let iy = gy + dy;
-                if ix < self.depth_stride {
-                    let idx = (iy * self.depth_stride + ix) as usize;
+                if ix < self.intra_mode_stride {
+                    let idx = (iy * self.intra_mode_stride + ix) as usize;
                     if idx < self.intra_mode.len() {
                         self.intra_mode[idx] = mode;
                     }
@@ -166,10 +181,10 @@ impl Picture {
     /// Read intra mode at sample position. Returns 0 (Planar) if unavailable.
     pub fn intra_mode_at(&self, x: u32, y: u32) -> u8 {
         if self.intra_mode.is_empty() { return 0; }
-        let min_cb = 1u32 << self.min_cb_log2;
-        let gx = x / min_cb;
-        let gy = y / min_cb;
-        let idx = (gy * self.depth_stride + gx) as usize;
+        let min_pu = 1u32 << self.intra_mode_log2;
+        let gx = x / min_pu;
+        let gy = y / min_pu;
+        let idx = (gy * self.intra_mode_stride + gx) as usize;
         self.intra_mode.get(idx).copied().unwrap_or(0)
     }
 

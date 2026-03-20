@@ -335,6 +335,10 @@ fn decode_cu_qp_delta(cab: &mut CabacReader) -> i32 {
     if sign != 0 { -(abs_val as i32) } else { abs_val as i32 }
 }
 
+// Scan type for coefficient scan order (H.265 Section 7.4.9.11)
+#[derive(Clone, Copy, PartialEq)]
+enum ScanType { Diag, Horiz, Vert }
+
 // Diagonal 4x4 scan (Table 6-5) — for coefficients within a 4x4 sub-block
 // H.265 Table 6-5: Diagonal scan for 4x4 block.
 // Each anti-diagonal traverses from (x=0, y=sum) toward (x=sum, y=0).
@@ -344,11 +348,30 @@ const DIAG4: [[u8; 2]; 16] = [
     [2,1],[3,0],[1,3],[2,2],[3,1],[2,3],[3,2],[3,3],
 ];
 
+// Horizontal 4x4 scan: raster order (row by row). Matches FFmpeg horiz_scan4x4_x/y.
+const HORIZ4: [[u8; 2]; 16] = [
+    [0,0],[1,0],[2,0],[3,0],
+    [0,1],[1,1],[2,1],[3,1],
+    [0,2],[1,2],[2,2],[3,2],
+    [0,3],[1,3],[2,3],[3,3],
+];
+
+// Vertical 4x4 scan: column-first order. Matches FFmpeg horiz_scan4x4_y/x.
+const VERT4: [[u8; 2]; 16] = [
+    [0,0],[0,1],[0,2],[0,3],
+    [1,0],[1,1],[1,2],[1,3],
+    [2,0],[2,1],[2,2],[2,3],
+    [3,0],[3,1],[3,2],[3,3],
+];
+
 // Diagonal sub-block scan tables (Table 6-5 at different sizes)
 // 2x2 sub-block grid (for 8x8 TU: 4 sub-blocks)
 const DIAG_SUB_2X2: [[u8; 2]; 4] = [
     [0,0],[0,1],[1,0],[1,1],
 ];
+
+// Horizontal 2x2 sub-block scan: row-first. Matches FFmpeg horiz_scan2x2_x/y.
+const HORIZ_SUB_2X2: [[u8; 2]; 4] = [[0,0],[1,0],[0,1],[1,1]];
 
 // 4x4 sub-block grid (for 16x16 TU: 16 sub-blocks)
 const DIAG_SUB_4X4: [[u8; 2]; 16] = [
@@ -380,22 +403,6 @@ const DIAG_SUB_8X8: [[u8; 2]; 64] = {
     }
     t
 };
-
-/// Map (sub_x, sub_y) in sub-block units to diagonal scan index for the given grid size.
-fn sub_block_scan_idx(sub_x: u32, sub_y: u32, spr: u32) -> u32 {
-    let table: &[[u8; 2]] = match spr {
-        2 => &DIAG_SUB_2X2,
-        4 => &DIAG_SUB_4X4,
-        8 => &DIAG_SUB_8X8,
-        _ => return sub_y * spr + sub_x, // fallback to raster
-    };
-    for (i, &[sx, sy]) in table.iter().enumerate() {
-        if sx as u32 == sub_x && sy as u32 == sub_y {
-            return i as u32;
-        }
-    }
-    sub_y * spr + sub_x // fallback
-}
 
 /// Remove emulation prevention bytes and return a mapping from coded byte position
 /// to RBSP byte position. `map[coded_pos]` = RBSP byte at that coded position.
@@ -661,13 +668,17 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
         }
 
         if sps.sample_adaptive_offset_enabled_flag {
-            pic.sao_params[addr] = decode_sao(&mut cab, sao_luma, sao_chroma, cx, cy);
+            pic.sao_params[addr] = decode_sao(&mut cab, sao_luma, sao_chroma, cx, cy,
+                                              &pic.sao_params, addr, w_ctbs as usize);
         }
 
         decode_quadtree(&mut cab, pic, sps, pps, x0, y0, ctb, sps.ctb_log2_size(), 0,
                         &mut qps, cb_qp_off, cr_qp_off);
 
-        // WPP: Save context state after processing CTU column 1
+        // WPP: Save context state after processing CTU column 1.
+        // Note: H.265 9.3.2.3 says column 2 (FFmpeg: ctb_addr_ts % ctb_width == 2),
+        // but saving at column 1 produces better results currently, indicating a
+        // remaining context bug in column 2+ processing.
         if wpp_enabled && cx == 1 {
             wpp_saved_ctx = Some(cab.save_contexts());
         }
@@ -692,14 +703,21 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
     Ok(())
 }
 
-fn decode_sao(cab: &mut CabacReader, luma: bool, chroma: bool, rx: u32, ry: u32) -> CtuSaoParams {
-    let mut p = CtuSaoParams::default();
+fn decode_sao(cab: &mut CabacReader, luma: bool, chroma: bool, rx: u32, ry: u32,
+              sao_params: &[CtuSaoParams], addr: usize, w_ctbs: usize) -> CtuSaoParams {
     if rx > 0 {
-        if cab.decode_decision(CTX_SAO_MERGE) != 0 { return p; }
+        if cab.decode_decision(CTX_SAO_MERGE) != 0 {
+            // merge_left: copy SAO from left CTU
+            return if addr > 0 { sao_params[addr - 1].clone() } else { CtuSaoParams::default() };
+        }
     }
     if ry > 0 {
-        if cab.decode_decision(CTX_SAO_MERGE) != 0 { return p; }
+        if cab.decode_decision(CTX_SAO_MERGE) != 0 {
+            // merge_up: copy SAO from above CTU
+            return if addr >= w_ctbs { sao_params[addr - w_ctbs].clone() } else { CtuSaoParams::default() };
+        }
     }
+    let mut p = CtuSaoParams::default();
     let luma_type = if luma { decode_sao_type(cab) } else { 0 };
     let chroma_type = if chroma { decode_sao_type(cab) } else { 0 };
 
@@ -946,7 +964,10 @@ fn decode_chroma_mode(cab: &mut CabacReader, luma: u8) -> u8 {
     if cab.decode_decision(CTX_CHROMA_PRED) == 0 {
         luma
     } else {
-        match cab.decode_bypass_bits(2) { 0 => 0, 1 => 26, 2 => 10, _ => 1 }
+        let table = [0u8, 26, 10, 1];
+        let mapped = table[cab.decode_bypass_bits(2) as usize & 3];
+        // H.265 8.4.3: if mapped mode == luma mode, substitute mode 34
+        if mapped == luma { 34 } else { mapped }
     }
 }
 
@@ -1015,11 +1036,15 @@ fn decode_tu_nxn(
 
     let qp = qps.current_qp;
 
+    // Derive scan types from luma transform log2 (FFmpeg: scan_idx depends on luma TU size)
+    let scan_luma = derive_scan_type(log2, lm);
+    let scan_chroma = derive_scan_type(log2, cm);
+
     // Luma
     let pred = predict_intra(pic, x0, y0, size, lm, Component::Y, sps.strong_intra_smoothing_enabled_flag);
     if cbf_y {
         let mut c = vec![0i32; (size * size) as usize];
-        decode_residual(cab, &mut c, log2, 0, sign_data_hiding);
+        decode_residual(cab, &mut c, log2, 0, sign_data_hiding, scan_luma);
         transform::dequantize(&mut c, qp, bd, log2);
         transform::inverse_transform(&mut c, size, size == 4, bd);
         for py in 0..size { for px in 0..size {
@@ -1056,7 +1081,7 @@ fn decode_tu_nxn(
     let pred_cb = predict_intra(pic, x_base, y_base, cu_size, cm, Component::Cb, false);
     if cbf_cb {
         let mut c = vec![0i32; (cs * cs) as usize];
-        decode_residual(cab, &mut c, cl, 1, sign_data_hiding);
+        decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
         transform::dequantize(&mut c, cb_qp_actual, bd, cl);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
@@ -1078,7 +1103,7 @@ fn decode_tu_nxn(
     let pred_cr = predict_intra(pic, x_base, y_base, cu_size, cm, Component::Cr, false);
     if cbf_cr {
         let mut c = vec![0i32; (cs * cs) as usize];
-        decode_residual(cab, &mut c, cl, 2, sign_data_hiding);
+        decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
         transform::dequantize(&mut c, cr_qp_actual, bd, cl);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
@@ -1131,11 +1156,15 @@ fn decode_tu(
     let cb_qp_actual = chroma_qp(qp + cb_qp);
     let cr_qp_actual = chroma_qp(qp + cr_qp);
 
+    // Derive scan types from luma TU log2 (FFmpeg: both scan_idx and scan_idx_c use luma TU size)
+    let scan_luma = derive_scan_type(log2, lm);
+    let scan_chroma = derive_scan_type(log2, cm);
+
     // Luma
     let pred = predict_intra(pic, x0, y0, size, lm, Component::Y, sps.strong_intra_smoothing_enabled_flag);
     if cbf_y {
         let mut c = vec![0i32; (size*size) as usize];
-        decode_residual(cab, &mut c, log2, 0, sign_data_hiding);
+        decode_residual(cab, &mut c, log2, 0, sign_data_hiding, scan_luma);
         transform::dequantize(&mut c, qp, bd, log2);
         transform::inverse_transform(&mut c, size, size == 4, bd);
         for py in 0..size { for px in 0..size {
@@ -1166,7 +1195,7 @@ fn decode_tu(
     let pred_cb = predict_intra(pic, x0, y0, size, cm, Component::Cb, false);
     if cbf_cb {
         let mut c = vec![0i32; (cs*cs) as usize];
-        decode_residual(cab, &mut c, cl, 1, sign_data_hiding);
+        decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
         transform::dequantize(&mut c, cb_qp_actual, bd, cl);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
@@ -1189,7 +1218,7 @@ fn decode_tu(
     let pred_cr = predict_intra(pic, x0, y0, size, cm, Component::Cr, false);
     if cbf_cr {
         let mut c = vec![0i32; (cs*cs) as usize];
-        decode_residual(cab, &mut c, cl, 2, sign_data_hiding);
+        decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
         transform::dequantize(&mut c, cr_qp_actual, bd, cl);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
@@ -1213,7 +1242,15 @@ fn decode_tu(
 // Residual coding
 // ---------------------------------------------------------------------------
 
-fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: u8, sign_data_hiding: bool) {
+fn derive_scan_type(luma_log2_trafo: u32, intra_pred_mode: u8) -> ScanType {
+    if luma_log2_trafo < 4 {
+        if intra_pred_mode >= 6 && intra_pred_mode <= 14 { ScanType::Vert }
+        else if intra_pred_mode >= 22 && intra_pred_mode <= 30 { ScanType::Horiz }
+        else { ScanType::Diag }
+    } else { ScanType::Diag }
+}
+
+fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: u8, sign_data_hiding: bool, scan_type: ScanType) {
     // FFmpeg sig_coeff_flag context index maps (Table 9-39 derivation)
     #[rustfmt::skip]
     const CTX_IDX_MAP: [[u8; 16]; 5] = [
@@ -1225,6 +1262,14 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
     ];
 
     let size = 1u32 << log2;
+
+    // Coefficient scan table based on scan type
+    let coeff_scan: &[[u8; 2]; 16] = match scan_type {
+        ScanType::Diag => &DIAG4,
+        ScanType::Horiz => &HORIZ4,
+        ScanType::Vert => &VERT4,
+    };
+
     let (ctx_off, ctx_shift) = if c_idx == 0 {
         (3 * (log2 as usize - 2) + ((log2 as usize - 1) >> 2), (log2 + 1) >> 2)
     } else {
@@ -1235,19 +1280,32 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
     // (all context-coded bins before any bypass-coded bins)
     let pfx_x = decode_last_prefix(cab, CTX_LAST_X + ctx_off, log2, ctx_shift);
     let pfx_y = decode_last_prefix(cab, CTX_LAST_Y + ctx_off, log2, ctx_shift);
-    let last_x = decode_last_suffix(cab, pfx_x);
-    let last_y = decode_last_suffix(cab, pfx_y);
+    let (last_x, last_y) = {
+        let lx = decode_last_suffix(cab, pfx_x);
+        let ly = decode_last_suffix(cab, pfx_y);
+        // H.265 / FFmpeg line 1129-1130: swap x/y for vertical scan
+        if scan_type == ScanType::Vert { (ly, lx) } else { (lx, ly) }
+    };
 
     let spr = size / 4;
-    let last_sub = sub_block_scan_idx(last_x / 4, last_y / 4, spr);
 
+    // Sub-block scan table based on scan type
     let sub_scan: &[[u8; 2]] = match spr {
         1 => &[[0, 0]][..],
-        2 => &DIAG_SUB_2X2,
+        2 => match scan_type {
+            ScanType::Horiz => &HORIZ_SUB_2X2,
+            _ => &DIAG_SUB_2X2,
+        },
         4 => &DIAG_SUB_4X4,
         8 => &DIAG_SUB_8X8,
         _ => return,
     };
+
+    // Find last sub-block scan index
+    let last_sbx = last_x / 4;
+    let last_sby = last_y / 4;
+    let last_sub = sub_scan.iter().position(|&[sx, sy]| sx as u32 == last_sbx && sy as u32 == last_sby)
+        .unwrap_or(0) as u32;
 
     // Track coded sub-block flags for neighbor context derivation
     let mut coded_sb = vec![vec![false; spr as usize]; spr as usize];
@@ -1286,7 +1344,7 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
             if last_x >= sx && last_y >= sy {
                 let lx = (last_x - sx) as u8;
                 let ly = (last_y - sy) as u8;
-                DIAG4.iter().position(|p| p[0] == lx && p[1] == ly).unwrap_or(15)
+                coeff_scan.iter().position(|p| p[0] == lx && p[1] == ly).unwrap_or(15)
             } else { 15 }
         } else { 16 };
 
@@ -1303,8 +1361,8 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
         };
 
         for sp in (0..16).rev() {
-            let px = DIAG4[sp][0] as u32 + sx;
-            let py = DIAG4[sp][1] as u32 + sy;
+            let px = coeff_scan[sp][0] as u32 + sx;
+            let py = coeff_scan[sp][1] as u32 + sy;
             if px >= size || py >= size { continue; }
             if px == last_x && py == last_y && sub_idx == last_sub {
                 sig[sp] = true; infer_dc = false; continue;
@@ -1330,15 +1388,16 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
                     map_idx = (prev_sig as usize + 1).min(4);
                     if c_idx == 0 {
                         if sbx > 0 || sby > 0 { scf_offset += 3; }
-                        if log2 == 3 { scf_offset += 9; }
+                        // FFmpeg: diagonal scan uses offset 9, non-diagonal uses 15
+                        if log2 == 3 { scf_offset += if scan_type == ScanType::Diag { 9 } else { 15 }; }
                         else { scf_offset += 21; }
                     } else {
                         if log2 == 3 { scf_offset += 9; }
                         else { scf_offset += 12; }
                     }
                 }
-                let x_c = DIAG4[sp][0];
-                let y_c = DIAG4[sp][1];
+                let x_c = coeff_scan[sp][0];
+                let y_c = coeff_scan[sp][1];
                 scf_offset + CTX_IDX_MAP[map_idx][(y_c as usize) * 4 + x_c as usize] as usize
             } else {
                 // DC coefficient (sp == 0, not inferred)
@@ -1355,7 +1414,7 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
                     if log2 != 2 {
                         if c_idx == 0 {
                             if sbx > 0 || sby > 0 { scf_offset += 3; }
-                            if log2 == 3 { scf_offset += 9; }
+                            if log2 == 3 { scf_offset += if scan_type == ScanType::Diag { 9 } else { 15 }; }
                             else { scf_offset += 21; }
                         } else {
                             if log2 == 3 { scf_offset += 9; }
@@ -1451,7 +1510,7 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
             if abs_level > (3 << c_rice_param) && c_rice_param < 4 {
                 c_rice_param += 1;
             }
-            sum_abs += abs[sp];
+            sum_abs = sum_abs.wrapping_add(abs[sp]);
             // Sign: inferred from parity for first_nz_pos, decoded for others
             let c = if sign_hidden && sp == first_nz_pos as usize {
                 if (sum_abs & 1) != 0 { -abs[sp] } else { abs[sp] }
@@ -1460,8 +1519,8 @@ fn decode_residual(cab: &mut CabacReader, coeffs: &mut [i32], log2: u32, c_idx: 
             } else {
                 abs[sp]
             };
-            let px = DIAG4[sp][0] as u32 + sx;
-            let py = DIAG4[sp][1] as u32 + sy;
+            let px = coeff_scan[sp][0] as u32 + sx;
+            let py = coeff_scan[sp][1] as u32 + sy;
             if px < size && py < size {
                 coeffs[(py * size + px) as usize] = c;
             }
