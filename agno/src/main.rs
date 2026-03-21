@@ -9,6 +9,7 @@ use crate::logging::{LogConfig, init};
 
 mod agno_image;
 mod canon_decoder;
+mod codec;
 mod demosaic;
 mod exif;
 mod logging;
@@ -20,8 +21,12 @@ mod tiff;
 mod demosaic_gpu;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(all(feature = "gpu", feature = "jpeg"))]
+mod jpeg_gpu;
 #[cfg(feature = "gpu")]
 mod resize_gpu;
+#[cfg(all(feature = "gpu", feature = "webp"))]
+mod webp_gpu;
 
 fn main() -> Result<(), Box<dyn Error>> {
     init(LogConfig::cli());
@@ -32,7 +37,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("Commands:");
         eprintln!("  exif <file>                              Print EXIF data for a file");
         eprintln!("  convert <input> <output>                 Convert image between formats");
-        eprintln!("  resize <input> <width> <height> <output> Resize image to specified dimensions");
+        eprintln!(
+            "  resize <input> <width> <height> <output> Resize image to specified dimensions"
+        );
         return Ok(());
     }
 
@@ -132,6 +139,7 @@ fn print_exif_value(name: &str, tag: u16, value: &ExifValue) {
     }
 }
 
+#[cfg(feature = "jpeg")]
 fn cmd_convert(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.len() < 2 {
         eprintln!("Usage: agno convert <input> <output>");
@@ -149,6 +157,12 @@ fn cmd_convert(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(not(feature = "jpeg"))]
+fn cmd_convert(_args: &[String]) -> Result<(), Box<dyn Error>> {
+    Err("Convert command requires the 'jpeg' feature.".into())
+}
+
+#[cfg(feature = "jpeg")]
 fn cmd_resize(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.len() < 4 {
         eprintln!("Usage: agno resize <input> <width> <height> <output>");
@@ -169,6 +183,14 @@ fn cmd_resize(args: &[String]) -> Result<(), Box<dyn Error>> {
     // Write output as JPEG
     resized.to_jpeg_file(100, output_path)?;
 
-    println!("Resized {} ({}x{}) -> {}", input_path, width, height, output_path);
+    println!(
+        "Resized {} ({}x{}) -> {}",
+        input_path, width, height, output_path
+    );
     Ok(())
+}
+
+#[cfg(not(feature = "jpeg"))]
+fn cmd_resize(_args: &[String]) -> Result<(), Box<dyn Error>> {
+    Err("Resize command requires the 'jpeg' feature.".into())
 }

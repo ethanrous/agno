@@ -2,7 +2,7 @@ use std::backtrace::{self, Backtrace};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -192,11 +192,6 @@ pub struct ExifContext {
     exif_values: HashMap<u16, ExifValue>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ExifMap {
-    map: HashMap<String, ExifValue>,
-}
-
 // ---------------- Public API ----------------
 
 impl Default for ExifContext {
@@ -221,6 +216,8 @@ impl ExifContext {
                 ImageType::Png => Self::from_png(reader)?,
                 ImageType::Webp => return Ok(Self::new()),
                 ImageType::Pdf => return Ok(Self::new()),
+                ImageType::Heic => Self::from_isobmff(reader)?,
+                ImageType::QuickTimeMov | ImageType::Mp4 => Self::from_mov(reader)?,
                 ImageType::SonyRaw(_) => Self::from_tiff(reader, 0)?,
                 ImageType::CanonRaw(_) => Self::from_tiff(reader, 0)?,
             },
@@ -328,9 +325,162 @@ impl ExifContext {
         return Ok((0, Endian::Big, values));
     }
 
+    // Parse EXIF from an ISOBMFF container (HEIC/HEIF/AVIF) by walking the box structure
+    fn from_isobmff(reader: &mut File) -> Result<(u64, Endian, HashMap<u16, ExifValue>), ExifError> {
+        let file_end = reader.seek(SeekFrom::End(0))?;
+
+        // Find 'meta' box at top level (FullBox — 4 bytes version+flags before children)
+        let (meta_start, meta_end) =
+            isobmff_find_box(reader, 0, file_end, b"meta")?.ok_or(ExifError::NotExif)?;
+        let children_start = meta_start + 4;
+
+        // Find 'iinf' (item info) and 'iloc' (item location) child boxes
+        let iinf_start = isobmff_find_box(reader, children_start, meta_end, b"iinf")?
+            .ok_or(ExifError::NotExif)?
+            .0;
+        let iloc_start = isobmff_find_box(reader, children_start, meta_end, b"iloc")?
+            .ok_or(ExifError::NotExif)?
+            .0;
+
+        // Find the item ID whose type is "Exif", then locate its data extent
+        let exif_id =
+            isobmff_find_item_id_by_type(reader, iinf_start, b"Exif")?.ok_or(ExifError::NotExif)?;
+        let (offset, length) =
+            isobmff_find_item_extent(reader, iloc_start, exif_id)?.ok_or(ExifError::NotExif)?;
+
+        // Exif item data starts with a 4-byte BE offset to the TIFF header
+        reader.seek(SeekFrom::Start(offset))?;
+        let mut data = vec![0u8; length as usize];
+        reader.read_exact(&mut data)?;
+
+        if data.len() < 10 {
+            return Err(ExifError::Malformed(
+                "ISOBMFF Exif item too short".to_string(),
+            ));
+        }
+        let tiff_off = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let start = 4 + tiff_off;
+        if start >= data.len() {
+            return Err(ExifError::Malformed(
+                "ISOBMFF Exif TIFF offset out of bounds".to_string(),
+            ));
+        }
+
+        Self::from_tiff(&mut Cursor::new(data[start..].to_vec()), 0)
+    }
+
+    /// Parse EXIF from a MOV/MP4 container.
+    /// Strategy: try HEIF-style `meta` box first (iPhone MOV), then `moov/udta/meta`,
+    /// then extract basic dimensions from `moov/trak/tkhd`.
+    fn from_mov(reader: &mut File) -> Result<(u64, Endian, HashMap<u16, ExifValue>), ExifError> {
+        // Try HEIF-style top-level meta box (works for iPhone MOV files)
+        if let Ok(result) = Self::from_isobmff(reader) {
+            return Ok(result);
+        }
+
+        let file_end = reader.seek(SeekFrom::End(0))?;
+
+        // Try moov/udta/meta path
+        if let Some((moov_start, moov_end)) =
+            isobmff_find_box(reader, 0, file_end, b"moov")?
+        {
+            if let Some((udta_start, udta_end)) =
+                isobmff_find_box(reader, moov_start, moov_end, b"udta")?
+            {
+                // Some MOV files store EXIF in a meta box under udta
+                if let Some((meta_start, meta_end)) =
+                    isobmff_find_box(reader, udta_start, udta_end, b"meta")?
+                {
+                    // FullBox: skip version + flags
+                    let children_start = meta_start + 4;
+                    if let (Some((iinf_start, _)), Some((iloc_start, _))) = (
+                        isobmff_find_box(reader, children_start, meta_end, b"iinf")?,
+                        isobmff_find_box(reader, children_start, meta_end, b"iloc")?,
+                    ) {
+                        if let Some(exif_id) =
+                            isobmff_find_item_id_by_type(reader, iinf_start, b"Exif")?
+                        {
+                            if let Some((offset, length)) =
+                                isobmff_find_item_extent(reader, iloc_start, exif_id)?
+                            {
+                                reader.seek(SeekFrom::Start(offset))?;
+                                let mut data = vec![0u8; length as usize];
+                                reader.read_exact(&mut data)?;
+                                if data.len() >= 10 {
+                                    let tiff_off = u32::from_be_bytes([
+                                        data[0], data[1], data[2], data[3],
+                                    ]) as usize;
+                                    let start = 4 + tiff_off;
+                                    if start < data.len() {
+                                        return Self::from_tiff(
+                                            &mut Cursor::new(data[start..].to_vec()),
+                                            0,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Last resort: iterate all trak boxes to find the video track dimensions
+            let mut trak_pos = moov_start;
+            while trak_pos < moov_end {
+                let (trak_start, trak_end) =
+                    match isobmff_find_box(reader, trak_pos, moov_end, b"trak")? {
+                        Some(v) => v,
+                        None => break,
+                    };
+                trak_pos = trak_end;
+
+                if let Some((tkhd_start, _)) =
+                    isobmff_find_box(reader, trak_start, trak_end, b"tkhd")?
+                {
+                    // tkhd FullBox: version(1) + flags(3)
+                    reader.seek(SeekFrom::Start(tkhd_start))?;
+                    let mut vf = [0u8; 1];
+                    reader.read_exact(&mut vf)?;
+                    let version = vf[0];
+
+                    // Skip flags(3) + creation_time + modification_time + track_id + reserved
+                    let skip = if version == 0 {
+                        3 + 4 + 4 + 4 + 4
+                    } else {
+                        3 + 8 + 8 + 4 + 4
+                    };
+                    reader.seek(SeekFrom::Current(skip as i64))?;
+
+                    // Skip duration
+                    reader.seek(SeekFrom::Current(if version == 0 { 4 } else { 8 }))?;
+
+                    // Skip reserved(8) + layer(2) + alternate_group(2) + volume(2) + reserved(2) + matrix(36)
+                    reader.seek(SeekFrom::Current(8 + 2 + 2 + 2 + 2 + 36))?;
+
+                    // Width and height as 16.16 fixed-point
+                    let mut dim_buf = [0u8; 8];
+                    reader.read_exact(&mut dim_buf)?;
+                    let width = u32::from_be_bytes([dim_buf[0], dim_buf[1], dim_buf[2], dim_buf[3]]) >> 16;
+                    let height = u32::from_be_bytes([dim_buf[4], dim_buf[5], dim_buf[6], dim_buf[7]]) >> 16;
+
+                    if width > 0 && height > 0 {
+                        let values = HashMap::from([
+                            (spec::IMAGE_WIDTH.tag, ExifValue::Long(vec![width])),
+                            (spec::IMAGE_HEIGHT.tag, ExifValue::Long(vec![height])),
+                        ]);
+                        return Ok((0, Endian::Big, values));
+                    }
+                }
+            }
+        }
+
+        // No EXIF found — return empty (same behavior as other formats)
+        Ok((0, Endian::Big, HashMap::new()))
+    }
+
     // Parse TIFF-like EXIF at tiff_base (0 for pure TIFF files, or the offset into a JPEG APP1)
-    fn from_tiff(
-        reader: &mut File,
+    fn from_tiff<R: Read + Seek>(
+        reader: &mut R,
         tiff_base: u64,
     ) -> Result<(u64, Endian, HashMap<u16, ExifValue>), ExifError> {
         // Read TIFF header (II/MM, 42, offset to IFD0)
@@ -447,7 +597,7 @@ impl ExifContext {
 
                 let total = (entry.count as usize) * ts;
 
-                let Ok(data) = read_value_bytes(reader, tiff_base, entry, total) else {
+                let Ok(data) = read_value_bytes(reader, endian, tiff_base, entry, total) else {
                     continue;
                 };
 
@@ -499,7 +649,14 @@ impl ExifContext {
         self.exif_values.get(&field.tag)
     }
 
-    #[allow(dead_code)]
+    pub fn set_tag_value(&mut self, field: ExifField, value: ExifValue) {
+        self.exif_values.insert(field.tag, value);
+    }
+
+    pub fn tag_count(&self) -> usize {
+        self.exif_values.len()
+    }
+
     pub fn get_tag_value_by_tag(&self, tag: u16) -> Option<&ExifValue> {
         self.exif_values.get(&tag)
     }
@@ -564,8 +721,9 @@ impl ExifContext {
     }
 }
 
-fn read_value_bytes(
-    reader: &mut File,
+fn read_value_bytes<R: Read + Seek>(
+    reader: &mut R,
+    endian: Endian,
     tiff_base: u64,
     ent: &IfdEntry,
     want: usize,
@@ -574,8 +732,12 @@ fn read_value_bytes(
         "Failed to read exif value bytes".to_string(),
     ))? * (ent.count as usize);
     if total_size <= 4 {
-        // Inline in value_or_offset (endian-agnostic raw bytes)
-        let raw = ent.value_or_offset.to_le_bytes();
+        // Inline in value_or_offset — must serialize back in the same
+        // byte order used to parse it, so read_entry_value sees correct bytes
+        let raw = match endian {
+            Endian::Little => ent.value_or_offset.to_le_bytes(),
+            Endian::Big => ent.value_or_offset.to_be_bytes(),
+        };
         Ok(raw[..total_size.min(want)].to_vec())
     } else {
         let abs = tiff_base + ent.value_or_offset as u64;
@@ -720,17 +882,11 @@ fn read_u32_tag_if_present<R: Read + Seek>(
 ) -> Result<Option<u64>, ExifError> {
     if let Some(ent) = ifd.entries.iter().find(|e2| e2.tag == tag) {
         if ent.typ == 4 && ent.count >= 1 {
-            // value_or_offset is inline if count*4 <= 4, otherwise points to array
+            // value_or_offset was already parsed by read_u32_e with correct endianness
             if ent.count == 1 {
-                // Inline or offset: for count==1 LONG, spec stores inline.
-                let off = match e {
-                    Endian::Little => ent.value_or_offset,
-                    Endian::Big => u32::from_be_bytes(ent.value_or_offset.to_le_bytes()),
-                };
-                return Ok(Some(tiff_base + off as u64));
+                return Ok(Some(tiff_base + ent.value_or_offset as u64));
             } else {
-                // Array of LONG offsets; we only take the first as ExifIFD starts there
-                // Read first u32 from pointed area
+                // Array of LONG offsets; read first u32 from pointed area
                 let ptr = tiff_base + ent.value_or_offset as u64;
                 reader.seek(SeekFrom::Start(ptr))?;
                 let off = read_u32_e(reader, e)?;
@@ -739,9 +895,10 @@ fn read_u32_tag_if_present<R: Read + Seek>(
         } else if ent.typ == 3 && ent.count >= 1 {
             // SHORT (rare for these pointer tags, but handle)
             if ent.count == 1 {
+                // For BE, the SHORT is in the upper 16 bits of the u32
                 let val = match e {
                     Endian::Little => ent.value_or_offset as u16,
-                    Endian::Big => u16::from_be_bytes((ent.value_or_offset as u16).to_le_bytes()),
+                    Endian::Big => (ent.value_or_offset >> 16) as u16,
                 };
                 return Ok(Some(tiff_base + val as u64));
             }
@@ -808,7 +965,7 @@ fn read_be_u16<R: Read>(r: &mut R) -> Result<u16, ExifError> {
     Ok(u16::from_be_bytes(b))
 }
 
-fn read_ifd(r: &mut File, e: Endian, ifd_abs_off: u64) -> Result<IfdInfo, ExifError> {
+fn read_ifd<R: Read + Seek>(r: &mut R, e: Endian, ifd_abs_off: u64) -> Result<IfdInfo, ExifError> {
     r.seek(SeekFrom::Start(ifd_abs_off))?;
     let count = read_u16_e(r, e)? as usize;
     let mut entries = Vec::with_capacity(count);
@@ -847,8 +1004,8 @@ fn type_size(typ: u16) -> Option<usize> {
 }
 
 /// Parse Sony's encrypted SR2SubIFD structure
-fn parse_encrypted_sr2_subifd(
-    reader: &mut File,
+fn parse_encrypted_sr2_subifd<R: Read + Seek>(
+    reader: &mut R,
     tiff_base: u64,
     offset: u32,
     length: u32,
@@ -990,10 +1147,17 @@ fn parse_ifd_from_bytes(
     Ok(result)
 }
 
+// ---------------------- ISOBMFF container helpers ----------------------
+// Canonical implementations live in codec::isobmff; re-export for backward compat.
+
+pub(crate) use crate::codec::isobmff::{
+    isobmff_find_box, isobmff_find_item_extent, isobmff_find_item_id_by_type,
+};
+
 /// Parse Sony MakerNotes - starts directly with IFD entry count (no TIFF header)
 /// Offsets within MakerNotes are relative to the TIFF base (file start), not MakerNotes start
-fn parse_sony_makernotes(
-    reader: &mut File,
+fn parse_sony_makernotes<R: Read + Seek>(
+    reader: &mut R,
     offset: u64,
     _length: usize,
 ) -> Result<HashMap<u16, ExifValue>, ExifError> {

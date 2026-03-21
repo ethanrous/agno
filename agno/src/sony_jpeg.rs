@@ -2,6 +2,7 @@ use std::io::Write;
 
 use crate::sony_decoder::DecodeError;
 
+#[cfg(feature = "webp")]
 #[allow(dead_code)]
 pub fn write_webp_from_rgb8_writer<W: Write>(
     writer: &mut W,
@@ -10,8 +11,8 @@ pub fn write_webp_from_rgb8_writer<W: Write>(
     height: u32,
     quality: u8,
 ) -> Result<(), DecodeError> {
-    let enc = webp::Encoder::new(rgb, webp::PixelLayout::Rgb, width, height);
-    let encoded = enc.encode(quality as f32);
+    let encoded = crate::codec::webp::encode_webp(rgb, width, height, quality)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
     writer.write_all(&encoded)?;
 
     Ok(())

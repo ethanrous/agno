@@ -9,7 +9,7 @@ use std::{
 use tracing::debug;
 
 use crate::{
-    agno_image::{AgnoImage, auto_rotate_image},
+    agno_image::AgnoImage,
     canon_decoder::{self, CanonLoadResult, Cr2SliceInfo},
     demosaic::{BayerPattern, demosaic_bilinear_to_rgb8},
     exif::{
@@ -28,7 +28,7 @@ pub fn load_canon_raw(
     file: &mut File,
     exif: ExifContext,
 ) -> Result<AgnoImage, Box<dyn Error>> {
-    let mut dims = Dimensions {
+    let dims = Dimensions {
         raw_width: det.raw.width as usize,
         raw_height: det.raw.height as usize,
         output_width: det.raw.width as usize,
@@ -46,7 +46,7 @@ pub fn load_canon_raw(
 
     // Re-read EXIF for metadata extraction
     file.seek(SeekFrom::Start(0))?;
-    let mut ctx = ExifContext::from_reader_auto(file)?;
+    let ctx = ExifContext::from_reader_auto(file)?;
 
     // Get Canon variant from detection result
     let variant = match det.maker {
@@ -149,11 +149,8 @@ pub fn load_canon_raw(
         gamma,
     );
 
-    // Auto-rotate based on EXIF Orientation tag
-    let img = auto_rotate_image(&mut ctx, &rgb, &mut dims)?;
-
     Ok(AgnoImage::new(
-        img,
+        rgb,
         dims.output_width as u64,
         dims.output_height as u64,
         exif,

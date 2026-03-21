@@ -28,7 +28,7 @@ impl GpuContext {
     /// Initialize the GPU context asynchronously.
     async fn init_async() -> Option<GpuContext> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends: wgpu::Backends::all(),
             ..Default::default()
         });
 
@@ -36,7 +36,7 @@ impl GpuContext {
         let adapters: Vec<_> = instance.enumerate_adapters(wgpu::Backends::all());
         if adapters.is_empty() {
             tracing::warn!(
-                "No GPU adapters found. Check that Vulkan drivers are installed and accessible."
+                "No GPU adapters found. On macOS ensure Metal is available; on Linux ensure Vulkan drivers are installed."
             );
 
             match std::env::var("NVIDIA_DRIVER_CAPABILITIES").ok() {

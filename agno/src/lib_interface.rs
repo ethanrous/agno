@@ -1,12 +1,13 @@
 use std::{fs::File, ptr::null_mut};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
+#[cfg(feature = "webp")]
+use crate::sony_jpeg::write_webp_from_rgb8_writer;
 use crate::{
     agno_image::{AgnoImage, load::load_agno_image_from_file, scale_image},
     exif::ExifData,
     logging::{LogConfig, try_init},
-    sony_jpeg::write_webp_from_rgb8_writer,
 };
 
 macro_rules! ok_or_null {
@@ -55,6 +56,7 @@ pub extern "C" fn load_image_from_path(path: *const u8, len: usize) -> *mut Agno
     ok_or_null!(load_agno_image_from_file(wrapped_path.as_str()))
 }
 
+#[cfg(feature = "webp")]
 #[unsafe(no_mangle)]
 pub extern "C" fn write_agno_image_to_webp(path: *const u8, len: usize, img: &mut AgnoImage) {
     let wrapped_path = CString::new(path, len);
@@ -94,7 +96,10 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
     let ret = match data {
         Some(value) => ExifData::from_exif_value(value),
         None => {
-            warn!("Tag {img_tag} not found in EXIF data");
+            debug!(
+                "Tag {img_tag} not found in EXIF data ({} tags present)",
+                img.exif.tag_count()
+            );
 
             ExifData {
                 data: null_mut(),
@@ -136,6 +141,7 @@ pub struct AgnoBuffer {
     len: usize,
 }
 
+#[cfg(feature = "jpeg")]
 #[unsafe(no_mangle)]
 pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) -> AgnoBuffer {
     match img.to_jpeg(quality) {

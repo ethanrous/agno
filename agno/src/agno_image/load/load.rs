@@ -1,13 +1,13 @@
 use std::{
     error::Error,
     fs::File,
-    io::{Cursor, Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
 };
 
 use crate::{
     agno_image::{
         AgnoImage,
-        load::{load_canon_raw, load_pdf, load_sony_raw},
+        load::{load_canon_raw, load_heic, load_mov_thumbnail, load_pdf, load_sony_raw},
     },
     exif::ExifContext,
     tiff::{detect_raw, RawMaker, TiffDetectResult},
@@ -18,16 +18,19 @@ pub enum ImageType {
     Png,
     Webp,
     Pdf,
+    Heic,
+    QuickTimeMov,
+    Mp4,
     SonyRaw(TiffDetectResult),
     CanonRaw(TiffDetectResult),
 }
 
 pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>> {
-    let mut buf = [0u8; 2];
+    let mut buf = [0u8; 12];
     reader.seek(SeekFrom::Start(0))?;
     reader.read_exact(&mut buf)?;
 
-    match buf {
+    match [buf[0], buf[1]] {
         [0xFF, 0xD8] => Ok(ImageType::Jpeg),
         [0x89, b'P'] => Ok(ImageType::Png),
         [b'R', b'I'] => Ok(ImageType::Webp),
@@ -35,13 +38,31 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
         [0x25, 0x50] => Ok(ImageType::Pdf),
         [b'I', b'I'] | [b'M', b'M'] => {
             let det = detect_raw(reader)?;
-            // Distinguish Sony from Canon based on maker
             match det.maker {
                 RawMaker::Canon(_) => Ok(ImageType::CanonRaw(det)),
                 RawMaker::Sony(_) => Ok(ImageType::SonyRaw(det)),
             }
         }
-        _ => Err("Unsupported image format".into()),
+        _ => {
+            if &buf[4..8] == b"ftyp" {
+                match &buf[8..12] {
+                    b"heic" | b"heix" | b"heim" | b"heis" | b"mif1" => Ok(ImageType::Heic),
+                    b"qt  " => Ok(ImageType::QuickTimeMov),
+                    // All other ISOBMFF are treated as MP4-family
+                    _ => Ok(ImageType::Mp4),
+                }
+            } else if &buf[4..8] == b"wide"
+                || &buf[4..8] == b"mdat"
+                || &buf[4..8] == b"moov"
+                || &buf[4..8] == b"free"
+                || &buf[4..8] == b"skip"
+            {
+                // Classic QuickTime MOV without ftyp box
+                Ok(ImageType::QuickTimeMov)
+            } else {
+                Err("Unsupported image format".into())
+            }
+        }
     }
 }
 
@@ -49,23 +70,44 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
     let mut file = File::open(path)?;
 
     // Try to load EXIF, but don't fail if it's missing (e.g., some JPEGs/PNGs)
-    let exif = ExifContext::from_reader_auto(&mut file).unwrap_or_default();
+    let exif = match ExifContext::from_reader_auto(&mut file) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            tracing::warn!("Failed to extract EXIF from {path}: {e}");
+            ExifContext::default()
+        }
+    };
 
-    match detect_image_type(&mut file)? {
-        ImageType::Jpeg | ImageType::Png | ImageType::Webp => {
-            // For JPEG, use image crate directly
-            let img = image::ImageReader::new(Cursor::new(std::fs::read(path)?))
-                .with_guessed_format()?
-                .decode()?
-                .to_rgb8();
-
-            let (width, height) = img.dimensions();
-            return Ok(AgnoImage::new(
-                img.into_raw(),
-                width as u64,
-                height as u64,
-                exif,
-            ));
+    let mut img = match detect_image_type(&mut file)? {
+        #[cfg(feature = "jpeg")]
+        ImageType::Jpeg => {
+            let file_data = std::fs::read(path)?;
+            let (rgb, width, height) = crate::codec::jpeg::decode_jpeg(&file_data)?;
+            Ok(AgnoImage::new(rgb, width as u64, height as u64, exif))
+        }
+        #[cfg(not(feature = "jpeg"))]
+        ImageType::Jpeg => {
+            Err("JPEG support is not enabled. Please enable the 'jpeg' feature.".into())
+        }
+        #[cfg(feature = "png")]
+        ImageType::Png => {
+            let file_data = std::fs::read(path)?;
+            let (rgb, width, height) = crate::codec::png::decode_png(&file_data)?;
+            Ok(AgnoImage::new(rgb, width as u64, height as u64, exif))
+        }
+        #[cfg(not(feature = "png"))]
+        ImageType::Png => {
+            Err("PNG support is not enabled. Please enable the 'png' feature.".into())
+        }
+        #[cfg(feature = "webp")]
+        ImageType::Webp => {
+            let file_data = std::fs::read(path)?;
+            let (rgb, width, height) = crate::codec::webp::decode_webp(&file_data)?;
+            Ok(AgnoImage::new(rgb, width as u64, height as u64, exif))
+        }
+        #[cfg(not(feature = "webp"))]
+        ImageType::Webp => {
+            Err("WebP support is not enabled. Please enable the 'webp' feature.".into())
         }
         ImageType::Pdf => {
             if cfg!(feature = "pdf") {
@@ -74,13 +116,45 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
                 Err("PDF support is not enabled. Please enable the 'pdf' feature.".into())
             }
         }
-        ImageType::SonyRaw(det) => {
-            // For Sony RAW, proceed with ARW decoding
-            load_sony_raw(det, &mut file, exif)
+        ImageType::SonyRaw(det) => load_sony_raw(det, &mut file, exif),
+        ImageType::CanonRaw(det) => load_canon_raw(det, &mut file, exif),
+        ImageType::Heic => {
+            #[cfg(all(feature = "heic-c", not(feature = "heic-experimental-decoder")))]
+            {
+                super::heic_libheif::load_heic_libheif(&mut file, exif)
+            }
+            #[cfg(any(not(feature = "heic-c"), feature = "heic-experimental-decoder"))]
+            {
+                load_heic(&mut file, exif)
+            }
         }
-        ImageType::CanonRaw(det) => {
-            // For Canon RAW, proceed with CR2 decoding
-            load_canon_raw(det, &mut file, exif)
-        }
+        ImageType::QuickTimeMov | ImageType::Mp4 => load_mov_thumbnail(&mut file, exif),
+    }?;
+
+    img.auto_rotate()?;
+    Ok(img)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_jpeg_applies_orientation() {
+        // sideways.jpeg: physical 4032x3024, EXIF orientation=6 (rotate 90 CW)
+        // After rotation, width should be the smaller dimension
+        let img = load_agno_image_from_file("../tests/data/sideways.jpeg").unwrap();
+        assert_eq!(img.width, 3024, "Width should be 3024 after rotation");
+        assert_eq!(img.height, 4032, "Height should be 4032 after rotation");
     }
+
+    #[test]
+    fn load_heic_applies_orientation() {
+        // sideways2.heic: physical 4032x3024, EXIF orientation=6 (rotate 90 CW)
+        let img = load_agno_image_from_file("../tests/data/sideways2.heic").unwrap();
+        assert_eq!(img.width, 3024, "Width should be 3024 after rotation");
+        assert_eq!(img.height, 4032, "Height should be 4032 after rotation");
+    }
+
+    // sideways3.heic test removed: file does not exist in the test data directory
 }

@@ -7,7 +7,8 @@
 
 use agno_gpu_shared::{
     apply_saturation, apply_tone_curve, cfa_color_at, clamp_i32, clamp_u8, lanczos_weight,
-    max_f32, pow_f32, DemosaicParams, ResizeParams, Vec4, CFA_B, CFA_G, CFA_R,
+    max_f32, pow_f32, ColorConvertParams, DemosaicParams, ResizeParams, Vec4, CFA_B, CFA_G,
+    CFA_R,
 };
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
@@ -290,4 +291,71 @@ pub fn resize_vertical_kernel(
     let b = clamp_u8((sum_b * inv + 0.5) as i32);
 
     output[(dst_y * params.dst_width + dst_x) as usize] = (r << 16) | (g << 8) | b;
+}
+
+/// RGB to YCbCr color space conversion (BT.601).
+/// Each thread processes one pixel.
+/// Input: packed RGB u32 (0x00RRGGBB). Output: packed YCbCr u32 (0x00YCbCr).
+#[spirv(compute(threads(16, 16)))]
+pub fn rgb_to_ycbcr_kernel(
+    #[spirv(global_invocation_id)] id: UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &ColorConvertParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] input: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] output: &mut [u32],
+) {
+    let x = id.x;
+    let y = id.y;
+    if x >= params.width || y >= params.height {
+        return;
+    }
+
+    let idx = (y * params.width + x) as usize;
+    let pixel = input[idx];
+    let r = ((pixel >> 16) & 0xFF) as f32;
+    let g = ((pixel >> 8) & 0xFF) as f32;
+    let b = (pixel & 0xFF) as f32;
+
+    // BT.601 RGB to YCbCr
+    let y_val = 0.299 * r + 0.587 * g + 0.114 * b;
+    let cb_val = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+    let cr_val = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+
+    let y_u8 = clamp_u8(y_val as i32);
+    let cb_u8 = clamp_u8(cb_val as i32);
+    let cr_u8 = clamp_u8(cr_val as i32);
+
+    output[idx] = (y_u8 << 16) | (cb_u8 << 8) | cr_u8;
+}
+
+/// RGB to YUV (BT.601) per-pixel conversion.
+/// Input: packed RGB u32 (0x00RRGGBB). Output: packed YUV u32 (0x00_Y_U_V).
+#[spirv(compute(threads(16, 16)))]
+pub fn rgb_to_yuv_kernel(
+    #[spirv(global_invocation_id)] id: UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &ColorConvertParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] input: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] output: &mut [u32],
+) {
+    let x = id.x;
+    let y = id.y;
+    if x >= params.width || y >= params.height {
+        return;
+    }
+
+    let idx = (y * params.width + x) as usize;
+    let pixel = input[idx];
+    let r = ((pixel >> 16) & 0xFF) as i32;
+    let g = ((pixel >> 8) & 0xFF) as i32;
+    let b = (pixel & 0xFF) as i32;
+
+    // BT.601 full-range
+    let y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+    let u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+    let v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+
+    let y_u8 = clamp_u8(y_val);
+    let u_u8 = clamp_u8(u_val);
+    let v_u8 = clamp_u8(v_val);
+
+    output[idx] = (y_u8 << 16) | (u_u8 << 8) | v_u8;
 }

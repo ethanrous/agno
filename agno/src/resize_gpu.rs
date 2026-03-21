@@ -9,10 +9,21 @@ use crate::gpu::{
     workgroups_2d, GpuContext, GpuPipeline,
 };
 use agno_gpu_shared::ResizeParams;
+use std::sync::OnceLock;
 use tracing::debug;
 
 /// Load the SPIR-V shader (compiled at build time)
 const GPU_KERNELS_SPV: &[u8] = include_bytes!(env!("GPU_KERNELS_SPV_PATH"));
+
+static RESIZE_PIPELINES: OnceLock<(GpuPipeline, GpuPipeline)> = OnceLock::new();
+
+fn get_resize_pipelines(ctx: &'static GpuContext) -> &'static (GpuPipeline, GpuPipeline) {
+    RESIZE_PIPELINES.get_or_init(|| {
+        let h = GpuPipeline::new(ctx, GPU_KERNELS_SPV, "resize_horizontal_kernel", "resize-h");
+        let v = GpuPipeline::new(ctx, GPU_KERNELS_SPV, "resize_vertical_kernel", "resize-v");
+        (h, v)
+    })
+}
 
 /// GPU-accelerated image resize using Lanczos3 filter.
 ///
@@ -27,6 +38,24 @@ pub fn resize_gpu(
 ) -> Option<Vec<u8>> {
     let ctx = GpuContext::get()?;
 
+    // Guard: all three storage buffers (input, horizontal output, vertical output) must fit
+    // within the device's max_storage_buffer_binding_size. On Metal this is typically 128 MB,
+    // which a ~33 MP+ image packed as u32 will exceed. Return None to fall back to CPU.
+    let max_binding = ctx.device.limits().max_storage_buffer_binding_size as u64;
+    let input_bytes = src_width as u64 * src_height as u64 * 4;
+    let h_output_bytes = dst_width as u64 * src_height as u64 * 4;
+    let v_output_bytes = dst_width as u64 * dst_height as u64 * 4;
+    if input_bytes > max_binding || h_output_bytes > max_binding || v_output_bytes > max_binding {
+        debug!(
+            input_bytes,
+            h_output_bytes,
+            v_output_bytes,
+            max_binding,
+            "Image too large for GPU storage buffers, falling back to CPU"
+        );
+        return None;
+    }
+
     debug!(
         src_width,
         src_height, dst_width, dst_height, "Starting GPU resize"
@@ -39,8 +68,7 @@ pub fn resize_gpu(
         .collect();
 
     // === Pass 1: Horizontal resize (src_width x src_height -> dst_width x src_height) ===
-    let h_pipeline =
-        GpuPipeline::new(ctx, GPU_KERNELS_SPV, "resize_horizontal_kernel", "resize-h");
+    let (h_pipeline, v_pipeline) = get_resize_pipelines(ctx);
     let h_params = ResizeParams::new_horizontal(src_width, src_height, dst_width);
 
     let h_params_buffer = create_uniform_buffer(ctx, &h_params, "resize-h-params");
@@ -87,8 +115,6 @@ pub fn resize_gpu(
     );
 
     // === Pass 2: Vertical resize (dst_width x src_height -> dst_width x dst_height) ===
-    let v_pipeline =
-        GpuPipeline::new(ctx, GPU_KERNELS_SPV, "resize_vertical_kernel", "resize-v");
     let v_params = ResizeParams::new_vertical(dst_width, src_height, dst_height);
 
     let v_params_buffer = create_uniform_buffer(ctx, &v_params, "resize-v-params");

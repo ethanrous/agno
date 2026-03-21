@@ -7,7 +7,7 @@
 fn main() {
     #[cfg(feature = "gpu")]
     {
-        use spirv_builder::{MetadataPrintout, SpirvBuilder};
+        use spirv_builder::{SpirvMetadata, SpirvBuilder};
         use std::fs;
         use std::path::PathBuf;
 
@@ -18,7 +18,7 @@ fn main() {
 
         // Compile Rust to SPIR-V
         let result = SpirvBuilder::new(kernel_crate, "spirv-unknown-vulkan1.1")
-            .print_metadata(MetadataPrintout::Full)
+            .spirv_metadata(SpirvMetadata::Full)
             .build()
             .expect("Failed to compile GPU kernels to SPIR-V");
 
