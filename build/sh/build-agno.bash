@@ -43,12 +43,12 @@ if [ "$HEIC_BACKEND" = "native" ]; then
     echo "Using experimental native HEVC decoder for HEIC"
 fi
 
-cargo build --release --features "gpu${EXTRA_FEATURES}" --target "${TARGET_TRIPLE}"
+cargo build --release --lib --features "gpu${EXTRA_FEATURES}" --target "${TARGET_TRIPLE}"
 
 # ---------------------------------------------------------------------------
 # 3) Merge C library dependencies into the static archive
 # ---------------------------------------------------------------------------
-RUST_LIB="target/${TARGET_TRIPLE}/release/libagno.a"
+RUST_LIB="${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno.a"
 
 if [ "$HEIC_BACKEND" = "libheif" ]; then
     echo "Merging libheif and all transitive C deps into static archive..."
