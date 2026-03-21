@@ -153,6 +153,20 @@ fn webp_non_multiple_of_16_dimensions() {
 }
 
 #[test]
+fn webp_odd_dimensions_large() {
+    // Odd dimensions >= 256 trigger the GPU path (if available).
+    // The GPU path must use ceil(w/2) / ceil(h/2) for chroma plane dimensions,
+    // matching the macroblock grid expectations in encode_webp_from_yuv.
+    for (w, h) in [(257u32, 256u32), (256u32, 257u32), (513u32, 513u32)] {
+        let rgb = vec![128u8; (w * h * 3) as usize];
+        let result = webp::encode_webp(&rgb, w, h, 80);
+        assert!(result.is_ok(), "WebP encode panicked for {}x{}", w, h);
+        let data = result.unwrap();
+        assert_eq!(&data[..4], b"RIFF", "Invalid RIFF header for {}x{}", w, h);
+    }
+}
+
+#[test]
 fn webp_riff_file_size() {
     let rgb = vec![128u8; 16 * 16 * 3];
     let data = webp::encode_webp(&rgb, 16, 16, 75).unwrap();

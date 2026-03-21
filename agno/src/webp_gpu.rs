@@ -18,6 +18,20 @@ pub fn encode_webp_gpu(
     quality: u8,
 ) -> Option<Vec<u8>> {
     let ctx = GpuContext::get()?;
+
+    // Guard: the color-convert storage buffer must fit within the device's
+    // max_storage_buffer_binding_size (128 MB on Metal). Large images fall back to CPU.
+    let max_binding = ctx.device.limits().max_storage_buffer_binding_size as u64;
+    let input_bytes = width as u64 * height as u64 * 4;
+    if input_bytes > max_binding {
+        debug!(
+            input_bytes,
+            max_binding,
+            "Image too large for GPU WebP encode storage buffer, falling back to CPU"
+        );
+        return None;
+    }
+
     debug!(width, height, quality, "Starting GPU WebP encode");
 
     // Pack RGB to u32
@@ -73,8 +87,8 @@ pub fn encode_webp_gpu(
     let h = height as usize;
     let y_stride = (w + 15) & !15;
     let y_height = (h + 15) & !15;
-    let uv_stride = (w / 2 + 7) & !7;
-    let uv_height = (h / 2 + 7) & !7;
+    let uv_stride = ((w + 1) / 2 + 7) & !7; // ceil(w/2), matching encode.rs
+    let uv_height = ((h + 1) / 2 + 7) & !7; // ceil(h/2), matching encode.rs
 
     let mut y_plane = vec![0u8; y_stride * y_height];
     let mut u_plane = vec![128u8; uv_stride * uv_height];

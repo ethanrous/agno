@@ -2,6 +2,7 @@
 ///
 /// Replaces `image::imageops` for flip, rotate, and resize operations.
 
+use rayon::prelude::*;
 use std::f64::consts::PI;
 
 const BPP: usize = 3; // bytes per pixel (RGB8)
@@ -145,41 +146,39 @@ fn resize_horizontal(src: &[u8], src_w: usize, src_h: usize, dst_w: usize) -> Ve
     let mut out = vec![0u8; dst_w * src_h * BPP];
     let ratio = src_w as f64 / dst_w as f64;
 
-    for y in 0..src_h {
-        let src_row = y * src_stride;
-        let dst_row = y * dst_stride;
+    out.par_chunks_mut(dst_stride)
+        .enumerate()
+        .for_each(|(y, dst_row_buf)| {
+            let src_row = y * src_stride;
 
-        for dx in 0..dst_w {
-            let center = (dx as f64 + 0.5) * ratio - 0.5;
-            let left = (center - 3.0).ceil() as i64;
-            let right = (center + 3.0).floor() as i64;
+            for dx in 0..dst_w {
+                let center = (dx as f64 + 0.5) * ratio - 0.5;
+                let left = (center - 3.0).ceil() as i64;
+                let right = (center + 3.0).floor() as i64;
 
-            let mut sum_r = 0.0_f64;
-            let mut sum_g = 0.0_f64;
-            let mut sum_b = 0.0_f64;
-            let mut weight_sum = 0.0_f64;
+                let mut sum_r = 0.0_f64;
+                let mut sum_g = 0.0_f64;
+                let mut sum_b = 0.0_f64;
+                let mut weight_sum = 0.0_f64;
 
-            for sx in left..=right {
-                let clamped = sx.clamp(0, src_w as i64 - 1) as usize;
-                let w = lanczos3_kernel(sx as f64 - center);
-                let off = src_row + clamped * BPP;
-                sum_r += src[off] as f64 * w;
-                sum_g += src[off + 1] as f64 * w;
-                sum_b += src[off + 2] as f64 * w;
-                weight_sum += w;
+                for sx in left..=right {
+                    let clamped = sx.clamp(0, src_w as i64 - 1) as usize;
+                    let w = lanczos3_kernel(sx as f64 - center);
+                    let off = src_row + clamped * BPP;
+                    sum_r += src[off] as f64 * w;
+                    sum_g += src[off + 1] as f64 * w;
+                    sum_b += src[off + 2] as f64 * w;
+                    weight_sum += w;
+                }
+
+                let inv = if weight_sum.abs() > 1e-12 { 1.0 / weight_sum } else { 0.0 };
+                let off = dx * BPP;
+                dst_row_buf[off]     = (sum_r * inv).round().clamp(0.0, 255.0) as u8;
+                dst_row_buf[off + 1] = (sum_g * inv).round().clamp(0.0, 255.0) as u8;
+                dst_row_buf[off + 2] = (sum_b * inv).round().clamp(0.0, 255.0) as u8;
             }
+        });
 
-            let inv = if weight_sum.abs() > 1e-12 {
-                1.0 / weight_sum
-            } else {
-                0.0
-            };
-            let off = dst_row + dx * BPP;
-            out[off] = (sum_r * inv).round().clamp(0.0, 255.0) as u8;
-            out[off + 1] = (sum_g * inv).round().clamp(0.0, 255.0) as u8;
-            out[off + 2] = (sum_b * inv).round().clamp(0.0, 255.0) as u8;
-        }
-    }
     out
 }
 
@@ -188,45 +187,40 @@ fn resize_vertical(src: &[u8], width: usize, src_h: usize, dst_h: usize) -> Vec<
     let mut out = vec![0u8; width * dst_h * BPP];
     let ratio = src_h as f64 / dst_h as f64;
 
-    for dy in 0..dst_h {
-        let center = (dy as f64 + 0.5) * ratio - 0.5;
-        let top = (center - 3.0).ceil() as i64;
-        let bottom = (center + 3.0).floor() as i64;
+    out.par_chunks_mut(stride)
+        .enumerate()
+        .for_each(|(dy, dst_row_buf)| {
+            let center = (dy as f64 + 0.5) * ratio - 0.5;
+            let top = (center - 3.0).ceil() as i64;
+            let bottom = (center + 3.0).floor() as i64;
 
-        // Pre-compute weights for this destination row
-        let mut weights: Vec<(usize, f64)> = Vec::with_capacity((bottom - top + 1) as usize);
-        let mut weight_sum = 0.0_f64;
-        for sy in top..=bottom {
-            let clamped = sy.clamp(0, src_h as i64 - 1) as usize;
-            let w = lanczos3_kernel(sy as f64 - center);
-            weights.push((clamped, w));
-            weight_sum += w;
-        }
-        let inv = if weight_sum.abs() > 1e-12 {
-            1.0 / weight_sum
-        } else {
-            0.0
-        };
-
-        let dst_row = dy * stride;
-        for x in 0..width {
-            let mut sum_r = 0.0_f64;
-            let mut sum_g = 0.0_f64;
-            let mut sum_b = 0.0_f64;
-
-            for &(sy, w) in &weights {
-                let off = sy * stride + x * BPP;
-                sum_r += src[off] as f64 * w;
-                sum_g += src[off + 1] as f64 * w;
-                sum_b += src[off + 2] as f64 * w;
+            let mut weights: Vec<(usize, f64)> = Vec::with_capacity((bottom - top + 1) as usize);
+            let mut weight_sum = 0.0_f64;
+            for sy in top..=bottom {
+                let clamped = sy.clamp(0, src_h as i64 - 1) as usize;
+                let w = lanczos3_kernel(sy as f64 - center);
+                weights.push((clamped, w));
+                weight_sum += w;
             }
+            let inv = if weight_sum.abs() > 1e-12 { 1.0 / weight_sum } else { 0.0 };
 
-            let off = dst_row + x * BPP;
-            out[off] = (sum_r * inv).round().clamp(0.0, 255.0) as u8;
-            out[off + 1] = (sum_g * inv).round().clamp(0.0, 255.0) as u8;
-            out[off + 2] = (sum_b * inv).round().clamp(0.0, 255.0) as u8;
-        }
-    }
+            for x in 0..width {
+                let mut sum_r = 0.0_f64;
+                let mut sum_g = 0.0_f64;
+                let mut sum_b = 0.0_f64;
+                for &(sy, w) in &weights {
+                    let off = sy * stride + x * BPP;
+                    sum_r += src[off] as f64 * w;
+                    sum_g += src[off + 1] as f64 * w;
+                    sum_b += src[off + 2] as f64 * w;
+                }
+                let off = x * BPP;
+                dst_row_buf[off]     = (sum_r * inv).round().clamp(0.0, 255.0) as u8;
+                dst_row_buf[off + 1] = (sum_g * inv).round().clamp(0.0, 255.0) as u8;
+                dst_row_buf[off + 2] = (sum_b * inv).round().clamp(0.0, 255.0) as u8;
+            }
+        });
+
     out
 }
 

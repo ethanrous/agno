@@ -1,14 +1,14 @@
 use std::{fs::File, ptr::null_mut};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
+#[cfg(feature = "webp")]
+use crate::sony_jpeg::write_webp_from_rgb8_writer;
 use crate::{
     agno_image::{AgnoImage, load::load_agno_image_from_file, scale_image},
     exif::ExifData,
     logging::{LogConfig, try_init},
 };
-#[cfg(feature = "webp")]
-use crate::sony_jpeg::write_webp_from_rgb8_writer;
 
 macro_rules! ok_or_null {
     ($expr:expr) => {
@@ -96,7 +96,10 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
     let ret = match data {
         Some(value) => ExifData::from_exif_value(value),
         None => {
-            warn!("Tag {img_tag} not found in EXIF data ({} tags present)", img.exif.tag_count());
+            debug!(
+                "Tag {img_tag} not found in EXIF data ({} tags present)",
+                img.exif.tag_count()
+            );
 
             ExifData {
                 data: null_mut(),
