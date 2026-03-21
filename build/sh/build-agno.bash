@@ -66,6 +66,11 @@ if [ "$HEIC_BACKEND" = "libheif" ]; then
         [aom]=aom [vmaf]=libvmaf [sharpyuv]=libsharpyuv
     )
 
+    # Build libheif and libde265 from source as static libraries, since apt only provides shared libs.
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        ./build/sh/transient/build-libheif.bash
+    fi
+
     for lib_name in "${!LIB_TO_PKG[@]}"; do
         pkg="${LIB_TO_PKG[$lib_name]}"
         lib_dir=$(pkg-config --variable=libdir "$pkg" 2>/dev/null || true)
