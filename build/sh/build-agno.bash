@@ -43,6 +43,13 @@ if [ "$HEIC_BACKEND" = "native" ]; then
     echo "Using experimental native HEVC decoder for HEIC"
 fi
 
+# Build libheif and libde265 from source BEFORE cargo build: libheif-sys requires
+# libheif >= 1.21 via pkg-config at cargo build time, so it must be present first.
+# apt only ships ~1.17.x; we build static libs from source for later merging too.
+if [ "$HEIC_BACKEND" = "libheif" ] && [[ "$(uname -s)" != "Darwin" ]]; then
+    ./build/sh/transient/build-libheif.bash
+fi
+
 cargo build --release --lib --features "gpu${EXTRA_FEATURES}" --target "${TARGET_TRIPLE}"
 
 # ---------------------------------------------------------------------------
@@ -65,11 +72,6 @@ if [ "$HEIC_BACKEND" = "libheif" ]; then
         [heif]=libheif [de265]=libde265 [x265]=x265
         [aom]=aom [vmaf]=libvmaf [sharpyuv]=libsharpyuv
     )
-
-    # Build libheif and libde265 from source as static libraries, since apt only provides shared libs.
-    if [[ "$(uname -s)" != "Darwin" ]]; then
-        ./build/sh/transient/build-libheif.bash
-    fi
 
     for lib_name in "${!LIB_TO_PKG[@]}"; do
         pkg="${LIB_TO_PKG[$lib_name]}"
