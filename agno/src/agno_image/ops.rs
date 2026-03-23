@@ -1,7 +1,6 @@
 /// Native CPU image operations on RGB8 data (3 bytes per pixel, row-major).
 ///
 /// Replaces `image::imageops` for flip, rotate, and resize operations.
-
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
@@ -171,9 +170,13 @@ fn resize_horizontal(src: &[u8], src_w: usize, src_h: usize, dst_w: usize) -> Ve
                     weight_sum += w;
                 }
 
-                let inv = if weight_sum.abs() > 1e-12 { 1.0 / weight_sum } else { 0.0 };
+                let inv = if weight_sum.abs() > 1e-12 {
+                    1.0 / weight_sum
+                } else {
+                    0.0
+                };
                 let off = dx * BPP;
-                dst_row_buf[off]     = (sum_r * inv).round().clamp(0.0, 255.0) as u8;
+                dst_row_buf[off] = (sum_r * inv).round().clamp(0.0, 255.0) as u8;
                 dst_row_buf[off + 1] = (sum_g * inv).round().clamp(0.0, 255.0) as u8;
                 dst_row_buf[off + 2] = (sum_b * inv).round().clamp(0.0, 255.0) as u8;
             }
@@ -202,7 +205,11 @@ fn resize_vertical(src: &[u8], width: usize, src_h: usize, dst_h: usize) -> Vec<
                 weights.push((clamped, w));
                 weight_sum += w;
             }
-            let inv = if weight_sum.abs() > 1e-12 { 1.0 / weight_sum } else { 0.0 };
+            let inv = if weight_sum.abs() > 1e-12 {
+                1.0 / weight_sum
+            } else {
+                0.0
+            };
 
             for x in 0..width {
                 let mut sum_r = 0.0_f64;
@@ -215,7 +222,7 @@ fn resize_vertical(src: &[u8], width: usize, src_h: usize, dst_h: usize) -> Vec<
                     sum_b += src[off + 2] as f64 * w;
                 }
                 let off = x * BPP;
-                dst_row_buf[off]     = (sum_r * inv).round().clamp(0.0, 255.0) as u8;
+                dst_row_buf[off] = (sum_r * inv).round().clamp(0.0, 255.0) as u8;
                 dst_row_buf[off + 1] = (sum_g * inv).round().clamp(0.0, 255.0) as u8;
                 dst_row_buf[off + 2] = (sum_b * inv).round().clamp(0.0, 255.0) as u8;
             }
@@ -234,9 +241,9 @@ mod tests {
         for y in 0..h {
             for x in 0..w {
                 let off = (y * w + x) * BPP;
-                data[off] = x as u8;     // R = column
+                data[off] = x as u8; // R = column
                 data[off + 1] = y as u8; // G = row
-                data[off + 2] = 128;     // B = constant
+                data[off + 2] = 128; // B = constant
             }
         }
         data
@@ -374,7 +381,12 @@ mod tests {
         // Lanczos identity should be very close to original
         for i in 0..result.len() {
             let diff = (result[i] as i32 - img[i] as i32).unsigned_abs();
-            assert!(diff <= 1, "pixel byte {i}: got {}, expected {}", result[i], img[i]);
+            assert!(
+                diff <= 1,
+                "pixel byte {i}: got {}, expected {}",
+                result[i],
+                img[i]
+            );
         }
     }
 
@@ -412,8 +424,13 @@ mod tests {
             let diff_r = (chunk[0] as i32 - 100).unsigned_abs();
             let diff_g = (chunk[1] as i32 - 150).unsigned_abs();
             let diff_b = (chunk[2] as i32 - 200).unsigned_abs();
-            assert!(diff_r <= 1 && diff_g <= 1 && diff_b <= 1,
-                "Expected ~(100,150,200), got ({},{},{})", chunk[0], chunk[1], chunk[2]);
+            assert!(
+                diff_r <= 1 && diff_g <= 1 && diff_b <= 1,
+                "Expected ~(100,150,200), got ({},{},{})",
+                chunk[0],
+                chunk[1],
+                chunk[2]
+            );
         }
     }
 

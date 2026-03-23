@@ -1,8 +1,8 @@
 //! GPU-accelerated WebP encoding: color conversion on GPU, VP8 pipeline on CPU.
 
 use crate::gpu::{
-    create_output_buffer, create_storage_buffer, create_uniform_buffer, dispatch_and_read,
-    workgroups_2d, GpuContext, GpuPipeline,
+    GpuContext, GpuPipeline, create_output_buffer, create_storage_buffer, create_uniform_buffer,
+    dispatch_and_read, workgroups_2d,
 };
 use agno_gpu_shared::ColorConvertParams;
 use tracing::debug;
@@ -11,12 +11,7 @@ const GPU_KERNELS_SPV: &[u8] = include_bytes!(env!("GPU_KERNELS_SPV_PATH"));
 
 /// GPU-accelerated WebP encoding.
 /// Returns None if GPU unavailable.
-pub fn encode_webp_gpu(
-    rgb: &[u8],
-    width: u32,
-    height: u32,
-    quality: u8,
-) -> Option<Vec<u8>> {
+pub fn encode_webp_gpu(rgb: &[u8], width: u32, height: u32, quality: u8) -> Option<Vec<u8>> {
     let ctx = GpuContext::get()?;
 
     // Guard: the color-convert storage buffer must fit within the device's
@@ -26,8 +21,7 @@ pub fn encode_webp_gpu(
     if input_bytes > max_binding {
         debug!(
             input_bytes,
-            max_binding,
-            "Image too large for GPU WebP encode storage buffer, falling back to CPU"
+            max_binding, "Image too large for GPU WebP encode storage buffer, falling back to CPU"
         );
         return None;
     }
@@ -44,7 +38,8 @@ pub fn encode_webp_gpu(
     let params = ColorConvertParams {
         width,
         height,
-        _pad0: 0, _pad1: 0,
+        _pad0: 0,
+        _pad1: 0,
     };
     let pipeline = GpuPipeline::new(ctx, GPU_KERNELS_SPV, "rgb_to_yuv_kernel", "webp-color");
     let params_buf = create_uniform_buffer(ctx, &params, "webp-color-params");

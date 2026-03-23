@@ -5,8 +5,8 @@
 //! 2. Vertical pass: dst_width x src_height -> dst_width x dst_height
 
 use crate::gpu::{
-    create_output_buffer, create_storage_buffer, create_uniform_buffer, dispatch_and_read,
-    workgroups_2d, GpuContext, GpuPipeline,
+    GpuContext, GpuPipeline, create_output_buffer, create_storage_buffer, create_uniform_buffer,
+    dispatch_and_read, workgroups_2d,
 };
 use agno_gpu_shared::ResizeParams;
 use std::sync::OnceLock;

@@ -396,11 +396,7 @@ impl<'a> CabacReader<'a> {
     ///
     /// The slice must start at the first byte of CABAC-coded data
     /// (immediately after the slice header byte-alignment).
-    pub fn from_bytes(
-        data: &'a [u8],
-        init_values: &[u8],
-        slice_qp: i32,
-    ) -> Result<Self> {
+    pub fn from_bytes(data: &'a [u8], init_values: &[u8], slice_qp: i32) -> Result<Self> {
         let contexts: Vec<ContextModel> = init_values
             .iter()
             .map(|&iv| ContextModel::from_init_value(iv, slice_qp))
@@ -963,8 +959,10 @@ mod tests {
 
     #[test]
     fn cabac_decode_decision_smoke() {
-        let data = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
-                     0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
+        let data = [
+            0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x80, 0x40, 0x20, 0x10, 0x08, 0x04,
+            0x02, 0x01,
+        ];
         let init_values = [154];
         let mut cabac = CabacReader::from_bytes(&data, &init_values, 26).unwrap();
 

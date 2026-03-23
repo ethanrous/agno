@@ -1,8 +1,6 @@
-use super::predict::{
-    best_16x16_mode, best_chroma_mode, predict_16x16, predict_chroma_8x8,
-};
-use super::quantize::{quantize_block, quality_to_qindex, VpxQuantizer};
-use super::transform::{fdct4x4, fwht4x4, iwht4x4, idct4x4};
+use super::predict::{best_16x16_mode, best_chroma_mode, predict_16x16, predict_chroma_8x8};
+use super::quantize::{VpxQuantizer, quality_to_qindex, quantize_block};
+use super::transform::{fdct4x4, fwht4x4, idct4x4, iwht4x4};
 
 /// YUV 4:2:0 image data with separate planes.
 pub struct Yuv420 {
@@ -38,8 +36,9 @@ pub fn rgb_to_yuv420(rgb: &[u8], width: u32, height: u32) -> Yuv420 {
             let r = rgb[idx] as i32;
             let g = rgb[idx + 1] as i32;
             let b = rgb[idx + 2] as i32;
-            y_plane[row * y_stride + col] =
-                ((66 * r + 129 * g + 25 * b + 128) >> 8).wrapping_add(16).clamp(0, 255) as u8;
+            y_plane[row * y_stride + col] = ((66 * r + 129 * g + 25 * b + 128) >> 8)
+                .wrapping_add(16)
+                .clamp(0, 255) as u8;
         }
     }
 
@@ -170,8 +169,7 @@ pub fn encode_webp_from_yuv(
             let has_left = mb_col > 0;
 
             // --- Luma (Y) prediction from reconstructed plane ---
-            let (y_above, y_left, y_tl) =
-                get_y_borders(&rec_y, yuv.y_stride, mb_row, mb_col);
+            let (y_above, y_left, y_tl) = get_y_borders(&rec_y, yuv.y_stride, mb_row, mb_col);
 
             let y_mode = best_16x16_mode(
                 &yuv.y,
@@ -182,14 +180,11 @@ pub fn encode_webp_from_yuv(
                 &y_left,
                 y_tl,
             );
-            let y_pred =
-                predict_16x16(&y_above, &y_left, y_tl, y_mode, has_above, has_left);
+            let y_pred = predict_16x16(&y_above, &y_left, y_tl, y_mode, has_above, has_left);
 
             // --- Chroma (U, V) prediction from reconstructed planes ---
-            let (u_above, u_left, u_tl) =
-                get_uv_borders(&rec_u, yuv.uv_stride, mb_row, mb_col);
-            let (v_above, v_left, v_tl) =
-                get_uv_borders(&rec_v, yuv.uv_stride, mb_row, mb_col);
+            let (u_above, u_left, u_tl) = get_uv_borders(&rec_u, yuv.uv_stride, mb_row, mb_col);
+            let (v_above, v_left, v_tl) = get_uv_borders(&rec_v, yuv.uv_stride, mb_row, mb_col);
 
             let uv_mode = best_chroma_mode(
                 &yuv.u,
@@ -201,10 +196,8 @@ pub fn encode_webp_from_yuv(
                 u_tl,
             );
 
-            let u_pred =
-                predict_chroma_8x8(&u_above, &u_left, u_tl, uv_mode, has_above, has_left);
-            let v_pred =
-                predict_chroma_8x8(&v_above, &v_left, v_tl, uv_mode, has_above, has_left);
+            let u_pred = predict_chroma_8x8(&u_above, &u_left, u_tl, uv_mode, has_above, has_left);
+            let v_pred = predict_chroma_8x8(&v_above, &v_left, v_tl, uv_mode, has_above, has_left);
 
             // --- Compute residuals from ORIGINAL source, quantize ---
             let mut mb_blocks = Vec::with_capacity(25);
@@ -234,8 +227,7 @@ pub fn encode_webp_from_yuv(
             }
 
             let y2_wht = fwht4x4(&y_dc_values);
-            let y2_quantized =
-                quantize_block(&y2_wht, quantizer.y2_dc, quantizer.y2_ac);
+            let y2_quantized = quantize_block(&y2_wht, quantizer.y2_dc, quantizer.y2_ac);
 
             mb_blocks.push(y2_quantized);
             for block in &y_blocks {
@@ -247,7 +239,13 @@ pub fn encode_webp_from_yuv(
                 for sub_col in 0..2 {
                     let blk_idx = sub_row * 2 + sub_col;
                     let residual = compute_uv_residual(
-                        &yuv.u, yuv.uv_stride, mb_row, mb_col, sub_row, sub_col, &u_pred,
+                        &yuv.u,
+                        yuv.uv_stride,
+                        mb_row,
+                        mb_col,
+                        sub_row,
+                        sub_col,
+                        &u_pred,
                     );
                     let dct = fdct4x4(&residual);
                     let quantized = quantize_block(&dct, quantizer.uv_dc, quantizer.uv_ac);
@@ -261,7 +259,13 @@ pub fn encode_webp_from_yuv(
                 for sub_col in 0..2 {
                     let blk_idx = sub_row * 2 + sub_col;
                     let residual = compute_uv_residual(
-                        &yuv.v, yuv.uv_stride, mb_row, mb_col, sub_row, sub_col, &v_pred,
+                        &yuv.v,
+                        yuv.uv_stride,
+                        mb_row,
+                        mb_col,
+                        sub_row,
+                        sub_col,
+                        &v_pred,
                     );
                     let dct = fdct4x4(&residual);
                     let quantized = quantize_block(&dct, quantizer.uv_dc, quantizer.uv_ac);
@@ -310,14 +314,24 @@ pub fn encode_webp_from_yuv(
 
                 // Reconstruct U
                 reconstruct_chroma_plane(
-                    &mut rec_u, yuv.uv_stride, mb_row, mb_col,
-                    &u_pred, &u_blocks_q, &quantizer,
+                    &mut rec_u,
+                    yuv.uv_stride,
+                    mb_row,
+                    mb_col,
+                    &u_pred,
+                    &u_blocks_q,
+                    &quantizer,
                 );
 
                 // Reconstruct V
                 reconstruct_chroma_plane(
-                    &mut rec_v, yuv.uv_stride, mb_row, mb_col,
-                    &v_pred, &v_blocks_q, &quantizer,
+                    &mut rec_v,
+                    yuv.uv_stride,
+                    mb_row,
+                    mb_col,
+                    &v_pred,
+                    &v_blocks_q,
+                    &quantizer,
                 );
             }
 

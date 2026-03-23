@@ -69,13 +69,13 @@ impl<R: Read> Decoder<R> {
                                 return Err(Error::Format(format!(
                                     "found marker {:?} inside scan where RST{} was expected",
                                     marker, expected_rst_num
-                                )))
+                                )));
                             }
                             None => {
                                 return Err(Error::Format(format!(
                                     "no marker found where RST{} was expected",
                                     expected_rst_num
-                                )))
+                                )));
                             }
                         }
                     }

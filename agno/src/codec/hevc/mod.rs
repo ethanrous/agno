@@ -47,11 +47,17 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
 
     let nal_length_size = parse_hvcc_nal_length_size(hvcc_data)?;
     let slice_nals = extract_slice_nals_with_type(bitstream, nal_length_size)?;
-    if slice_nals.is_empty() { bail!("No slice NAL units found in bitstream"); }
+    if slice_nals.is_empty() {
+        bail!("No slice NAL units found in bitstream");
+    }
 
     let bit_depth = (sps.bit_depth_luma_minus8 + 8) as u8;
     let slice_qp = 26 + pps.init_qp_minus26;
-    let mut pic = Picture::new(sps.pic_width_in_luma_samples, sps.pic_height_in_luma_samples, bit_depth);
+    let mut pic = Picture::new(
+        sps.pic_width_in_luma_samples,
+        sps.pic_height_in_luma_samples,
+        bit_depth,
+    );
     pic.init_metadata(sps.min_cb_log2_size(), slice_qp);
 
     for (nal_type, slice_data) in &slice_nals {

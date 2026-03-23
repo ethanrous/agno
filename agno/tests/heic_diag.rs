@@ -231,19 +231,16 @@ fn parse_and_print_sps_pps(hvcc: &[u8]) {
                 );
                 eprintln!(
                     "  sign_data_hiding_enabled_flag: {}",
-                    pps._sign_data_hiding_enabled_flag
+                    pps.sign_data_hiding_enabled_flag
                 );
                 eprintln!(
                     "  cu_qp_delta_enabled_flag: {}",
                     pps._cu_qp_delta_enabled_flag
                 );
-                eprintln!(
-                    "  diff_cu_qp_delta_depth: {}",
-                    pps._diff_cu_qp_delta_depth
-                );
+                eprintln!("  diff_cu_qp_delta_depth: {}", pps._diff_cu_qp_delta_depth);
                 eprintln!(
                     "  transform_skip_enabled_flag: {}",
-                    pps._transform_skip_enabled_flag
+                    pps.transform_skip_enabled_flag
                 );
                 eprintln!(
                     "  constrained_intra_pred_flag: {}",
@@ -251,18 +248,9 @@ fn parse_and_print_sps_pps(hvcc: &[u8]) {
                 );
                 eprintln!("  tiles_enabled_flag: {}", pps._tiles_enabled_flag);
                 if pps._tiles_enabled_flag {
-                    eprintln!(
-                        "    num_tile_columns: {}",
-                        pps._num_tile_columns_minus1 + 1
-                    );
-                    eprintln!(
-                        "    num_tile_rows: {}",
-                        pps._num_tile_rows_minus1 + 1
-                    );
-                    eprintln!(
-                        "    uniform_spacing_flag: {}",
-                        pps._uniform_spacing_flag
-                    );
+                    eprintln!("    num_tile_columns: {}", pps._num_tile_columns_minus1 + 1);
+                    eprintln!("    num_tile_rows: {}", pps._num_tile_rows_minus1 + 1);
+                    eprintln!("    uniform_spacing_flag: {}", pps._uniform_spacing_flag);
                 }
                 eprintln!(
                     "  entropy_coding_sync_enabled_flag (WPP): {}",
@@ -286,14 +274,8 @@ fn parse_and_print_sps_pps(hvcc: &[u8]) {
                     "  pps_deblocking_filter_disabled_flag: {}",
                     pps.pps_deblocking_filter_disabled_flag
                 );
-                eprintln!(
-                    "  weighted_pred_flag: {}",
-                    pps._weighted_pred_flag
-                );
-                eprintln!(
-                    "  weighted_bipred_flag: {}",
-                    pps._weighted_bipred_flag
-                );
+                eprintln!("  weighted_pred_flag: {}", pps._weighted_pred_flag);
+                eprintln!("  weighted_bipred_flag: {}", pps._weighted_bipred_flag);
                 eprintln!(
                     "  transquant_bypass_enabled_flag: {}",
                     pps._transquant_bypass_enabled_flag
@@ -358,8 +340,7 @@ fn analyze_file(label: &str, path: &str) {
     let tile_sizes: Vec<usize> = heif.tiles.iter().map(|t| t.len()).collect();
     let min_tile = tile_sizes.iter().min().unwrap_or(&0);
     let max_tile = tile_sizes.iter().max().unwrap_or(&0);
-    let avg_tile: f64 =
-        tile_sizes.iter().sum::<usize>() as f64 / tile_sizes.len().max(1) as f64;
+    let avg_tile: f64 = tile_sizes.iter().sum::<usize>() as f64 / tile_sizes.len().max(1) as f64;
     eprintln!(
         "  Tile bitstream sizes: min={} max={} avg={:.0}",
         min_tile, max_tile, avg_tile
@@ -388,12 +369,10 @@ fn analyze_file(label: &str, path: &str) {
             let nal_len = match nal_length_size {
                 1 => tile0[pos] as usize,
                 2 => u16::from_be_bytes([tile0[pos], tile0[pos + 1]]) as usize,
-                4 => u32::from_be_bytes([
-                    tile0[pos],
-                    tile0[pos + 1],
-                    tile0[pos + 2],
-                    tile0[pos + 3],
-                ]) as usize,
+                4 => {
+                    u32::from_be_bytes([tile0[pos], tile0[pos + 1], tile0[pos + 2], tile0[pos + 3]])
+                        as usize
+                }
                 _ => break,
             };
             pos += nal_length_size;
@@ -442,7 +421,9 @@ fn decode_target_tiles() {
 
     eprintln!(
         "Grid: {}x{}, {} tiles total",
-        heif.grid_cols, heif.grid_rows, heif.tiles.len()
+        heif.grid_cols,
+        heif.grid_rows,
+        heif.tiles.len()
     );
     eprintln!("Output: {}x{}", heif.width, heif.height);
 
@@ -547,8 +528,13 @@ fn compare_tiles_to_reference() {
     let ref_rgb_path = "/tmp/target-reference-full.rgb";
 
     if !std::path::Path::new(ref_rgb_path).exists() {
-        eprintln!("SKIP: reference RGB not found at {}. Generate with:", ref_rgb_path);
-        eprintln!("  heif-convert file.heic /tmp/ref.png && ffmpeg -i /tmp/ref.png -pix_fmt rgb24 -f rawvideo /tmp/target-reference-full.rgb");
+        eprintln!(
+            "SKIP: reference RGB not found at {}. Generate with:",
+            ref_rgb_path
+        );
+        eprintln!(
+            "  heif-convert file.heic /tmp/ref.png && ffmpeg -i /tmp/ref.png -pix_fmt rgb24 -f rawvideo /tmp/target-reference-full.rgb"
+        );
         return;
     }
 
@@ -560,8 +546,15 @@ fn compare_tiles_to_reference() {
     let out_h = heif.height as usize;
     let cols = heif.grid_cols as usize;
 
-    assert_eq!(reference.len(), out_w * out_h * 3,
-        "Reference size {} != expected {} for {}x{}", reference.len(), out_w * out_h * 3, out_w, out_h);
+    assert_eq!(
+        reference.len(),
+        out_w * out_h * 3,
+        "Reference size {} != expected {} for {}x{}",
+        reference.len(),
+        out_w * out_h * 3,
+        out_w,
+        out_h
+    );
 
     // Decode all tiles and stitch
     let mut decoded_rgb = vec![0u8; out_w * out_h * 3];
@@ -579,10 +572,14 @@ fn compare_tiles_to_reference() {
 
         for ty in 0..th {
             let dy = oy + ty;
-            if dy >= out_h { break; }
+            if dy >= out_h {
+                break;
+            }
             for tx in 0..tw {
                 let dx = ox + tx;
-                if dx >= out_w { break; }
+                if dx >= out_w {
+                    break;
+                }
                 let src = (ty * tw + tx) * 3;
                 let dst = (dy * out_w + dx) * 3;
                 decoded_rgb[dst..dst + 3].copy_from_slice(&tile_rgb[src..src + 3]);
@@ -610,10 +607,14 @@ fn compare_tiles_to_reference() {
 
         for ty in 0..tile_h {
             let dy = oy + ty;
-            if dy >= out_h { break; }
+            if dy >= out_h {
+                break;
+            }
             for tx in 0..tile_w {
                 let dx = ox + tx;
-                if dx >= out_w { break; }
+                if dx >= out_w {
+                    break;
+                }
                 let idx = (dy * out_w + dx) * 3;
                 tile_dec.extend_from_slice(&decoded_rgb[idx..idx + 3]);
                 tile_ref.extend_from_slice(&reference[idx..idx + 3]);
@@ -629,22 +630,41 @@ fn compare_tiles_to_reference() {
 
     eprintln!("\n=== Per-tile PSNR (worst first) ===");
     for (i, row, col, psnr) in &tile_psnrs {
-        let status = if *psnr < 25.0 { "BAD" }
-            else if *psnr < 30.0 { "POOR" }
-            else if *psnr < 35.0 { "FAIR" }
-            else { "GOOD" };
-        eprintln!("Tile {:>3} [{:>2},{:>2}] PSNR={:>6.2} dB  {}", i, row, col, psnr, status);
+        let status = if *psnr < 25.0 {
+            "BAD"
+        } else if *psnr < 30.0 {
+            "POOR"
+        } else if *psnr < 35.0 {
+            "FAIR"
+        } else {
+            "GOOD"
+        };
+        eprintln!(
+            "Tile {:>3} [{:>2},{:>2}] PSNR={:>6.2} dB  {}",
+            i, row, col, psnr, status
+        );
     }
 
     // Dump decoded to file for visual comparison
     std::fs::write("/tmp/target-decoded.rgb", &decoded_rgb).unwrap();
     eprintln!("\nDecoded RGB dumped to /tmp/target-decoded.rgb");
-    eprintln!("Convert: ffmpeg -f rawvideo -pix_fmt rgb24 -s {}x{} -i /tmp/target-decoded.rgb /tmp/target-decoded.png", out_w, out_h);
+    eprintln!(
+        "Convert: ffmpeg -f rawvideo -pix_fmt rgb24 -s {}x{} -i /tmp/target-decoded.rgb /tmp/target-decoded.png",
+        out_w, out_h
+    );
 
     // Count tiles below threshold
     let bad_count = tile_psnrs.iter().filter(|t| t.3 < 25.0).count();
-    let poor_count = tile_psnrs.iter().filter(|t| t.3 >= 25.0 && t.3 < 30.0).count();
-    eprintln!("\nBAD (<25dB): {}, POOR (25-30dB): {}, OK (>30dB): {}", bad_count, poor_count, tile_psnrs.len() - bad_count - poor_count);
+    let poor_count = tile_psnrs
+        .iter()
+        .filter(|t| t.3 >= 25.0 && t.3 < 30.0)
+        .count();
+    eprintln!(
+        "\nBAD (<25dB): {}, POOR (25-30dB): {}, OK (>30dB): {}",
+        bad_count,
+        poor_count,
+        tile_psnrs.len() - bad_count - poor_count
+    );
 }
 
 #[test]
@@ -678,10 +698,14 @@ fn compare_sideways2_tiles_to_reference() {
         let oy = tile_row * th;
         for ty in 0..th {
             let dy = oy + ty;
-            if dy >= out_h { break; }
+            if dy >= out_h {
+                break;
+            }
             for tx in 0..tw {
                 let dx = ox + tx;
-                if dx >= out_w { break; }
+                if dx >= out_w {
+                    break;
+                }
                 let src = (ty * tw + tx) * 3;
                 let dst = (dy * out_w + dx) * 3;
                 decoded_rgb[dst..dst + 3].copy_from_slice(&tile_rgb[src..src + 3]);
@@ -705,10 +729,14 @@ fn compare_sideways2_tiles_to_reference() {
         let mut tile_ref = Vec::new();
         for ty in 0..tile_h {
             let dy = oy + ty;
-            if dy >= out_h { break; }
+            if dy >= out_h {
+                break;
+            }
             for tx in 0..tile_w {
                 let dx = ox + tx;
-                if dx >= out_w { break; }
+                if dx >= out_w {
+                    break;
+                }
                 let idx = (dy * out_w + dx) * 3;
                 tile_dec.extend_from_slice(&decoded_rgb[idx..idx + 3]);
                 tile_ref.extend_from_slice(&reference[idx..idx + 3]);
@@ -722,14 +750,30 @@ fn compare_sideways2_tiles_to_reference() {
 
     eprintln!("\n=== sideways2.heic Per-tile PSNR (worst first) ===");
     for (i, row, col, psnr) in &tile_psnrs {
-        let status = if *psnr < 25.0 { "BAD" }
-            else if *psnr < 30.0 { "POOR" }
-            else if *psnr < 35.0 { "FAIR" }
-            else { "GOOD" };
-        eprintln!("Tile {:>3} [{:>2},{:>2}] PSNR={:>6.2} dB  {}", i, row, col, psnr, status);
+        let status = if *psnr < 25.0 {
+            "BAD"
+        } else if *psnr < 30.0 {
+            "POOR"
+        } else if *psnr < 35.0 {
+            "FAIR"
+        } else {
+            "GOOD"
+        };
+        eprintln!(
+            "Tile {:>3} [{:>2},{:>2}] PSNR={:>6.2} dB  {}",
+            i, row, col, psnr, status
+        );
     }
 
     let bad_count = tile_psnrs.iter().filter(|t| t.3 < 25.0).count();
-    let poor_count = tile_psnrs.iter().filter(|t| t.3 >= 25.0 && t.3 < 30.0).count();
-    eprintln!("\nBAD (<25dB): {}, POOR (25-30dB): {}, OK (>30dB): {}", bad_count, poor_count, tile_psnrs.len() - bad_count - poor_count);
+    let poor_count = tile_psnrs
+        .iter()
+        .filter(|t| t.3 >= 25.0 && t.3 < 30.0)
+        .count();
+    eprintln!(
+        "\nBAD (<25dB): {}, POOR (25-30dB): {}, OK (>30dB): {}",
+        bad_count,
+        poor_count,
+        tile_psnrs.len() - bad_count - poor_count
+    );
 }

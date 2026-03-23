@@ -181,7 +181,6 @@ pub enum ExifValue {
     SRational(Vec<(i32, i32)>), // SRATIONAL(10)
 }
 
-
 #[derive(Debug, Clone)]
 #[repr(C)] // Ensure C-compatible layout
 pub struct ExifContext {
@@ -326,7 +325,9 @@ impl ExifContext {
     }
 
     // Parse EXIF from an ISOBMFF container (HEIC/HEIF/AVIF) by walking the box structure
-    fn from_isobmff(reader: &mut File) -> Result<(u64, Endian, HashMap<u16, ExifValue>), ExifError> {
+    fn from_isobmff(
+        reader: &mut File,
+    ) -> Result<(u64, Endian, HashMap<u16, ExifValue>), ExifError> {
         let file_end = reader.seek(SeekFrom::End(0))?;
 
         // Find 'meta' box at top level (FullBox — 4 bytes version+flags before children)
@@ -380,9 +381,7 @@ impl ExifContext {
         let file_end = reader.seek(SeekFrom::End(0))?;
 
         // Try moov/udta/meta path
-        if let Some((moov_start, moov_end)) =
-            isobmff_find_box(reader, 0, file_end, b"moov")?
-        {
+        if let Some((moov_start, moov_end)) = isobmff_find_box(reader, 0, file_end, b"moov")? {
             if let Some((udta_start, udta_end)) =
                 isobmff_find_box(reader, moov_start, moov_end, b"udta")?
             {
@@ -405,9 +404,9 @@ impl ExifContext {
                                 isobmff_read_item_data(reader, iloc_start, exif_id, idat_cs)?
                             {
                                 if data.len() >= 10 {
-                                    let tiff_off = u32::from_be_bytes([
-                                        data[0], data[1], data[2], data[3],
-                                    ]) as usize;
+                                    let tiff_off =
+                                        u32::from_be_bytes([data[0], data[1], data[2], data[3]])
+                                            as usize;
                                     let start = 4 + tiff_off;
                                     if start < data.len() {
                                         return Self::from_tiff(
@@ -458,8 +457,10 @@ impl ExifContext {
                     // Width and height as 16.16 fixed-point
                     let mut dim_buf = [0u8; 8];
                     reader.read_exact(&mut dim_buf)?;
-                    let width = u32::from_be_bytes([dim_buf[0], dim_buf[1], dim_buf[2], dim_buf[3]]) >> 16;
-                    let height = u32::from_be_bytes([dim_buf[4], dim_buf[5], dim_buf[6], dim_buf[7]]) >> 16;
+                    let width =
+                        u32::from_be_bytes([dim_buf[0], dim_buf[1], dim_buf[2], dim_buf[3]]) >> 16;
+                    let height =
+                        u32::from_be_bytes([dim_buf[4], dim_buf[5], dim_buf[6], dim_buf[7]]) >> 16;
 
                     if width > 0 && height > 0 {
                         let values = HashMap::from([

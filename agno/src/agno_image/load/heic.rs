@@ -15,7 +15,12 @@ pub fn load_heic(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dy
         // Single-tile image
         let picture = decode_hevc_still(&heif.hvcc, &heif.tiles[0])?;
         let rgb = picture.to_rgb8();
-        Ok(AgnoImage::new(rgb, picture.width as u64, picture.height as u64, exif))
+        Ok(AgnoImage::new(
+            rgb,
+            picture.width as u64,
+            picture.height as u64,
+            exif,
+        ))
     } else {
         // Grid image: decode each tile and stitch
         let out_w = heif.width as usize;
@@ -37,7 +42,9 @@ pub fn load_heic(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dy
         for tile_row in 0..rows {
             for tile_col in 0..cols {
                 let idx = tile_row * cols + tile_col;
-                if idx >= tile_rgbs.len() { break; }
+                if idx >= tile_rgbs.len() {
+                    break;
+                }
                 let (ref tile_rgb, tw, th) = tile_rgbs[idx];
                 let tw = tw as usize;
                 let th = th as usize;
@@ -46,10 +53,14 @@ pub fn load_heic(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dy
 
                 for ty in 0..th {
                     let dy = oy + ty;
-                    if dy >= out_h { break; }
+                    if dy >= out_h {
+                        break;
+                    }
                     for tx in 0..tw {
                         let dx = ox + tx;
-                        if dx >= out_w { break; }
+                        if dx >= out_w {
+                            break;
+                        }
                         let src = (ty * tw + tx) * 3;
                         let dst = (dy * out_w + dx) * 3;
                         rgb[dst..dst + 3].copy_from_slice(&tile_rgb[src..src + 3]);
@@ -72,7 +83,10 @@ mod tests {
     fn detect_heic_format() {
         let mut file = File::open("../tests/data/test-heic.heic").unwrap();
         let image_type = detect_image_type(&mut file).unwrap();
-        assert!(matches!(image_type, crate::agno_image::load::ImageType::Heic));
+        assert!(matches!(
+            image_type,
+            crate::agno_image::load::ImageType::Heic
+        ));
     }
 
     #[test]
@@ -114,9 +128,13 @@ mod tests {
     fn load_heic_has_exif() {
         let img = load_agno_image_from_file("../tests/data/test-heic.heic").unwrap();
         assert!(img.exif.get_tag_value(spec::MAKE).is_some());
-        assert!(img.exif.get_tag_value(spec::OFFSET_TIME).is_some(),
-            "Must follow ExifIFD sub-IFD to find OffsetTime");
-        assert!(img.exif.get_tag_value(spec::GPS_LATITUDE_REF).is_some(),
-            "Must follow GPS sub-IFD to find GPSLatitudeRef");
+        assert!(
+            img.exif.get_tag_value(spec::OFFSET_TIME).is_some(),
+            "Must follow ExifIFD sub-IFD to find OffsetTime"
+        );
+        assert!(
+            img.exif.get_tag_value(spec::GPS_LATITUDE_REF).is_some(),
+            "Must follow GPS sub-IFD to find GPSLatitudeRef"
+        );
     }
 }

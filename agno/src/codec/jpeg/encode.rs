@@ -47,11 +47,15 @@ fn encode_jpeg_cpu(
         let g = rgb[i * 3 + 1] as f32;
         let b = rgb[i * 3 + 2] as f32;
 
-        y_plane[i] = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0.0, 255.0) as u8;
-        cb_plane[i] =
-            (128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b).round().clamp(0.0, 255.0) as u8;
-        cr_plane[i] =
-            (128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b).round().clamp(0.0, 255.0) as u8;
+        y_plane[i] = (0.299 * r + 0.587 * g + 0.114 * b)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        cb_plane[i] = (128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        cr_plane[i] = (128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b)
+            .round()
+            .clamp(0.0, 255.0) as u8;
     }
 
     encode_jpeg_from_ycbcr(&y_plane, &cb_plane, &cr_plane, width, height, quality)
@@ -242,12 +246,12 @@ fn write_app0(out: &mut Vec<u8>) -> Result<(), Box<dyn Error>> {
     out.write_all(&[0xFF, 0xE0])?;
     let length: u16 = 16;
     out.write_all(&length.to_be_bytes())?;
-    out.write_all(b"JFIF\0")?;      // identifier
-    out.write_all(&[1, 1])?;         // version 1.1
-    out.write_all(&[0])?;            // aspect ratio units: 0 = no units
+    out.write_all(b"JFIF\0")?; // identifier
+    out.write_all(&[1, 1])?; // version 1.1
+    out.write_all(&[0])?; // aspect ratio units: 0 = no units
     out.write_all(&1u16.to_be_bytes())?; // X density
     out.write_all(&1u16.to_be_bytes())?; // Y density
-    out.write_all(&[0, 0])?;         // no thumbnail
+    out.write_all(&[0, 0])?; // no thumbnail
     Ok(())
 }
 

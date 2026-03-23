@@ -2,12 +2,12 @@ use std::error::Error;
 
 use tracing::debug;
 
+use super::ops;
 use crate::{
     agno_image::AgnoImage,
     exif::{ExifContext, ExifValue, spec::ORIENTATION},
     sony_decoder::Dimensions,
 };
-use super::ops;
 
 pub fn scale_image(
     a_img: AgnoImage,

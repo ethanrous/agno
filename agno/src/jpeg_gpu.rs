@@ -1,8 +1,8 @@
 //! GPU-accelerated JPEG encoding: color conversion on GPU, DCT/quantize/Huffman on CPU.
 
 use crate::gpu::{
-    create_output_buffer, create_storage_buffer, create_uniform_buffer, dispatch_and_read,
-    workgroups_2d, GpuContext, GpuPipeline,
+    GpuContext, GpuPipeline, create_output_buffer, create_storage_buffer, create_uniform_buffer,
+    dispatch_and_read, workgroups_2d,
 };
 use agno_gpu_shared::ColorConvertParams;
 use tracing::debug;
@@ -11,12 +11,7 @@ const GPU_KERNELS_SPV: &[u8] = include_bytes!(env!("GPU_KERNELS_SPV_PATH"));
 
 /// GPU-accelerated JPEG encoding.
 /// Returns None if GPU is unavailable, allowing CPU fallback.
-pub fn encode_jpeg_gpu(
-    rgb: &[u8],
-    width: u32,
-    height: u32,
-    quality: u8,
-) -> Option<Vec<u8>> {
+pub fn encode_jpeg_gpu(rgb: &[u8], width: u32, height: u32, quality: u8) -> Option<Vec<u8>> {
     let ctx = GpuContext::get()?;
     debug!(width, height, quality, "Starting GPU JPEG encode");
 
@@ -30,7 +25,8 @@ pub fn encode_jpeg_gpu(
     let color_params = ColorConvertParams {
         width,
         height,
-        _pad0: 0, _pad1: 0,
+        _pad0: 0,
+        _pad1: 0,
     };
 
     let color_pipeline =

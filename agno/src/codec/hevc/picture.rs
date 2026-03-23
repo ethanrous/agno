@@ -145,7 +145,9 @@ impl Picture {
 
     /// Store CU depth for all MinCB cells covered by a CU at (x0, y0) with given size.
     pub fn set_cu_depth(&mut self, x0: u32, y0: u32, cu_size: u32, depth: u8) {
-        if self.cu_depth.is_empty() { return; }
+        if self.cu_depth.is_empty() {
+            return;
+        }
         let min_cb = 1u32 << self.min_cb_log2;
         let gx = x0 / min_cb;
         let gy = y0 / min_cb;
@@ -166,7 +168,9 @@ impl Picture {
 
     /// Read CU depth at sample position (x, y). Returns None if unavailable.
     pub fn cu_depth_at(&self, x: u32, y: u32) -> Option<u8> {
-        if self.cu_depth.is_empty() { return None; }
+        if self.cu_depth.is_empty() {
+            return None;
+        }
         let min_cb = 1u32 << self.min_cb_log2;
         let gx = x / min_cb;
         let gy = y / min_cb;
@@ -176,7 +180,9 @@ impl Picture {
 
     /// Store intra prediction mode for all MinPU cells covered by a PU.
     pub fn set_intra_mode(&mut self, x0: u32, y0: u32, pu_size: u32, mode: u8) {
-        if self.intra_mode.is_empty() { return; }
+        if self.intra_mode.is_empty() {
+            return;
+        }
         let min_pu = 1u32 << self.intra_mode_log2;
         let gx = x0 / min_pu;
         let gy = y0 / min_pu;
@@ -197,7 +203,9 @@ impl Picture {
 
     /// Read intra mode at sample position. Returns 0 (Planar) if unavailable.
     pub fn intra_mode_at(&self, x: u32, y: u32) -> u8 {
-        if self.intra_mode.is_empty() { return 0; }
+        if self.intra_mode.is_empty() {
+            return 0;
+        }
         let min_pu = 1u32 << self.intra_mode_log2;
         let gx = x / min_pu;
         let gy = y / min_pu;
@@ -207,7 +215,9 @@ impl Picture {
 
     /// Store luma QP for all MinCB cells covered by a CU at (x0, y0) with given size.
     pub fn set_qp_y(&mut self, x0: u32, y0: u32, cu_size: u32, qp: i32) {
-        if self.qp_y.is_empty() { return; }
+        if self.qp_y.is_empty() {
+            return;
+        }
         let min_cb = 1u32 << self.min_cb_log2;
         let gx = x0 / min_cb;
         let gy = y0 / min_cb;
@@ -228,7 +238,9 @@ impl Picture {
 
     /// Read luma QP at sample position (x, y). Returns 0 if unavailable.
     pub fn qp_y_at(&self, x: u32, y: u32) -> i32 {
-        if self.qp_y.is_empty() { return 0; }
+        if self.qp_y.is_empty() {
+            return 0;
+        }
         let min_cb = 1u32 << self.min_cb_log2;
         let gx = x / min_cb;
         let gy = y / min_cb;
@@ -239,7 +251,9 @@ impl Picture {
     /// Mark a rectangular region as reconstructed at MinPU granularity.
     /// Called after a TU's luma pixels have been written to the picture buffer.
     pub fn mark_reconstructed(&mut self, x0: u32, y0: u32, tu_size: u32) {
-        if self.reconstructed.is_empty() { return; }
+        if self.reconstructed.is_empty() {
+            return;
+        }
         let min_pu = 1u32 << self.reco_log2;
         let gx = x0 / min_pu;
         let gy = y0 / min_pu;
@@ -263,7 +277,9 @@ impl Picture {
     /// Used by intra prediction to determine reference sample availability
     /// at sub-TU granularity (finer than the CU depth map).
     pub fn is_reconstructed(&self, x: u32, y: u32) -> bool {
-        if self.reconstructed.is_empty() { return false; }
+        if self.reconstructed.is_empty() {
+            return false;
+        }
         let min_pu = 1u32 << self.reco_log2;
         let gx = x / min_pu;
         let gy = y / min_pu;

@@ -104,7 +104,12 @@ exif_tags![
     (GPS_AREA_INFORMATION, 0x001c, IFD0, "GPSAreaInformation"),
     (GPS_DATE_STAMP, 0x001d, IFD0, "GPSDateStamp"),
     (GPS_DIFFERENTIAL, 0x001e, IFD0, "GPSDifferential"),
-    (GPS_H_POSITIONING_ERROR, 0x001f, IFD0, "GPSHPositioningError"),
+    (
+        GPS_H_POSITIONING_ERROR,
+        0x001f,
+        IFD0,
+        "GPSHPositioningError"
+    ),
     (PROCESSING_SOFTWARE, 0x000b, IFD0, "ProcessingSoftware"),
     (SUBFILE_TYPE, 0x00fe, IFD0, "SubfileType"),
     (OLD_SUBFILE_TYPE, 0x00ff, IFD0, "OldSubfileType"),

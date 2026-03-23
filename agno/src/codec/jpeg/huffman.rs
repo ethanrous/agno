@@ -195,7 +195,11 @@ pub fn build_huffman_lut(bits: &[u8; 16], values: &[u8]) -> HuffmanLut {
 
 /// Number of bits needed to represent a value (0 -> 0, 1 -> 1, 2..3 -> 2, etc.)
 fn bit_length(v: u16) -> u8 {
-    if v == 0 { 0 } else { 16 - v.leading_zeros() as u8 }
+    if v == 0 {
+        0
+    } else {
+        16 - v.leading_zeros() as u8
+    }
 }
 
 /// Bit-level writer with JPEG byte stuffing (0xFF -> 0xFF 0x00).
@@ -249,7 +253,10 @@ impl<W: Write> JpegBitWriter<W> {
         let category = bit_length(abs_val);
 
         // Huffman code for the category
-        self.emit_bits(table.codes[category as usize], table.sizes[category as usize])?;
+        self.emit_bits(
+            table.codes[category as usize],
+            table.sizes[category as usize],
+        )?;
 
         // Actual value bits (ones-complement for negatives)
         if category > 0 {
@@ -265,7 +272,11 @@ impl<W: Write> JpegBitWriter<W> {
     }
 
     /// Encode 63 AC coefficients (zigzag-ordered, indices 1..63).
-    pub fn write_ac_block(&mut self, coeffs: &[i16; 63], table: &HuffmanLut) -> std::io::Result<()> {
+    pub fn write_ac_block(
+        &mut self,
+        coeffs: &[i16; 63],
+        table: &HuffmanLut,
+    ) -> std::io::Result<()> {
         let mut zero_run: u8 = 0;
 
         for i in 0..63 {
@@ -314,5 +325,4 @@ impl<W: Write> JpegBitWriter<W> {
         }
         self.writer.flush()
     }
-
 }

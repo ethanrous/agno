@@ -535,7 +535,11 @@ fn decode_ljpeg_data<R: Read>(
 
             // Complete the output position calculation
             let jidx_in_slice = jidx - slice_idx * samples_per_slice;
-            let slice_width = if is_last_slice { cr2_slice_2 } else { cr2_slice_1 };
+            let slice_width = if is_last_slice {
+                cr2_slice_2
+            } else {
+                cr2_slice_1
+            };
             let row = jidx_in_slice / slice_width;
             let col = jidx_in_slice % slice_width + slice_idx * cr2_slice_1;
 
@@ -618,7 +622,9 @@ fn read_marker<R: Read>(reader: &mut R) -> Result<u8, DecodeError> {
     // Find 0xFF
     loop {
         if reader.read(&mut b)? == 0 {
-            return Err(DecodeError::CorruptData("Unexpected EOF looking for marker"));
+            return Err(DecodeError::CorruptData(
+                "Unexpected EOF looking for marker",
+            ));
         }
         if b[0] == 0xFF {
             break;

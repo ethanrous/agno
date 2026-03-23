@@ -63,13 +63,15 @@ fn try_heif_style_thumbnail(file: &mut File) -> Result<Option<Vec<u8>>, Box<dyn 
         None => return Ok(None),
     };
 
-    let idat_content_start = isobmff_find_box(file, children_start, meta_end, b"idat")?
-        .map(|(cs, _)| cs);
+    let idat_content_start =
+        isobmff_find_box(file, children_start, meta_end, b"idat")?.map(|(cs, _)| cs);
 
     // Try both "jpeg" and "JPEG" item types
     for target in [b"jpeg", b"JPEG"] {
         if let Some(item_id) = isobmff_find_item_id_by_type(file, iinf_start, target)? {
-            if let Some(data) = isobmff_read_item_data(file, iloc_start, item_id, idat_content_start)? {
+            if let Some(data) =
+                isobmff_read_item_data(file, iloc_start, item_id, idat_content_start)?
+            {
                 if is_jpeg(&data) {
                     return Ok(Some(data));
                 }
@@ -159,7 +161,9 @@ fn try_extract_from_trak(
             // stsd is a FullBox: version(1) + flags(3) + entry_count(4)
             // Then first entry: size(4) + type(4) + reserved(6) + data_ref_index(2) +
             // pre_defined(2) + reserved(2) + pre_defined(12) + width(2) + height(2)
-            file.seek(SeekFrom::Start(stsd_start + 4 + 4 + 4 + 4 + 6 + 2 + 2 + 2 + 12))?;
+            file.seek(SeekFrom::Start(
+                stsd_start + 4 + 4 + 4 + 4 + 6 + 2 + 2 + 2 + 12,
+            ))?;
             let mut dims = [0u8; 4];
             file.read_exact(&mut dims)?;
             let width = u16::from_be_bytes([dims[0], dims[1]]);
@@ -334,8 +338,8 @@ fn decode_jpeg_thumbnail(_data: &[u8], _exif: ExifContext) -> Result<AgnoImage, 
 fn try_hevc_keyframe(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
     let file_end = file.seek(SeekFrom::End(0))?;
 
-    let (moov_start, moov_end) = isobmff_find_box(file, 0, file_end, b"moov")?
-        .ok_or("No moov box")?;
+    let (moov_start, moov_end) =
+        isobmff_find_box(file, 0, file_end, b"moov")?.ok_or("No moov box")?;
 
     // Find the video track (handler_type = "vide")
     let mut trak_pos = moov_start;
@@ -445,11 +449,11 @@ fn extract_hvcc(
     let search_end = entry_end.min(stsd_end);
 
     // Find hvcC box
-    let (hvcc_start, hvcc_end) =
-        match isobmff_find_box(file, sub_boxes_start, search_end, b"hvcC")? {
-            Some(v) => v,
-            None => return Ok(None),
-        };
+    let (hvcc_start, hvcc_end) = match isobmff_find_box(file, sub_boxes_start, search_end, b"hvcC")?
+    {
+        Some(v) => v,
+        None => return Ok(None),
+    };
 
     let hvcc_len = (hvcc_end - hvcc_start) as usize;
     if hvcc_len > 10_000 {

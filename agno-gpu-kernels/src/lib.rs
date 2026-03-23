@@ -6,9 +6,8 @@
 #![cfg_attr(target_arch = "spirv", no_std)]
 
 use agno_gpu_shared::{
-    apply_saturation, apply_tone_curve, cfa_color_at, clamp_i32, clamp_u8, lanczos_weight,
-    max_f32, pow_f32, ColorConvertParams, DemosaicParams, ResizeParams, Vec4, CFA_B, CFA_G,
-    CFA_R,
+    apply_saturation, apply_tone_curve, cfa_color_at, clamp_i32, clamp_u8, lanczos_weight, max_f32,
+    pow_f32, ColorConvertParams, DemosaicParams, ResizeParams, Vec4, CFA_B, CFA_G, CFA_R,
 };
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
@@ -31,12 +30,7 @@ fn idx(row: u32, col: u32, stride: u32) -> usize {
 
 /// Sample a raw pixel, apply black level subtraction, normalization, and white balance.
 #[inline]
-fn sample_wb(
-    raw_input: &[u32],
-    row: u32,
-    col: u32,
-    params: &DemosaicParams,
-) -> f32 {
+fn sample_wb(raw_input: &[u32], row: u32, col: u32, params: &DemosaicParams) -> f32 {
     let raw_val = raw_input[idx(row, col, params.stride)];
     let v = saturating_sub_u32(raw_val, params.black_level) as f32 * params.inv_range;
     let color = cfa_color_at(row, col, params.pattern);

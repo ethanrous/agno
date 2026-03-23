@@ -1,7 +1,7 @@
-use super::immediate::ImmediateWorker;
-use super::{RowData, Worker};
 use super::super::decoder::MAX_COMPONENTS;
 use super::super::error::Result;
+use super::immediate::ImmediateWorker;
+use super::{RowData, Worker};
 use std::{
     mem,
     sync::mpsc::{self, Receiver, Sender},

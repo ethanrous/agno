@@ -10,7 +10,7 @@ use crate::{
         load::{load_canon_raw, load_heic, load_mov_thumbnail, load_pdf, load_sony_raw},
     },
     exif::ExifContext,
-    tiff::{detect_raw, RawMaker, TiffDetectResult},
+    tiff::{RawMaker, TiffDetectResult, detect_raw},
 };
 
 pub enum ImageType {

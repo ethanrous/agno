@@ -2,7 +2,7 @@
 // Fixed-point arithmetic with 8-bit fractional precision.
 
 const FIX_0_707106781: i32 = 181; // cos(pi/4) * 256
-const FIX_0_382683433: i32 = 98;  // sin(pi/8) * 256
+const FIX_0_382683433: i32 = 98; // sin(pi/8) * 256
 const FIX_0_541196100: i32 = 139;
 const FIX_1_306562965: i32 = 334;
 const SHIFT: i32 = 8;

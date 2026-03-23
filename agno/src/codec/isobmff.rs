@@ -22,7 +22,13 @@ const MAX_ITEM_DATA_SIZE: u64 = 256 * 1024 * 1024;
 /// Non-ASCII bytes are replaced with '?' so the string is always safe to embed in errors.
 fn box_type_str(b: &[u8]) -> String {
     b.iter()
-        .map(|&c| if c.is_ascii_graphic() || c == b' ' { c as char } else { '?' })
+        .map(|&c| {
+            if c.is_ascii_graphic() || c == b' ' {
+                c as char
+            } else {
+                '?'
+            }
+        })
         .collect()
 }
 
@@ -40,7 +46,10 @@ pub fn isobmff_find_box<R: Read + Seek>(
         if iterations > MAX_BOX_ITERATIONS {
             return Err(ExifError::Malformed(format!(
                 "Exceeded {} box iterations searching for '{}' in range [{:#x}, {:#x})",
-                MAX_BOX_ITERATIONS, box_type_str(target), start, end,
+                MAX_BOX_ITERATIONS,
+                box_type_str(target),
+                start,
+                end,
             )));
         }
 
@@ -59,7 +68,9 @@ pub fn isobmff_find_box<R: Read + Seek>(
             if large_size < 16 {
                 return Err(ExifError::Malformed(format!(
                     "Box '{}' at offset {:#x}: extended size {} is smaller than header",
-                    box_type_str(box_type), pos, large_size,
+                    box_type_str(box_type),
+                    pos,
+                    large_size,
                 )));
             }
             (pos + 16, pos + large_size)
@@ -69,7 +80,9 @@ pub fn isobmff_find_box<R: Read + Seek>(
             if (size as u64) < 8 {
                 return Err(ExifError::Malformed(format!(
                     "Box '{}' at offset {:#x}: size {} is smaller than box header",
-                    box_type_str(box_type), pos, size,
+                    box_type_str(box_type),
+                    pos,
+                    size,
                 )));
             }
             (pos + 8, pos + size as u64)
@@ -78,7 +91,10 @@ pub fn isobmff_find_box<R: Read + Seek>(
         if box_end > end {
             return Err(ExifError::Malformed(format!(
                 "Box '{}' at offset {:#x}: end {:#x} exceeds container boundary {:#x}",
-                box_type_str(box_type), pos, box_end, end,
+                box_type_str(box_type),
+                pos,
+                box_end,
+                end,
             )));
         }
 
@@ -262,7 +278,11 @@ pub fn isobmff_find_item_extent<R: Read + Seek>(
             let extent_length = isobmff_read_uint(reader, length_size)?;
 
             if item_id == target_id {
-                return Ok(Some((base_offset + extent_offset, extent_length, construction_method)));
+                return Ok(Some((
+                    base_offset + extent_offset,
+                    extent_length,
+                    construction_method,
+                )));
             }
         }
     }

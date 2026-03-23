@@ -1,9 +1,9 @@
 use std::boxed::Box;
-use std::fmt;
-use std::string::String;
-use std::result;
 use std::error::Error as StdError;
+use std::fmt;
 use std::io::Error as IoError;
+use std::result;
+use std::string::String;
 
 use super::decoder::ColorTransform;
 

@@ -128,10 +128,7 @@ fn dequantize_and_idct_block_8x8_inner<'a, I>(
             let Kernel {
                 xs: [x0, x1, x2, x3],
                 ts: [t0, t1, t2, t3],
-            } = kernel(
-                [s0, s1, s2, s3, s4, s5, s6, s7],
-                512,
-            );
+            } = kernel([s0, s1, s2, s3, s4, s5, s6, s7], 512);
 
             temp[i] = (x0 + t3) >> 10;
             temp[i + 56] = (x0 - t3) >> 10;
@@ -364,7 +361,8 @@ fn dequantize_and_idct_block_1x1(
 ) {
     debug_assert_eq!(coefficients.len(), 64);
 
-    let s0 = (Wrapping(coefficients[0] as i32 * quantization_table[0] as i32) + Wrapping(128 * 8)) / Wrapping(8);
+    let s0 = (Wrapping(coefficients[0] as i32 * quantization_table[0] as i32) + Wrapping(128 * 8))
+        / Wrapping(8);
     output[0] = stbi_clamp(s0);
 }
 

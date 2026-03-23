@@ -8,7 +8,6 @@
 /// Reference sample construction follows section 8.4.4.2, with substitution
 /// for unavailable neighbors and optional strong intra smoothing for 32x32
 /// blocks.
-
 use super::picture::Picture;
 
 // ---------------------------------------------------------------------------
@@ -29,8 +28,8 @@ pub enum Component {
 
 /// `intraPredAngle` for modes 2..34 (index 0 = mode 2, index 32 = mode 34).
 const INTRA_PRED_ANGLE: [i32; 33] = [
-    32, 26, 21, 17, 13, 9, 5, 2, 0, -2, -5, -9, -13, -17, -21, -26, -32,
-    -26, -21, -17, -13, -9, -5, -2, 0, 2, 5, 9, 13, 17, 21, 26, 32,
+    32, 26, 21, 17, 13, 9, 5, 2, 0, -2, -5, -9, -13, -17, -21, -26, -32, -26, -21, -17, -13, -9,
+    -5, -2, 0, 2, 5, 9, 13, 17, 21, 26, 32,
 ];
 
 /// `invAngle` for negative `intraPredAngle` values (H.265 Table 8-5).
@@ -196,8 +195,11 @@ fn build_reference_samples(
 
     // Unwrap all — every entry is now Some.
     let top_left = raw_top_left.unwrap_or(fallback);
-    let mut top: Vec<i16> = raw_top.into_iter().map(|v| v.unwrap_or(fallback)).collect();
-    let mut left: Vec<i16> = raw_left.into_iter().map(|v| v.unwrap_or(fallback)).collect();
+    let top: Vec<i16> = raw_top.into_iter().map(|v| v.unwrap_or(fallback)).collect();
+    let left: Vec<i16> = raw_left
+        .into_iter()
+        .map(|v| v.unwrap_or(fallback))
+        .collect();
 
     RefSamples {
         top_left,
@@ -284,12 +286,10 @@ fn filter_reference_samples(
     // Try strong intra smoothing first (32x32 luma only)
     if strong_intra_smoothing_enabled && log2n == 5 {
         let threshold = 1i32 << (bit_depth.saturating_sub(5));
-        let top_dev = (tl + refs.top[size2 - 1] as i32
-            - 2 * refs.top[(n_tb_s - 1) as usize] as i32)
-            .abs();
-        let left_dev = (tl + refs.left[size2 - 1] as i32
-            - 2 * refs.left[(n_tb_s - 1) as usize] as i32)
-            .abs();
+        let top_dev =
+            (tl + refs.top[size2 - 1] as i32 - 2 * refs.top[(n_tb_s - 1) as usize] as i32).abs();
+        let left_dev =
+            (tl + refs.left[size2 - 1] as i32 - 2 * refs.left[(n_tb_s - 1) as usize] as i32).abs();
 
         if top_dev < threshold && left_dev < threshold {
             let p_top_end = refs.top[size2 - 1] as i32;
@@ -298,17 +298,13 @@ fn filter_reference_samples(
             // Interpolate top[0..size2-2], preserve top[size2-1]
             for i in 0..size2 - 1 {
                 let k = (i as i32) + 1;
-                refs.top[i] = (((size2 as i32 - k) * tl
-                    + k * p_top_end
-                    + (size2 as i32 >> 1))
+                refs.top[i] = (((size2 as i32 - k) * tl + k * p_top_end + (size2 as i32 >> 1))
                     / size2 as i32) as i16;
             }
             // Interpolate left[0..size2-2], preserve left[size2-1]
             for j in 0..size2 - 1 {
                 let k = (j as i32) + 1;
-                refs.left[j] = (((size2 as i32 - k) * tl
-                    + k * p_left_end
-                    + (size2 as i32 >> 1))
+                refs.left[j] = (((size2 as i32 - k) * tl + k * p_left_end + (size2 as i32 >> 1))
                     / size2 as i32) as i16;
             }
             return;
@@ -326,27 +322,18 @@ fn filter_reference_samples(
     // Filter left: left[i] = (left[i+1] + 2*left[i] + left[i-1] + 2) >> 2
     // where left[-1] = top_left
     for i in (0..size2 - 1).rev() {
-        let above = if i == 0 {
-            tl
-        } else {
-            refs.left[i - 1] as i32
-        };
+        let above = if i == 0 { tl } else { refs.left[i - 1] as i32 };
         filtered_left[i] =
             ((refs.left[i + 1] as i32 + 2 * refs.left[i] as i32 + above + 2) >> 2) as i16;
     }
 
     // Filtered top_left = (left[0] + 2*top_left + top[0] + 2) >> 2
-    let filtered_tl =
-        ((refs.left[0] as i32 + 2 * tl + refs.top[0] as i32 + 2) >> 2) as i16;
+    let filtered_tl = ((refs.left[0] as i32 + 2 * tl + refs.top[0] as i32 + 2) >> 2) as i16;
 
     // Filter top: top[i] = (top[i+1] + 2*top[i] + top[i-1] + 2) >> 2
     // where top[-1] = top_left
     for i in (0..size2 - 1).rev() {
-        let left_of = if i == 0 {
-            tl
-        } else {
-            refs.top[i - 1] as i32
-        };
+        let left_of = if i == 0 { tl } else { refs.top[i - 1] as i32 };
         filtered_top[i] =
             ((refs.top[i + 1] as i32 + 2 * refs.top[i] as i32 + left_of + 2) >> 2) as i16;
     }
@@ -369,7 +356,7 @@ fn predict_planar(refs: &RefSamples, n_tb_s: u32) -> Vec<i16> {
     let size = n_tb_s as usize;
     let mut pred = vec![0i16; size * size];
 
-    let p_top_right = refs.top[n as usize] as i32;  // p[nTbS][-1]
+    let p_top_right = refs.top[n as usize] as i32; // p[nTbS][-1]
     let p_bottom_left = refs.left[n as usize] as i32; // p[-1][nTbS]
 
     for y in 0..size {
@@ -407,14 +394,12 @@ fn predict_dc(refs: &RefSamples, n_tb_s: u32, comp: Component) -> Vec<i16> {
     }
     let dc_val = ((sum + n as i32) >> (log2n + 1)) as i16;
 
-
     let mut pred = vec![dc_val; n * n];
 
     // DC boundary filtering applies to luma only (H.265 8.4.4.2.5 note)
     if comp == Component::Y && n_tb_s < 32 {
         // pred[0][0]
-        pred[0] = ((refs.left[0] as i32 + 2 * dc_val as i32 + refs.top[0] as i32 + 2) >> 2)
-            as i16;
+        pred[0] = ((refs.left[0] as i32 + 2 * dc_val as i32 + refs.top[0] as i32 + 2) >> 2) as i16;
 
         // First row: pred[x][0] for x > 0
         for x in 1..n {
@@ -490,16 +475,20 @@ pub fn predict_intra(
     match mode {
         0 => predict_planar(&refs, bs),
         1 => predict_dc(&refs, bs, component),
-        2..=34 => {
-            predict_angular_with_offset(&refs, bs, mode, edge_filter, pic.bit_depth)
-        }
+        2..=34 => predict_angular_with_offset(&refs, bs, mode, edge_filter, pic.bit_depth),
         _ => unreachable!(),
     }
 }
 
 /// Angular prediction that correctly handles the offset for negative-angle modes.
 /// `apply_edge_filter` should be true only for luma blocks smaller than 32.
-fn predict_angular_with_offset(refs: &RefSamples, n_tb_s: u32, mode: u8, apply_edge_filter: bool, bit_depth: u8) -> Vec<i16> {
+fn predict_angular_with_offset(
+    refs: &RefSamples,
+    n_tb_s: u32,
+    mode: u8,
+    apply_edge_filter: bool,
+    bit_depth: u8,
+) -> Vec<i16> {
     let n = n_tb_s as usize;
     let angle_idx = (mode - 2) as usize;
     let angle = INTRA_PRED_ANGLE[angle_idx];
@@ -532,8 +521,8 @@ fn predict_angular_with_offset(refs: &RefSamples, n_tb_s: u32, mode: u8, apply_e
         } else {
             // Negative angle: build extended ref with left-projected samples
             let inv_a = inv_angle_for(angle);
-            let extra = (((n as i32) * angle.unsigned_abs() as i32 + 31) >> 5)
-                .min(n as i32) as usize;
+            let extra =
+                (((n as i32) * angle.unsigned_abs() as i32 + 31) >> 5).min(n as i32) as usize;
 
             let mut ref_main = vec![0i16; extra + 1 + 2 * n];
             ref_main[extra] = refs.top_left;
@@ -600,8 +589,8 @@ fn predict_angular_with_offset(refs: &RefSamples, n_tb_s: u32, mode: u8, apply_e
         } else {
             // Negative angle: build extended ref with top-projected samples
             let inv_a = inv_angle_for(angle);
-            let extra = (((n as i32) * angle.unsigned_abs() as i32 + 31) >> 5)
-                .min(n as i32) as usize;
+            let extra =
+                (((n as i32) * angle.unsigned_abs() as i32 + 31) >> 5).min(n as i32) as usize;
 
             let mut ref_main = vec![0i16; extra + 1 + 2 * n];
             ref_main[extra] = refs.top_left;
