@@ -342,16 +342,15 @@ impl ExifContext {
             .ok_or(ExifError::NotExif)?
             .0;
 
-        // Find the item ID whose type is "Exif", then locate its data extent
+        // idat box: optional, needed when iloc construction_method=1
+        let idat_content_start = isobmff_find_box(reader, children_start, meta_end, b"idat")?
+            .map(|(content_start, _)| content_start);
+
+        // Find the item ID whose type is "Exif", then read all its extents
         let exif_id =
             isobmff_find_item_id_by_type(reader, iinf_start, b"Exif")?.ok_or(ExifError::NotExif)?;
-        let (offset, length) =
-            isobmff_find_item_extent(reader, iloc_start, exif_id)?.ok_or(ExifError::NotExif)?;
-
-        // Exif item data starts with a 4-byte BE offset to the TIFF header
-        reader.seek(SeekFrom::Start(offset))?;
-        let mut data = vec![0u8; length as usize];
-        reader.read_exact(&mut data)?;
+        let data = isobmff_read_item_data(reader, iloc_start, exif_id, idat_content_start)?
+            .ok_or(ExifError::NotExif)?;
 
         if data.len() < 10 {
             return Err(ExifError::Malformed(
@@ -397,15 +396,14 @@ impl ExifContext {
                         isobmff_find_box(reader, children_start, meta_end, b"iinf")?,
                         isobmff_find_box(reader, children_start, meta_end, b"iloc")?,
                     ) {
+                        let idat_cs = isobmff_find_box(reader, children_start, meta_end, b"idat")?
+                            .map(|(cs, _)| cs);
                         if let Some(exif_id) =
                             isobmff_find_item_id_by_type(reader, iinf_start, b"Exif")?
                         {
-                            if let Some((offset, length)) =
-                                isobmff_find_item_extent(reader, iloc_start, exif_id)?
+                            if let Some(data) =
+                                isobmff_read_item_data(reader, iloc_start, exif_id, idat_cs)?
                             {
-                                reader.seek(SeekFrom::Start(offset))?;
-                                let mut data = vec![0u8; length as usize];
-                                reader.read_exact(&mut data)?;
                                 if data.len() >= 10 {
                                     let tiff_off = u32::from_be_bytes([
                                         data[0], data[1], data[2], data[3],
@@ -1151,7 +1149,7 @@ fn parse_ifd_from_bytes(
 // Canonical implementations live in codec::isobmff; re-export for backward compat.
 
 pub(crate) use crate::codec::isobmff::{
-    isobmff_find_box, isobmff_find_item_extent, isobmff_find_item_id_by_type,
+    isobmff_find_box, isobmff_find_item_id_by_type, isobmff_read_item_data,
 };
 
 /// Parse Sony MakerNotes - starts directly with IFD entry count (no TIFF header)

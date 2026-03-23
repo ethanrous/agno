@@ -7,7 +7,7 @@ use std::{
 use crate::{
     agno_image::AgnoImage,
     codec::hevc::decode_hevc_still,
-    codec::isobmff::{isobmff_find_box, isobmff_find_item_extent, isobmff_find_item_id_by_type},
+    codec::isobmff::{isobmff_find_box, isobmff_find_item_id_by_type, isobmff_read_item_data},
     exif::ExifContext,
 };
 
@@ -63,11 +63,13 @@ fn try_heif_style_thumbnail(file: &mut File) -> Result<Option<Vec<u8>>, Box<dyn 
         None => return Ok(None),
     };
 
+    let idat_content_start = isobmff_find_box(file, children_start, meta_end, b"idat")?
+        .map(|(cs, _)| cs);
+
     // Try both "jpeg" and "JPEG" item types
     for target in [b"jpeg", b"JPEG"] {
         if let Some(item_id) = isobmff_find_item_id_by_type(file, iinf_start, target)? {
-            if let Some((offset, length)) = isobmff_find_item_extent(file, iloc_start, item_id)? {
-                let data = read_bytes_at(file, offset, length as usize)?;
+            if let Some(data) = isobmff_read_item_data(file, iloc_start, item_id, idat_content_start)? {
                 if is_jpeg(&data) {
                     return Ok(Some(data));
                 }

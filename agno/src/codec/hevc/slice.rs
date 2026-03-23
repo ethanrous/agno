@@ -772,53 +772,72 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
             wpp_saved_ctx = Some(cab.save_contexts());
         }
 
-        // H.265: end_of_slice_segment_data (decode_terminate) MUST be called at
-        // every CTU — it modifies CABAC range/offset even when returning false.
-        if cab.decode_terminate() {
-            if !wpp_enabled {
-                break;
-            }
-            // WPP: terminate at row end is expected (end of substream).
-            // Terminate mid-row means CABAC desync — don't break, let WPP
-            // row switch at next cx==0 reset the engine from the substream.
+        // H.265 7.3.6.1: end_of_slice_segment_flag via decode_terminate at every CTU.
+        let end_of_slice = cab.decode_terminate();
+        if end_of_slice {
+            break;
+        }
+
+        // H.265 7.3.6.1: end_of_sub_stream_one_bit at WPP row boundaries.
+        // After end_of_slice_segment_flag==0, if we crossed a row boundary
+        // (WPP), decode the substream termination bit.
+        if wpp_enabled && cx == w_ctbs - 1 {
+            let _end_of_sub_stream = cab.decode_terminate();
         }
     }
     Ok(())
 }
 
+/// Decode SAO parameters per H.265 7.3.8.3 sao_coding().
+///
+/// Correct ordering: for each component (Y, Cb, Cr), decode type then offsets
+/// before moving to the next component. Cr type is copied from Cb (not decoded),
+/// and Cr eo_class is copied from Cb (not decoded).
 fn decode_sao(cab: &mut CabacReader, luma: bool, chroma: bool, rx: u32, ry: u32,
               sao_params: &[CtuSaoParams], addr: usize, w_ctbs: usize) -> CtuSaoParams {
+    // sao_merge flags are decoded once for the CTU, not per-component
     if rx > 0 {
         if cab.decode_decision(CTX_SAO_MERGE) != 0 {
-            // merge_left: copy SAO from left CTU
             return if addr > 0 { sao_params[addr - 1].clone() } else { CtuSaoParams::default() };
         }
     }
     if ry > 0 {
         if cab.decode_decision(CTX_SAO_MERGE) != 0 {
-            // merge_up: copy SAO from above CTU
             return if addr >= w_ctbs { sao_params[addr - w_ctbs].clone() } else { CtuSaoParams::default() };
         }
     }
-    let mut p = CtuSaoParams::default();
-    let luma_type = if luma { decode_sao_type(cab) } else { 0 };
-    let chroma_type = if chroma { decode_sao_type(cab) } else { 0 };
 
-    // Read offsets per component, using the appropriate type
-    if luma && luma_type != 0 {
-        p.y = decode_sao_offsets(cab, luma_type);
+    let mut p = CtuSaoParams::default();
+    let mut chroma_type: u8 = 0;
+
+    // H.265 7.3.8.3: loop cIdx = 0..2, decode type + offsets per component
+    for c_idx in 0..3u8 {
+        let enabled = (c_idx == 0 && luma) || (c_idx > 0 && chroma);
+        if !enabled {
+            continue;
+        }
+
+        // Decode sao_type_idx: luma gets its own, chroma decoded once at Cb,
+        // Cr reuses the Cb type (libde265 line 2786-2797)
+        let sao_type = match c_idx {
+            0 => decode_sao_type(cab),
+            1 => {
+                chroma_type = decode_sao_type(cab);
+                chroma_type
+            }
+            _ => chroma_type, // Cr copies type from Cb, not decoded
+        };
+
+        if sao_type != 0 {
+            let s = decode_sao_component(cab, sao_type, c_idx, &p.cb);
+            match c_idx {
+                0 => p.y = s,
+                1 => p.cb = s,
+                _ => p.cr = s,
+            }
+        }
     }
-    if chroma && chroma_type != 0 {
-        p.cb = decode_sao_offsets(cab, chroma_type);
-        // H.265: Cr offsets are decoded, but eo_class is copied from Cb (not decoded again)
-        p.cr = decode_sao_offsets_cr(cab, chroma_type, p.cb.sao_eo_class);
-    }
-    // Store type in the params (for offset application)
-    if luma { p.y.sao_type_idx = luma_type; }
-    if chroma {
-        p.cb.sao_type_idx = chroma_type;
-        p.cr.sao_type_idx = chroma_type;
-    }
+
     p
 }
 
@@ -829,11 +848,13 @@ fn decode_sao_type(cab: &mut CabacReader) -> u8 {
     if tb == 0 { 1 } else { 2 }
 }
 
-/// Decode SAO offset values for one component, given a known sao_type_idx > 0.
-fn decode_sao_offsets(cab: &mut CabacReader, sao_type: u8) -> SaoParams {
+/// Decode SAO offsets for one component. For Cr (c_idx=2) edge offset,
+/// eo_class is copied from Cb rather than decoded (H.265 7.3.8.3).
+fn decode_sao_component(cab: &mut CabacReader, sao_type: u8, c_idx: u8, cb: &SaoParams) -> SaoParams {
     let mut s = SaoParams::default();
     s.sao_type_idx = sao_type;
 
+    // sao_offset_abs: truncated unary, max 7
     for i in 0..4 {
         let mut m = 0i8;
         for _ in 0..7 { if cab.decode_bypass() == 0 { break; } m += 1; }
@@ -841,6 +862,7 @@ fn decode_sao_offsets(cab: &mut CabacReader, sao_type: u8) -> SaoParams {
     }
 
     if sao_type == 1 {
+        // Band offset: signs decoded, then band position
         for i in 0..4 {
             if s.sao_offset[i] != 0 && cab.decode_bypass() != 0 {
                 s.sao_offset[i] = -s.sao_offset[i];
@@ -848,36 +870,15 @@ fn decode_sao_offsets(cab: &mut CabacReader, sao_type: u8) -> SaoParams {
         }
         s.sao_band_position = cab.decode_bypass_bits(5) as u8;
     } else {
+        // Edge offset: offsets 2,3 are always negative; eo_class decoded
+        // for luma and Cb only, Cr copies from Cb
         s.sao_offset[2] = -s.sao_offset[2].abs();
         s.sao_offset[3] = -s.sao_offset[3].abs();
-        s.sao_eo_class = cab.decode_bypass_bits(2) as u8;
-    }
-    s
-}
-
-/// Decode SAO offsets for Cr component. Per H.265, eo_class is NOT decoded
-/// for c_idx=2; it's copied from Cb.
-fn decode_sao_offsets_cr(cab: &mut CabacReader, sao_type: u8, cb_eo_class: u8) -> SaoParams {
-    let mut s = SaoParams::default();
-    s.sao_type_idx = sao_type;
-
-    for i in 0..4 {
-        let mut m = 0i8;
-        for _ in 0..7 { if cab.decode_bypass() == 0 { break; } m += 1; }
-        s.sao_offset[i] = m;
-    }
-
-    if sao_type == 1 {
-        for i in 0..4 {
-            if s.sao_offset[i] != 0 && cab.decode_bypass() != 0 {
-                s.sao_offset[i] = -s.sao_offset[i];
-            }
+        if c_idx <= 1 {
+            s.sao_eo_class = cab.decode_bypass_bits(2) as u8;
+        } else {
+            s.sao_eo_class = cb.sao_eo_class;
         }
-        s.sao_band_position = cab.decode_bypass_bits(5) as u8;
-    } else {
-        s.sao_offset[2] = -s.sao_offset[2].abs();
-        s.sao_offset[3] = -s.sao_offset[3].abs();
-        s.sao_eo_class = cb_eo_class; // copied from Cb, not decoded
     }
     s
 }

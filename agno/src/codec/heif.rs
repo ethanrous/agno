@@ -2,7 +2,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use anyhow::{Context, Result, bail, ensure};
 
-use super::isobmff::{isobmff_find_box, isobmff_find_item_extent};
+use super::isobmff::{isobmff_find_box, isobmff_read_item_data};
 
 /// Maximum number of tiles in a grid image.
 const MAX_TILES: usize = 16_384;
@@ -67,6 +67,10 @@ pub fn parse_heif<R: Read + Seek>(reader: &mut R) -> Result<HeifImage> {
     let (iloc_start, _) = isobmff_find_box(reader, children_start, meta_end, b"iloc")?
         .context("No iloc box found")?;
 
+    // idat box: optional, needed when iloc construction_method=1
+    let idat_content_start = isobmff_find_box(reader, children_start, meta_end, b"idat")?
+        .map(|(content_start, _)| content_start);
+
     let (iprp_start, iprp_end) = isobmff_find_box(reader, children_start, meta_end, b"iprp")?
         .context("No iprp box found")?;
 
@@ -78,29 +82,25 @@ pub fn parse_heif<R: Read + Seek>(reader: &mut R) -> Result<HeifImage> {
     if &item_type == b"hvc1" || &item_type == b"hev1" {
         // Single-tile HEVC: primary item IS the image
         let (width, height) = extract_ispe_from_ipco(reader, ipco_start, ipco_end)?;
-        let (offset, length) = isobmff_find_item_extent(reader, iloc_start, primary_item_id)?
+        let bitstream = isobmff_read_item_data(reader, iloc_start, primary_item_id, idat_content_start)?
             .context(format!(
-                "Primary item (id={}) extent not found in iloc",
+                "Primary item (id={}) not found in iloc",
                 primary_item_id,
             ))?;
 
-        if length > MAX_TILE_DATA_SIZE {
+        if bitstream.len() as u64 > MAX_TILE_DATA_SIZE {
             bail!(
                 "Primary item (id={}) data size {} bytes exceeds limit of {} bytes",
-                primary_item_id, length, MAX_TILE_DATA_SIZE,
+                primary_item_id, bitstream.len(), MAX_TILE_DATA_SIZE,
             );
         }
-
-        reader.seek(SeekFrom::Start(offset))?;
-        let mut bitstream = vec![0u8; length as usize];
-        reader.read_exact(&mut bitstream)?;
 
         Ok(HeifImage { hvcc, tiles: vec![bitstream], grid_cols: 1, grid_rows: 1, width, height })
     } else if &item_type == b"grid" {
         // Image grid: find the largest ispe for output dimensions
         let (width, height) = extract_largest_ispe(reader, ipco_start, ipco_end)?;
         parse_grid_image(reader, children_start, meta_end, iloc_start,
-                         primary_item_id, &hvcc, width, height)
+                         idat_content_start, primary_item_id, &hvcc, width, height)
     } else {
         bail!(
             "Primary item (id={}) has type '{}', expected hvc1/hev1/grid",
@@ -116,6 +116,7 @@ fn parse_grid_image<R: Read + Seek>(
     children_start: u64,
     meta_end: u64,
     iloc_start: u64,
+    idat_content_start: Option<u64>,
     grid_item_id: u32,
     hvcc: &[u8],
     ispe_width: u32,
@@ -131,11 +132,8 @@ fn parse_grid_image<R: Read + Seek>(
     }
 
     // The grid item's iloc data contains the grid descriptor, not tile bitstreams.
-    let (rows, cols, width, height) = match isobmff_find_item_extent(reader, iloc_start, grid_item_id)? {
-        Some((offset, length)) if length >= 8 && length <= 64 => {
-            reader.seek(SeekFrom::Start(offset))?;
-            let mut desc = vec![0u8; length as usize];
-            reader.read_exact(&mut desc)?;
+    let (rows, cols, width, height) = match isobmff_read_item_data(reader, iloc_start, grid_item_id, idat_content_start)? {
+        Some(desc) if desc.len() >= 8 && desc.len() <= 64 => {
             match parse_grid_descriptor(&desc) {
                 Ok((r, c, w, h)) => {
                     if c * r == tile_ids.len() as u32 {
@@ -159,22 +157,19 @@ fn parse_grid_image<R: Read + Seek>(
         }
     };
 
-    // Read each tile's bitstream separately
+    // Read each tile's bitstream (concatenating all extents per tile)
     let mut tiles = Vec::with_capacity(tile_ids.len());
     for (i, &tile_id) in tile_ids.iter().enumerate() {
-        let (offset, length) = isobmff_find_item_extent(reader, iloc_start, tile_id)?
-            .context(format!("Tile {} (item id={}) extent not found in iloc", i, tile_id))?;
+        let tile_data = isobmff_read_item_data(reader, iloc_start, tile_id, idat_content_start)?
+            .context(format!("Tile {} (item id={}) not found in iloc", i, tile_id))?;
 
-        if length > MAX_TILE_DATA_SIZE {
+        if tile_data.len() as u64 > MAX_TILE_DATA_SIZE {
             bail!(
                 "Tile {} (item id={}) data size {} bytes exceeds limit of {} bytes",
-                i, tile_id, length, MAX_TILE_DATA_SIZE,
+                i, tile_id, tile_data.len(), MAX_TILE_DATA_SIZE,
             );
         }
 
-        reader.seek(SeekFrom::Start(offset))?;
-        let mut tile_data = vec![0u8; length as usize];
-        reader.read_exact(&mut tile_data)?;
         tiles.push(tile_data);
     }
 
@@ -188,13 +183,20 @@ fn parse_grid_image<R: Read + Seek>(
     })
 }
 
-/// Find item references of type 'dimg' (derived image) from the 'iref' box.
 /// Try to determine grid layout from tile count and image dimensions.
 fn infer_grid_layout(tile_count: u32, width: u32, height: u32) -> (u32, u32) {
-    // Common tile sizes: 512x512, 256x256
+    // Square tile sizes
     for tile_size in [512u32, 256, 1024, 384, 640] {
         let c = (width + tile_size - 1) / tile_size;
         let r = (height + tile_size - 1) / tile_size;
+        if c * r == tile_count {
+            return (c, r);
+        }
+    }
+    // Non-square tile sizes used by iPhones
+    for (tw, th) in [(640u32, 896u32), (896, 640), (480, 640), (640, 480), (960, 640), (640, 960)] {
+        let c = (width + tw - 1) / tw;
+        let r = (height + th - 1) / th;
         if c * r == tile_count {
             return (c, r);
         }
