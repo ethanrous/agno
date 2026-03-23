@@ -4,7 +4,6 @@ use std::fmt;
 use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
-use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::agno_image::load::{ImageType, detect_image_type};
@@ -110,7 +109,6 @@ pub enum ExifError {
     Io(std::io::Error, Backtrace),
     NotExif,
     BadTiff,
-    SerializeErr(serde_json::Error),
     // NotFound,
     Unsupported(String),
     Malformed(String),
@@ -122,7 +120,6 @@ impl std::fmt::Display for ExifError {
             ExifError::Io(e, bt) => write!(f, "I/O error: {}\n{}", e, bt),
             ExifError::NotExif => write!(f, "Not a valid EXIF/JPEG file"),
             ExifError::BadTiff => write!(f, "Invalid TIFF header in EXIF data"),
-            ExifError::SerializeErr(e) => write!(f, "Serialization error: {}", e),
             // ExifError::NotFound => write!(f, "Requested EXIF tag not found"),
             ExifError::Unsupported(msg) => {
                 write!(f, "Unsupported EXIF data type or format: {}", msg)
@@ -135,12 +132,6 @@ impl std::fmt::Display for ExifError {
 impl From<std::io::Error> for ExifError {
     fn from(err: std::io::Error) -> ExifError {
         ExifError::Io(err, backtrace::Backtrace::capture())
-    }
-}
-
-impl From<serde_json::Error> for ExifError {
-    fn from(err: serde_json::Error) -> ExifError {
-        ExifError::SerializeErr(err)
     }
 }
 
@@ -170,7 +161,7 @@ struct IfdInfo {
     next_ifd: u32, // offset to next IFD (0 if none)
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub enum ExifValue {
     Byte(Vec<u8>),              // BYTE(1) or UNDEFINED(7)
     Ascii(String),              // ASCII(2)

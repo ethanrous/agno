@@ -24,17 +24,6 @@ pub const ZIGZAG: [usize; 64] = [
     52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
-/// Inverse zigzag: DEZIGZAG[natural_idx] = scan_pos.
-/// Inverse permutation of ZIGZAG (where ZIGZAG[scan_pos] = natural_idx).
-pub const DEZIGZAG: [usize; 64] = {
-    let mut table = [0usize; 64];
-    let mut i = 0;
-    while i < 64 {
-        table[ZIGZAG[i]] = i;
-        i += 1;
-    }
-    table
-};
 
 /// IJG quality scaling: maps quality 1-100 to a scaled quantization table.
 pub fn scale_quant_table(base: &[u8; 64], quality: u8) -> [u16; 64] {

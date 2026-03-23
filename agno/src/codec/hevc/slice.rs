@@ -1774,7 +1774,6 @@ fn decode_tu(
         } else {
             transform::inverse_transform(&mut c, size, size == 4, bd);
         }
-        if x0 == 80 && y0 == 0 { cabac_trace!("AGNO_PRED pos=({},{}) size={}", x0, y0, size); for dpy in 0..size { let row_str: Vec<String> = (0..size).map(|dpx| format!("{}", pred[(dpy * size + dpx) as usize])).collect(); cabac_trace!("P: {}", row_str.join(" ")); } cabac_trace!("AGNO_RESID"); for dpy in 0..size { let row_str: Vec<String> = (0..size).map(|dpx| format!("{}", c[(dpy * size + dpx) as usize])).collect(); cabac_trace!("R: {}", row_str.join(" ")); } }
         for py in 0..size {
             for px in 0..size {
                 let sx = x0 + px;

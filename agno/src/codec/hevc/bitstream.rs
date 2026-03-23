@@ -89,17 +89,6 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// Create a BitReader for already-cleaned RBSP data (no EP removal).
-    pub fn new_rbsp(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            byte_pos: 0,
-            bit_pos: 0,
-            num_zeros: 0,
-            skip_ep: true,
-        }
-    }
-
     /// Returns the number of bits remaining in the stream (approximate -- does
     /// not account for emulation prevention bytes that have not yet been
     /// encountered; an exact count would require a full forward scan).

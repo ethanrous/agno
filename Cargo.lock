@@ -21,8 +21,6 @@ dependencies = [
  "pdfium-render",
  "pollster",
  "rayon",
- "serde",
- "serde_json",
  "spirv-builder",
  "tracing",
  "tracing-subscriber",

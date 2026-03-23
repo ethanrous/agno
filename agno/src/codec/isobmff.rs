@@ -191,104 +191,6 @@ pub fn isobmff_find_item_id_by_type<R: Read + Seek>(
     Ok(None)
 }
 
-/// Parse an 'iloc' FullBox to find the first extent for the given item ID.
-/// Returns `(offset, length, construction_method)` where:
-/// - construction_method 0: offset is absolute (relative to file start / mdat)
-/// - construction_method 1: offset is relative to idat box content
-pub fn isobmff_find_item_extent<R: Read + Seek>(
-    reader: &mut R,
-    iloc_content_start: u64,
-    target_id: u32,
-) -> Result<Option<(u64, u64, u8)>, ExifError> {
-    reader.seek(SeekFrom::Start(iloc_content_start))?;
-    let mut vf = [0u8; 4];
-    reader.read_exact(&mut vf)?;
-    let version = vf[0];
-
-    // Packed size fields: offset_size(4) | length_size(4) | base_offset_size(4) | index_size(4)
-    let mut sizes = [0u8; 2];
-    reader.read_exact(&mut sizes)?;
-    let offset_size = ((sizes[0] >> 4) & 0xF) as usize;
-    let length_size = (sizes[0] & 0xF) as usize;
-    let base_offset_size = ((sizes[1] >> 4) & 0xF) as usize;
-    let index_size = if version >= 1 {
-        (sizes[1] & 0xF) as usize
-    } else {
-        0
-    };
-
-    let item_count = if version < 2 {
-        let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf)?;
-        u16::from_be_bytes(buf) as u32
-    } else {
-        let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf)?;
-        u32::from_be_bytes(buf)
-    };
-
-    if item_count as usize > MAX_ITEMS {
-        return Err(ExifError::Malformed(format!(
-            "iloc box at offset {:#x}: item count {} exceeds security limit of {}",
-            iloc_content_start, item_count, MAX_ITEMS,
-        )));
-    }
-
-    for _ in 0..item_count {
-        let item_pos = reader.stream_position()?;
-        let item_id = if version < 2 {
-            let mut buf = [0u8; 2];
-            reader.read_exact(&mut buf)?;
-            u16::from_be_bytes(buf) as u32
-        } else {
-            let mut buf = [0u8; 4];
-            reader.read_exact(&mut buf)?;
-            u32::from_be_bytes(buf)
-        };
-
-        // construction_method (v1/v2 only): lower 4 bits of a 16-bit field
-        let construction_method = if version >= 1 {
-            let mut buf = [0u8; 2];
-            reader.read_exact(&mut buf)?;
-            buf[1] & 0xF
-        } else {
-            0u8
-        };
-        // data_reference_index
-        reader.seek(SeekFrom::Current(2))?;
-
-        let base_offset = isobmff_read_uint(reader, base_offset_size)?;
-
-        let mut ec = [0u8; 2];
-        reader.read_exact(&mut ec)?;
-        let extent_count = u16::from_be_bytes(ec);
-
-        if extent_count as usize > MAX_EXTENTS_PER_ITEM {
-            return Err(ExifError::Malformed(format!(
-                "iloc box: item {} at offset {:#x} has {} extents, exceeds security limit of {}",
-                item_id, item_pos, extent_count, MAX_EXTENTS_PER_ITEM,
-            )));
-        }
-
-        for _ in 0..extent_count {
-            if version >= 1 && index_size > 0 {
-                isobmff_read_uint(reader, index_size)?;
-            }
-            let extent_offset = isobmff_read_uint(reader, offset_size)?;
-            let extent_length = isobmff_read_uint(reader, length_size)?;
-
-            if item_id == target_id {
-                return Ok(Some((
-                    base_offset + extent_offset,
-                    extent_length,
-                    construction_method,
-                )));
-            }
-        }
-    }
-    Ok(None)
-}
-
 /// Resolve an iloc extent offset to an absolute file position.
 /// For construction_method 0: offset is already absolute (mdat-relative).
 /// For construction_method 1: offset is relative to idat box content start.
@@ -314,8 +216,7 @@ pub fn resolve_iloc_offset(
 
 /// Read all extents for an item from an iloc box and concatenate into a single buffer.
 ///
-/// Unlike `isobmff_find_item_extent` (which returns only the first extent),
-/// this reads ALL extents for a multi-extent item and concatenates them,
+/// Reads ALL extents for a multi-extent item and concatenates them,
 /// matching the behavior of libheif's `Box_iloc::read_data()`.
 ///
 /// Returns `None` if the target item is not found in the iloc box.
