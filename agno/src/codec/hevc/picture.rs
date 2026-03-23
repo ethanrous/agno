@@ -402,17 +402,17 @@ impl Picture {
     }
 }
 
-/// BT.709 / BT.601 conversion coefficients.
+/// BT.709 / BT.601 conversion coefficients (f32 to match libheif).
 ///
 /// YCbCr to RGB:
 ///   R = Y + cr_r * (Cr - 128)
 ///   G = Y + cb_g * (Cb - 128) + cr_g * (Cr - 128)
 ///   B = Y + cb_b * (Cb - 128)
 struct ColorCoeffs {
-    cr_r: f64,
-    cb_g: f64,
-    cr_g: f64,
-    cb_b: f64,
+    cr_r: f32,
+    cb_g: f32,
+    cr_g: f32,
+    cb_b: f32,
 }
 
 const BT709: ColorCoeffs = ColorCoeffs {
@@ -437,27 +437,24 @@ fn matrix_for(matrix_coeffs: u8) -> &'static ColorCoeffs {
 }
 
 /// Convert a single YCbCr sample to RGB using the given color matrix.
+/// Uses f32 arithmetic to match libheif's rounding behavior.
 /// Cb and Cr are expected centered at 128 (8-bit range).
 fn ycbcr_to_rgb(y: i16, cb: i16, cr: i16, c: &ColorCoeffs) -> (u8, u8, u8) {
-    let yf = y as f64;
-    let cb_off = (cb - 128) as f64;
-    let cr_off = (cr - 128) as f64;
+    let yf = y as f32;
+    let cb_off = (cb - 128) as f32;
+    let cr_off = (cr - 128) as f32;
 
     let r = yf + c.cr_r * cr_off;
     let g = yf + c.cb_g * cb_off + c.cr_g * cr_off;
     let b = yf + c.cb_b * cb_off;
 
-    (clip_u8(r), clip_u8(g), clip_u8(b))
+    (clip_f32_u8(r), clip_f32_u8(g), clip_f32_u8(b))
 }
 
-fn clip_u8(v: f64) -> u8 {
-    if v < 0.0 {
-        0
-    } else if v > 255.0 {
-        255
-    } else {
-        (v + 0.5) as u8
-    }
+/// Clip float to u8 with +0.5 rounding, matching libheif's clip_f_u16.
+fn clip_f32_u8(v: f32) -> u8 {
+    let x = (v + 0.5f32) as i32;
+    if x < 0 { 0 } else if x > 255 { 255 } else { x as u8 }
 }
 
 #[cfg(test)]
@@ -699,12 +696,12 @@ mod tests {
     }
 
     #[test]
-    fn clip_u8_boundaries() {
-        assert_eq!(clip_u8(-1.0), 0);
-        assert_eq!(clip_u8(0.0), 0);
-        assert_eq!(clip_u8(255.0), 255);
-        assert_eq!(clip_u8(256.0), 255);
-        assert_eq!(clip_u8(127.3), 127);
-        assert_eq!(clip_u8(127.7), 128);
+    fn clip_f32_u8_boundaries() {
+        assert_eq!(clip_f32_u8(-1.0), 0);
+        assert_eq!(clip_f32_u8(0.0), 0);
+        assert_eq!(clip_f32_u8(255.0), 255);
+        assert_eq!(clip_f32_u8(256.0), 255);
+        assert_eq!(clip_f32_u8(127.3), 127);
+        assert_eq!(clip_f32_u8(127.7), 128);
     }
 }

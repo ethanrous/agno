@@ -51,6 +51,8 @@ const DCT16_ODD: [[i32; 8]; 8] = [
 
 /// 32-point odd-indexed DCT coefficients (Table 8-6).
 /// Row k contains coefficients for the (2k+1)-th basis vector.
+/// Retained for reference; the direct matrix multiply uses MAT_DCT instead.
+#[allow(dead_code)]
 const DCT32_ODD: [[i32; 16]; 16] = [
     [
         90, 90, 88, 85, 82, 78, 73, 67, 61, 54, 46, 38, 31, 22, 13, 4,
@@ -100,6 +102,48 @@ const DCT32_ODD: [[i32; 16]; 16] = [
     [
         4, -13, 22, -31, 38, -46, 54, -61, 67, -73, 78, -82, 85, -88, 90, -90,
     ],
+];
+
+/// Full 32x32 DCT-II matrix (H.265 Tables 8-3 through 8-6) in row-major order.
+/// Used by the direct matrix multiply IDCT to match libde265/ffmpeg exactly.
+/// For smaller transforms, rows are subsampled by factor `32/nT`:
+///   nT=4  -> rows 0, 8, 16, 24
+///   nT=8  -> rows 0, 4, 8, ..., 28
+///   nT=16 -> rows 0, 2, 4, ..., 30
+///   nT=32 -> all rows
+const MAT_DCT: [[i32; 32]; 32] = [
+    [ 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64],
+    [ 90, 90, 88, 85, 82, 78, 73, 67, 61, 54, 46, 38, 31, 22, 13,  4, -4,-13,-22,-31,-38,-46,-54,-61,-67,-73,-78,-82,-85,-88,-90,-90],
+    [ 90, 87, 80, 70, 57, 43, 25,  9, -9,-25,-43,-57,-70,-80,-87,-90,-90,-87,-80,-70,-57,-43,-25, -9,  9, 25, 43, 57, 70, 80, 87, 90],
+    [ 90, 82, 67, 46, 22, -4,-31,-54,-73,-85,-90,-88,-78,-61,-38,-13, 13, 38, 61, 78, 88, 90, 85, 73, 54, 31,  4,-22,-46,-67,-82,-90],
+    [ 89, 75, 50, 18,-18,-50,-75,-89,-89,-75,-50,-18, 18, 50, 75, 89, 89, 75, 50, 18,-18,-50,-75,-89,-89,-75,-50,-18, 18, 50, 75, 89],
+    [ 88, 67, 31,-13,-54,-82,-90,-78,-46, -4, 38, 73, 90, 85, 61, 22,-22,-61,-85,-90,-73,-38,  4, 46, 78, 90, 82, 54, 13,-31,-67,-88],
+    [ 87, 57,  9,-43,-80,-90,-70,-25, 25, 70, 90, 80, 43, -9,-57,-87,-87,-57, -9, 43, 80, 90, 70, 25,-25,-70,-90,-80,-43,  9, 57, 87],
+    [ 85, 46,-13,-67,-90,-73,-22, 38, 82, 88, 54, -4,-61,-90,-78,-31, 31, 78, 90, 61,  4,-54,-88,-82,-38, 22, 73, 90, 67, 13,-46,-85],
+    [ 83, 36,-36,-83,-83,-36, 36, 83, 83, 36,-36,-83,-83,-36, 36, 83, 83, 36,-36,-83,-83,-36, 36, 83, 83, 36,-36,-83,-83,-36, 36, 83],
+    [ 82, 22,-54,-90,-61, 13, 78, 85, 31,-46,-90,-67,  4, 73, 88, 38,-38,-88,-73, -4, 67, 90, 46,-31,-85,-78,-13, 61, 90, 54,-22,-82],
+    [ 80,  9,-70,-87,-25, 57, 90, 43,-43,-90,-57, 25, 87, 70, -9,-80,-80, -9, 70, 87, 25,-57,-90,-43, 43, 90, 57,-25,-87,-70,  9, 80],
+    [ 78, -4,-82,-73, 13, 85, 67,-22,-88,-61, 31, 90, 54,-38,-90,-46, 46, 90, 38,-54,-90,-31, 61, 88, 22,-67,-85,-13, 73, 82,  4,-78],
+    [ 75,-18,-89,-50, 50, 89, 18,-75,-75, 18, 89, 50,-50,-89,-18, 75, 75,-18,-89,-50, 50, 89, 18,-75,-75, 18, 89, 50,-50,-89,-18, 75],
+    [ 73,-31,-90,-22, 78, 67,-38,-90,-13, 82, 61,-46,-88, -4, 85, 54,-54,-85,  4, 88, 46,-61,-82, 13, 90, 38,-67,-78, 22, 90, 31,-73],
+    [ 70,-43,-87,  9, 90, 25,-80,-57, 57, 80,-25,-90, -9, 87, 43,-70,-70, 43, 87, -9,-90,-25, 80, 57,-57,-80, 25, 90,  9,-87,-43, 70],
+    [ 67,-54,-78, 38, 85,-22,-90,  4, 90, 13,-88,-31, 82, 46,-73,-61, 61, 73,-46,-82, 31, 88,-13,-90, -4, 90, 22,-85,-38, 78, 54,-67],
+    [ 64,-64,-64, 64, 64,-64,-64, 64, 64,-64,-64, 64, 64,-64,-64, 64, 64,-64,-64, 64, 64,-64,-64, 64, 64,-64,-64, 64, 64,-64,-64, 64],
+    [ 61,-73,-46, 82, 31,-88,-13, 90, -4,-90, 22, 85,-38,-78, 54, 67,-67,-54, 78, 38,-85,-22, 90,  4,-90, 13, 88,-31,-82, 46, 73,-61],
+    [ 57,-80,-25, 90, -9,-87, 43, 70,-70,-43, 87,  9,-90, 25, 80,-57,-57, 80, 25,-90,  9, 87,-43,-70, 70, 43,-87, -9, 90,-25,-80, 57],
+    [ 54,-85, -4, 88,-46,-61, 82, 13,-90, 38, 67,-78,-22, 90,-31,-73, 73, 31,-90, 22, 78,-67,-38, 90,-13,-82, 61, 46,-88,  4, 85,-54],
+    [ 50,-89, 18, 75,-75,-18, 89,-50,-50, 89,-18,-75, 75, 18,-89, 50, 50,-89, 18, 75,-75,-18, 89,-50,-50, 89,-18,-75, 75, 18,-89, 50],
+    [ 46,-90, 38, 54,-90, 31, 61,-88, 22, 67,-85, 13, 73,-82,  4, 78,-78, -4, 82,-73,-13, 85,-67,-22, 88,-61,-31, 90,-54,-38, 90,-46],
+    [ 43,-90, 57, 25,-87, 70,  9,-80, 80, -9,-70, 87,-25,-57, 90,-43,-43, 90,-57,-25, 87,-70, -9, 80,-80,  9, 70,-87, 25, 57,-90, 43],
+    [ 38,-88, 73, -4,-67, 90,-46,-31, 85,-78, 13, 61,-90, 54, 22,-82, 82,-22,-54, 90,-61,-13, 78,-85, 31, 46,-90, 67,  4,-73, 88,-38],
+    [ 36,-83, 83,-36,-36, 83,-83, 36, 36,-83, 83,-36,-36, 83,-83, 36, 36,-83, 83,-36,-36, 83,-83, 36, 36,-83, 83,-36,-36, 83,-83, 36],
+    [ 31,-78, 90,-61,  4, 54,-88, 82,-38,-22, 73,-90, 67,-13,-46, 85,-85, 46, 13,-67, 90,-73, 22, 38,-82, 88,-54, -4, 61,-90, 78,-31],
+    [ 25,-70, 90,-80, 43,  9,-57, 87,-87, 57, -9,-43, 80,-90, 70,-25,-25, 70,-90, 80,-43, -9, 57,-87, 87,-57,  9, 43,-80, 90,-70, 25],
+    [ 22,-61, 85,-90, 73,-38, -4, 46,-78, 90,-82, 54,-13,-31, 67,-88, 88,-67, 31, 13,-54, 82,-90, 78,-46,  4, 38,-73, 90,-85, 61,-22],
+    [ 18,-50, 75,-89, 89,-75, 50,-18,-18, 50,-75, 89,-89, 75,-50, 18, 18,-50, 75,-89, 89,-75, 50,-18,-18, 50,-75, 89,-89, 75,-50, 18],
+    [ 13,-38, 61,-78, 88,-90, 85,-73, 54,-31,  4, 22,-46, 67,-82, 90,-90, 82,-67, 46,-22, -4, 31,-54, 73,-85, 90,-88, 78,-61, 38,-13],
+    [  9,-25, 43,-57, 70,-80, 87,-90, 90,-87, 80,-70, 57,-43, 25, -9, -9, 25,-43, 57,-70, 80,-87, 90,-90, 87,-80, 70,-57, 43,-25,  9],
+    [  4,-13, 22,-31, 38,-46, 54,-61, 67,-73, 78,-82, 85,-88, 90,-90, 90,-90, 88,-85, 82,-78, 73,-67, 61,-54, 46,-38, 31,-22, 13, -4],
 ];
 
 /// Clip a value to the signed 16-bit range [-32768, 32767].
@@ -541,72 +585,65 @@ pub fn inverse_transform(coeffs: &mut [i32], size: u32, is_dst: bool, bit_depth:
         n
     );
 
+    // Direct matrix multiply matching libde265's fallback-dct.cc.
+    // Uses i32 accumulation to produce bit-identical results with libde265/ffmpeg.
+    //
     // Column transform shift is always 7 (Section 8.6.4.2).
     let col_shift: u32 = 7;
+    let rnd1 = 1i32 << (col_shift - 1);
     // Row transform shift depends on bit depth (Section 8.6.4.2).
     let row_shift: u32 = 20 - bit_depth as u32;
+    let rnd2 = 1i32 << (row_shift - 1);
 
-    // Scratch buffer for the intermediate (column-transformed) result.
+    // Row stride factor: maps nT to subsampled rows of the full 32x32 matrix.
+    let fact = 32 / n;
+
     let mut tmp = vec![0i32; n * n];
 
-    // Pass 1: column-wise transform. Each column has stride = n in row-major layout.
-    // We read from `coeffs` (which stores data row-major, so column j starts at
-    // index j and successive rows are at j, j+n, j+2n, ...) and write to `tmp`.
-    match n {
-        4 => {
-            let kernel_col = if is_dst { idst4 } else { idct4 };
-            for col in 0..4 {
-                kernel_col(coeffs, &mut tmp, col, n, col_shift);
+    if is_dst && n == 4 {
+        // 4x4 DST: use the DST4 matrix directly.
+        // Column pass: for each column c, compute tmp[i*4+c] = sum_j DST4[j][i] * coeffs[j*4+c]
+        for c in 0..4 {
+            for i in 0..4 {
+                let mut sum = 0i32;
+                for j in 0..4 {
+                    sum += DST4[j][i] * coeffs[j * 4 + c];
+                }
+                tmp[i * 4 + c] = clip_i16((sum + rnd1) >> col_shift);
             }
         }
-        8 => {
-            for col in 0..8 {
-                idct8(coeffs, &mut tmp, col, n, col_shift);
+        // Row pass: for each row y, compute coeffs[y*4+i] = sum_j DST4[j][i] * tmp[y*4+j]
+        for y in 0..4 {
+            for i in 0..4 {
+                let mut sum = 0i32;
+                for j in 0..4 {
+                    sum += DST4[j][i] * tmp[y * 4 + j];
+                }
+                coeffs[y * 4 + i] = clip_i16((sum + rnd2) >> row_shift);
             }
         }
-        16 => {
-            for col in 0..16 {
-                idct16(coeffs, &mut tmp, col, n, col_shift);
+    } else {
+        // DCT: use the full MAT_DCT with row subsampling by `fact`.
+        // Column pass: tmp[i*n+c] = clip_i16((sum_j MAT_DCT[fact*j][i] * coeffs[j*n+c] + rnd1) >> 7)
+        for c in 0..n {
+            for i in 0..n {
+                let mut sum = 0i32;
+                for j in 0..n {
+                    sum += MAT_DCT[fact * j][i] * coeffs[j * n + c];
+                }
+                tmp[i * n + c] = clip_i16((sum + rnd1) >> col_shift);
             }
         }
-        32 => {
-            for col in 0..32 {
-                idct32(coeffs, &mut tmp, col, n, col_shift);
+        // Row pass: coeffs[y*n+i] = (sum_j MAT_DCT[fact*j][i] * tmp[y*n+j] + rnd2) >> row_shift
+        for y in 0..n {
+            for i in 0..n {
+                let mut sum = 0i32;
+                for j in 0..n {
+                    sum += MAT_DCT[fact * j][i] * tmp[y * n + j];
+                }
+                coeffs[y * n + i] = clip_i16((sum + rnd2) >> row_shift);
             }
         }
-        _ => unreachable!(),
-    }
-
-    // Pass 2: row-wise transform. Each row has stride = 1.
-    // We read from `tmp` and write back into `coeffs`.
-    match n {
-        4 => {
-            let kernel_row = if is_dst { idst4 } else { idct4 };
-            for row in 0..4 {
-                kernel_row(&tmp, coeffs, row * n, 1, row_shift);
-            }
-        }
-        8 => {
-            for row in 0..8 {
-                idct8(&tmp, coeffs, row * n, 1, row_shift);
-            }
-        }
-        16 => {
-            for row in 0..16 {
-                idct16(&tmp, coeffs, row * n, 1, row_shift);
-            }
-        }
-        32 => {
-            for row in 0..32 {
-                idct32(&tmp, coeffs, row * n, 1, row_shift);
-            }
-        }
-        _ => unreachable!(),
-    }
-
-    // Clip residuals to valid range for the bit depth.
-    for c in coeffs[..n * n].iter_mut() {
-        *c = clip_residual(*c, bit_depth);
     }
 }
 
@@ -850,12 +887,13 @@ mod tests {
     }
 
     #[test]
-    fn inverse_transform_output_clipped_to_bit_depth() {
-        // Large input values should still produce output within the residual range.
+    fn inverse_transform_output_clipped_to_i16_range() {
+        // IDCT output is clipped to i16 range [-32768, 32767] per H.265 8.6.4.2.
+        // The bit-depth clipping happens later when adding residual to prediction.
         let mut coeffs = vec![32000i32; 16];
         inverse_transform(&mut coeffs, 4, false, 8);
         for &c in &coeffs[..16] {
-            assert!(c >= -128 && c <= 127, "residual {} out of 8-bit range", c);
+            assert!(c >= -32768 && c <= 32767, "residual {} out of i16 range", c);
         }
     }
 
@@ -907,7 +945,7 @@ mod tests {
         inverse_transform(&mut coeffs, 8, false, 8);
 
         for &c in &coeffs[..64] {
-            assert!(c >= -128 && c <= 127, "residual {} out of 8-bit range", c);
+            assert!(c >= -32768 && c <= 32767, "residual {} out of i16 range", c);
         }
     }
 

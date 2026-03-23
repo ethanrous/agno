@@ -487,6 +487,7 @@ impl Sps {
         if scaling_list_enabled_flag {
             let sps_scaling_list_data_present_flag = reader.read_flag()?;
             if sps_scaling_list_data_present_flag {
+                eprintln!("WARNING: SPS has custom scaling list data — currently discarded");
                 parse_scaling_list_data(reader)?;
             }
         }

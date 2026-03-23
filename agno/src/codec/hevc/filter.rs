@@ -231,10 +231,7 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
         let mut y = 0u32;
         while y < height {
             let bs = derive_bs_intra(pic, x, y, true, ctb_log2);
-            if bs == 0 {
-                y += 4;
-                continue;
-            }
+            if bs == 0 { y += 4; continue; }
 
             // H.265 8.7.2.4: QP from each side of the vertical edge
             let qp_left = pic.qp_y_at(x - 1, y);
@@ -271,10 +268,7 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
         let mut x = 0u32;
         while x < width {
             let bs = derive_bs_intra(pic, x, y, false, ctb_log2);
-            if bs == 0 {
-                x += 4;
-                continue;
-            }
+            if bs == 0 { x += 4; continue; }
 
             // H.265 8.7.2.4: QP from each side of the horizontal edge
             let qp_top = pic.qp_y_at(x, y - 1);
@@ -304,65 +298,82 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
     }
 }
 
-/// Filter a 4-row vertical luma edge. Applies strong or weak filter per spec.
+/// Read 8 samples (p3,p2,p1,p0,q0,q1,q2,q3) across a vertical edge for one line.
+fn read_v_line(pic: &Picture, edge_x: u32, line_y: u32) -> [i32; 8] {
+    [
+        pic.y_at(edge_x - 4, line_y) as i32, // p3
+        pic.y_at(edge_x - 3, line_y) as i32, // p2
+        pic.y_at(edge_x - 2, line_y) as i32, // p1
+        pic.y_at(edge_x - 1, line_y) as i32, // p0
+        pic.y_at(edge_x, line_y) as i32,     // q0
+        pic.y_at(edge_x + 1, line_y) as i32, // q1
+        pic.y_at(edge_x + 2, line_y) as i32, // q2
+        pic.y_at(edge_x + 3, line_y) as i32, // q3
+    ]
+}
+
+/// Filter a 4-row vertical luma edge per H.265 8.7.2.5.
+/// Lines 0 and 3 determine the filtering decision for all 4 lines.
 fn deblock_luma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, beta: i32, tc: i32, bit_depth: i32) {
     let max_val = (1 << bit_depth) - 1;
+
+    if edge_x < 4 || edge_x + 3 >= pic.width {
+        return;
+    }
+    if y + 3 >= pic.height {
+        return;
+    }
+
+    let s0 = read_v_line(pic, edge_x, y);
+    let s3 = read_v_line(pic, edge_x, y + 3);
+
+    // dp/dq for lines 0 and 3 (H.265 8.7.2.5.3)
+    let dp0 = (s0[1] - 2 * s0[2] + s0[3]).abs(); // |p2 - 2*p1 + p0|
+    let dq0 = (s0[6] - 2 * s0[5] + s0[4]).abs(); // |q2 - 2*q1 + q0|
+    let dp3 = (s3[1] - 2 * s3[2] + s3[3]).abs();
+    let dq3 = (s3[6] - 2 * s3[5] + s3[4]).abs();
+
+    let d = dp0 + dq0 + dp3 + dq3;
+    if d >= beta {
+        return;
+    }
+
+    // Strong filter decision using dSam0 and dSam3 (H.265 8.7.2.5.4)
+    let tc5 = (5 * tc + 1) >> 1;
+    let beta_2 = beta >> 2;
+    let beta_3 = beta >> 3;
+
+    let d_sam0 = 2 * (dp0 + dq0) < beta_2
+        && (s0[0] - s0[3]).abs() + (s0[4] - s0[7]).abs() < beta_3
+        && (s0[3] - s0[4]).abs() < tc5;
+    let d_sam3 = 2 * (dp3 + dq3) < beta_2
+        && (s3[0] - s3[3]).abs() + (s3[4] - s3[7]).abs() < beta_3
+        && (s3[3] - s3[4]).abs() < tc5;
+
+    let use_strong = d_sam0 && d_sam3;
+
+    // Weak filter secondary thresholds (H.265 8.7.2.5.5)
+    let dp = dp0 + dp3;
+    let dq = dq0 + dq3;
+    let side_thresh = (beta + (beta >> 1)) >> 3;
+    let d_ep = dp < side_thresh;
+    let d_eq = dq < side_thresh;
+
+    // Apply to all 4 lines
     for dy in 0..4u32 {
         let py = y + dy;
-        if py >= pic.height {
-            break;
-        }
-        if edge_x < 4 || edge_x + 3 >= pic.width {
-            continue;
-        }
-
-        let p0 = pic.y_at(edge_x - 1, py) as i32;
-        let p1 = pic.y_at(edge_x - 2, py) as i32;
-        let p2 = pic.y_at(edge_x - 3, py) as i32;
-        let p3 = pic.y_at(edge_x - 4, py) as i32;
-        let q0 = pic.y_at(edge_x, py) as i32;
-        let q1 = pic.y_at(edge_x + 1, py) as i32;
-        let q2 = pic.y_at(edge_x + 2, py) as i32;
-        let q3 = pic.y_at(edge_x + 3, py) as i32;
-
-        let dp = (p2 - 2 * p1 + p0).abs();
-        let dq = (q2 - 2 * q1 + q0).abs();
-        let d = dp + dq;
-
-        if d >= beta {
-            continue;
-        }
-
-        let strong_thresh = (beta + (beta >> 1)) >> 3;
-        let use_strong = d < (beta >> 2)
-            && (p0 - q0).abs() < ((5 * tc + 1) >> 1)
-            && dp < strong_thresh
-            && dq < strong_thresh;
+        let s = read_v_line(pic, edge_x, py);
+        let (p3, p2, p1, p0, q0, q1, q2, q3) =
+            (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 
         if use_strong {
             let tc2 = 2 * tc;
-            let p0f = clip3(
-                p0 - tc2,
-                p0 + tc2,
-                (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3,
-            );
+            let p0f = clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
             let p1f = clip3(p1 - tc2, p1 + tc2, (p2 + p1 + p0 + q0 + 2) >> 2);
-            let p2f = clip3(
-                p2 - tc2,
-                p2 + tc2,
-                (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3,
-            );
-            let q0f = clip3(
-                q0 - tc2,
-                q0 + tc2,
-                (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3,
-            );
+            let p2f = clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
+            let q0f = clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
             let q1f = clip3(q1 - tc2, q1 + tc2, (q2 + q1 + q0 + p0 + 2) >> 2);
-            let q2f = clip3(
-                q2 - tc2,
-                q2 + tc2,
-                (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3,
-            );
+            let q2f = clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
             pic.set_y(edge_x - 3, py, clip3(0, max_val, p2f) as i16);
             pic.set_y(edge_x - 2, py, clip3(0, max_val, p1f) as i16);
             pic.set_y(edge_x - 1, py, clip3(0, max_val, p0f) as i16);
@@ -370,7 +381,6 @@ fn deblock_luma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, beta: i32, tc: i3
             pic.set_y(edge_x + 1, py, clip3(0, max_val, q1f) as i16);
             pic.set_y(edge_x + 2, py, clip3(0, max_val, q2f) as i16);
         } else {
-            // Weak filter
             let delta = (9 * (q0 - p0) - 3 * (q1 - p1) + 8) >> 4;
             if delta.abs() >= 10 * tc {
                 continue;
@@ -379,75 +389,95 @@ fn deblock_luma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, beta: i32, tc: i3
             pic.set_y(edge_x - 1, py, clip3(0, max_val, p0 + delta_c) as i16);
             pic.set_y(edge_x, py, clip3(0, max_val, q0 - delta_c) as i16);
 
-            // Secondary p1/q1 filtering
             let tc_half = tc >> 1;
-            let dp1 = clip3(-tc_half, tc_half, ((p2 + p0 + 1) >> 1) - p1 + delta_c / 2);
-            let dq1 = clip3(-tc_half, tc_half, ((q2 + q0 + 1) >> 1) - q1 - delta_c / 2);
-            pic.set_y(edge_x - 2, py, clip3(0, max_val, p1 + dp1) as i16);
-            pic.set_y(edge_x + 1, py, clip3(0, max_val, q1 + dq1) as i16);
+            if d_ep {
+                let dp1 = clip3(-tc_half, tc_half, ((p2 + p0 + 1) >> 1) - p1 + delta_c / 2);
+                pic.set_y(edge_x - 2, py, clip3(0, max_val, p1 + dp1) as i16);
+            }
+            if d_eq {
+                let dq1 = clip3(-tc_half, tc_half, ((q2 + q0 + 1) >> 1) - q1 - delta_c / 2);
+                pic.set_y(edge_x + 1, py, clip3(0, max_val, q1 + dq1) as i16);
+            }
         }
     }
 }
 
-/// Filter a 4-column horizontal luma edge. Applies strong or weak filter per spec.
+/// Read 8 samples (p3,p2,p1,p0,q0,q1,q2,q3) across a horizontal edge for one column.
+fn read_h_col(pic: &Picture, col_x: u32, edge_y: u32) -> [i32; 8] {
+    [
+        pic.y_at(col_x, edge_y - 4) as i32, // p3
+        pic.y_at(col_x, edge_y - 3) as i32, // p2
+        pic.y_at(col_x, edge_y - 2) as i32, // p1
+        pic.y_at(col_x, edge_y - 1) as i32, // p0
+        pic.y_at(col_x, edge_y) as i32,     // q0
+        pic.y_at(col_x, edge_y + 1) as i32, // q1
+        pic.y_at(col_x, edge_y + 2) as i32, // q2
+        pic.y_at(col_x, edge_y + 3) as i32, // q3
+    ]
+}
+
+/// Filter a 4-column horizontal luma edge per H.265 8.7.2.5.
+/// Columns 0 and 3 determine the filtering decision for all 4 columns.
 fn deblock_luma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, beta: i32, tc: i32, bit_depth: i32) {
     let max_val = (1 << bit_depth) - 1;
+
+    if edge_y < 4 || edge_y + 3 >= pic.height {
+        return;
+    }
+    if x + 3 >= pic.width {
+        return;
+    }
+
+    let s0 = read_h_col(pic, x, edge_y);
+    let s3 = read_h_col(pic, x + 3, edge_y);
+
+    // dp/dq for columns 0 and 3 (H.265 8.7.2.5.3)
+    let dp0 = (s0[1] - 2 * s0[2] + s0[3]).abs(); // |p2 - 2*p1 + p0|
+    let dq0 = (s0[6] - 2 * s0[5] + s0[4]).abs(); // |q2 - 2*q1 + q0|
+    let dp3 = (s3[1] - 2 * s3[2] + s3[3]).abs();
+    let dq3 = (s3[6] - 2 * s3[5] + s3[4]).abs();
+
+    let d = dp0 + dq0 + dp3 + dq3;
+    if d >= beta {
+        return;
+    }
+
+    // Strong filter decision using dSam0 and dSam3 (H.265 8.7.2.5.4)
+    let tc5 = (5 * tc + 1) >> 1;
+    let beta_2 = beta >> 2;
+    let beta_3 = beta >> 3;
+
+    let d_sam0 = 2 * (dp0 + dq0) < beta_2
+        && (s0[0] - s0[3]).abs() + (s0[4] - s0[7]).abs() < beta_3
+        && (s0[3] - s0[4]).abs() < tc5;
+    let d_sam3 = 2 * (dp3 + dq3) < beta_2
+        && (s3[0] - s3[3]).abs() + (s3[4] - s3[7]).abs() < beta_3
+        && (s3[3] - s3[4]).abs() < tc5;
+
+    let use_strong = d_sam0 && d_sam3;
+
+    // Weak filter secondary thresholds (H.265 8.7.2.5.5)
+    let dp = dp0 + dp3;
+    let dq = dq0 + dq3;
+    let side_thresh = (beta + (beta >> 1)) >> 3;
+    let d_ep = dp < side_thresh;
+    let d_eq = dq < side_thresh;
+
+    // Apply to all 4 columns
     for dx in 0..4u32 {
         let px = x + dx;
-        if px >= pic.width {
-            break;
-        }
-        if edge_y < 4 || edge_y + 3 >= pic.height {
-            continue;
-        }
-
-        let p0 = pic.y_at(px, edge_y - 1) as i32;
-        let p1 = pic.y_at(px, edge_y - 2) as i32;
-        let p2 = pic.y_at(px, edge_y - 3) as i32;
-        let p3 = pic.y_at(px, edge_y - 4) as i32;
-        let q0 = pic.y_at(px, edge_y) as i32;
-        let q1 = pic.y_at(px, edge_y + 1) as i32;
-        let q2 = pic.y_at(px, edge_y + 2) as i32;
-        let q3 = pic.y_at(px, edge_y + 3) as i32;
-
-        let dp = (p2 - 2 * p1 + p0).abs();
-        let dq = (q2 - 2 * q1 + q0).abs();
-        let d = dp + dq;
-
-        if d >= beta {
-            continue;
-        }
-
-        let strong_thresh = (beta + (beta >> 1)) >> 3;
-        let use_strong = d < (beta >> 2)
-            && (p0 - q0).abs() < ((5 * tc + 1) >> 1)
-            && dp < strong_thresh
-            && dq < strong_thresh;
+        let s = read_h_col(pic, px, edge_y);
+        let (p3, p2, p1, p0, q0, q1, q2, q3) =
+            (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 
         if use_strong {
             let tc2 = 2 * tc;
-            let p0f = clip3(
-                p0 - tc2,
-                p0 + tc2,
-                (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3,
-            );
+            let p0f = clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
             let p1f = clip3(p1 - tc2, p1 + tc2, (p2 + p1 + p0 + q0 + 2) >> 2);
-            let p2f = clip3(
-                p2 - tc2,
-                p2 + tc2,
-                (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3,
-            );
-            let q0f = clip3(
-                q0 - tc2,
-                q0 + tc2,
-                (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3,
-            );
+            let p2f = clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
+            let q0f = clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
             let q1f = clip3(q1 - tc2, q1 + tc2, (q2 + q1 + q0 + p0 + 2) >> 2);
-            let q2f = clip3(
-                q2 - tc2,
-                q2 + tc2,
-                (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3,
-            );
+            let q2f = clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
             pic.set_y(px, edge_y - 3, clip3(0, max_val, p2f) as i16);
             pic.set_y(px, edge_y - 2, clip3(0, max_val, p1f) as i16);
             pic.set_y(px, edge_y - 1, clip3(0, max_val, p0f) as i16);
@@ -464,10 +494,14 @@ fn deblock_luma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, beta: i32, tc: i3
             pic.set_y(px, edge_y, clip3(0, max_val, q0 - delta_c) as i16);
 
             let tc_half = tc >> 1;
-            let dp1 = clip3(-tc_half, tc_half, ((p2 + p0 + 1) >> 1) - p1 + delta_c / 2);
-            let dq1 = clip3(-tc_half, tc_half, ((q2 + q0 + 1) >> 1) - q1 - delta_c / 2);
-            pic.set_y(px, edge_y - 2, clip3(0, max_val, p1 + dp1) as i16);
-            pic.set_y(px, edge_y + 1, clip3(0, max_val, q1 + dq1) as i16);
+            if d_ep {
+                let dp1 = clip3(-tc_half, tc_half, ((p2 + p0 + 1) >> 1) - p1 + delta_c / 2);
+                pic.set_y(px, edge_y - 2, clip3(0, max_val, p1 + dp1) as i16);
+            }
+            if d_eq {
+                let dq1 = clip3(-tc_half, tc_half, ((q2 + q0 + 1) >> 1) - q1 - delta_c / 2);
+                pic.set_y(px, edge_y + 1, clip3(0, max_val, q1 + dq1) as i16);
+            }
         }
     }
 }
@@ -960,13 +994,15 @@ mod tests {
 
     #[test]
     fn deblock_strong_filter_modifies_p2() {
+        // Use a step edge (flat on each side) so that dSam conditions are met:
+        // |p3-p0| + |q0-q3| must be < beta>>3, and |p0-q0| < (5*tc+1)>>1
         let sps = test_sps(16, 16);
         let pps = test_pps();
         let mut pic = Picture::new(16, 16, 8);
-        pic.init_metadata(3, 30);
+        pic.init_metadata(3, 40);
         for y in 0..16u32 {
             for x in 0..16u32 {
-                pic.set_y(x, y, (120 + x) as i16);
+                pic.set_y(x, y, if x < 8 { 120 } else { 130 });
             }
         }
         for s in pic.cb_mut().iter_mut() {

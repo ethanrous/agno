@@ -35,19 +35,21 @@ const INTRA_PRED_ANGLE: [i32; 33] = [
 /// `invAngle` for negative `intraPredAngle` values (H.265 Table 8-5).
 /// invAngle = Round(256 * 32 / |intraPredAngle|).
 /// Indexed by the magnitude bucket: |angle| ∈ {2, 5, 9, 13, 17, 21, 26}.
-const INV_ANGLE: [i32; 7] = [4096, 1638, 910, 630, 482, 390, 315];
+const INV_ANGLE: [i32; 8] = [256, 4096, 1638, 910, 630, 482, 390, 315];
 
 /// Map a negative `intraPredAngle` to the corresponding `invAngle` entry.
+/// invAngle = Round(256 * 32 / |intraPredAngle|), per H.265 Table 8-5.
 fn inv_angle_for(angle: i32) -> i32 {
     match angle.unsigned_abs() {
-        2 => INV_ANGLE[0],
-        5 => INV_ANGLE[1],
-        9 => INV_ANGLE[2],
-        13 => INV_ANGLE[3],
-        17 => INV_ANGLE[4],
-        21 => INV_ANGLE[5],
-        26 => INV_ANGLE[6],
-        _ => INV_ANGLE[0], // fallback, should not occur for valid modes
+        32 => INV_ANGLE[0], // 256 * 32 / 32 = 256
+        2 => INV_ANGLE[1],  // 256 * 32 / 2 = 4096
+        5 => INV_ANGLE[2],  // 256 * 32 / 5 ≈ 1638
+        9 => INV_ANGLE[3],  // 256 * 32 / 9 ≈ 910
+        13 => INV_ANGLE[4], // 256 * 32 / 13 ≈ 630
+        17 => INV_ANGLE[5], // 256 * 32 / 17 ≈ 482
+        21 => INV_ANGLE[6], // 256 * 32 / 21 ≈ 390
+        26 => INV_ANGLE[7], // 256 * 32 / 26 ≈ 315
+        _ => INV_ANGLE[1],  // fallback, should not occur for valid modes
     }
 }
 

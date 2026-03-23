@@ -110,6 +110,9 @@ struct CabacReader<'a> {
     range: u32,
     offset: u32,
     ctxs: Vec<CabacCtx>,
+    dec_count: u32,
+    byp_count: u32,
+    trm_count: u32,
 }
 
 impl<'a> CabacReader<'a> {
@@ -121,6 +124,9 @@ impl<'a> CabacReader<'a> {
             range: 510,
             offset: 0,
             ctxs: Vec::new(),
+            dec_count: 0,
+            byp_count: 0,
+            trm_count: 0,
         };
         // Read initial 9 bits for ivlOffset
         r.offset = r.read_raw(9);
@@ -237,7 +243,14 @@ impl<'a> CabacReader<'a> {
         }
     }
 
+    fn reset_counters(&mut self) {
+        self.dec_count = 0;
+        self.byp_count = 0;
+        self.trm_count = 0;
+    }
+
     fn decode_decision(&mut self, ctx_idx: usize) -> u8 {
+        self.dec_count += 1;
         let q = ((self.range >> 6) & 3) as usize;
         let lps_range = RANGE_TAB_LPS[self.ctxs[ctx_idx].state as usize][q] as u32;
         self.range -= lps_range;
@@ -271,6 +284,7 @@ impl<'a> CabacReader<'a> {
     }
 
     fn decode_bypass(&mut self) -> u8 {
+        self.byp_count += 1;
         self.offset = (self.offset << 1) | self.read_raw(1);
         let bit = if self.offset >= self.range {
             self.offset -= self.range;
@@ -296,6 +310,7 @@ impl<'a> CabacReader<'a> {
     }
 
     fn decode_terminate(&mut self) -> bool {
+        self.trm_count += 1;
         self.range -= 2;
         let bit = if self.offset >= self.range {
             true
@@ -628,22 +643,25 @@ const DIAG_SUB_8X8: [[u8; 2]; 64] = {
 /// to RBSP byte position. `map[coded_pos]` = RBSP byte at that coded position.
 fn remove_ep_with_map(data: &[u8]) -> (Vec<u8>, Vec<usize>) {
     let mut out = Vec::with_capacity(data.len());
-    let mut map = Vec::with_capacity(data.len() + 1);
+    // map[i] = RBSP byte position corresponding to coded byte position i.
+    // Must be indexed by coded position, so use a pre-sized vec, not push.
+    let mut map = vec![0usize; data.len() + 1];
     let mut i = 0;
     while i < data.len() {
-        map.push(out.len());
+        map[i] = out.len();
         if i + 2 < data.len() && data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x03 {
             out.push(0x00);
+            map[i + 1] = out.len();
             out.push(0x00);
-            map.push(out.len()); // map position i+1
-            i += 3; // skip the 03
-        // map position i+2 (the 03) will be pushed at next iteration start
+            // The 0x03 byte is removed; map it to the position after the second 0x00
+            map[i + 2] = out.len();
+            i += 3;
         } else {
             out.push(data[i]);
             i += 1;
         }
     }
-    map.push(out.len()); // map for position == data.len()
+    map[data.len()] = out.len(); // sentinel
     (out, map)
 }
 
@@ -928,10 +946,11 @@ pub fn decode_slice(
             cr_qp_off,
         );
 
-        // WPP: Save context state after processing CTU column 1.
-        // Note: H.265 9.3.2.3 says column 2 (FFmpeg: ctb_addr_ts % ctb_width == 2),
-        // but saving at column 1 produces better results currently, indicating a
-        // remaining context bug in column 2+ processing.
+        cabac_trace!("CTU ({},{}) dec={} byp={} trm={}", cx, cy, cab.dec_count, cab.byp_count, cab.trm_count);
+        cab.reset_counters();
+
+        // WPP: Save context state after processing CTU column 1 (H.265 9.3.2.3).
+        // Note: libde265 also saves at column 1 (ctbx==1 in slice.cc:4804).
         if wpp_enabled && cx == 1 {
             wpp_saved_ctx = Some(cab.save_contexts());
         }
@@ -1287,6 +1306,7 @@ fn decode_cu(
 
     // Store per-CU QP for deblocking filter (H.265 8.7.2.4)
     pic.set_qp_y(x0, y0, size, qps.current_qp);
+    cabac_trace!("CU_QP xCU={} yCU={} size={} QPY={}", x0, y0, size, qps.current_qp);
 }
 
 /// Derive Most Probable Modes from left/above neighbors (H.265 8.4.2).
@@ -1754,6 +1774,7 @@ fn decode_tu(
         } else {
             transform::inverse_transform(&mut c, size, size == 4, bd);
         }
+        if x0 == 80 && y0 == 0 { cabac_trace!("AGNO_PRED pos=({},{}) size={}", x0, y0, size); for dpy in 0..size { let row_str: Vec<String> = (0..size).map(|dpx| format!("{}", pred[(dpy * size + dpx) as usize])).collect(); cabac_trace!("P: {}", row_str.join(" ")); } cabac_trace!("AGNO_RESID"); for dpy in 0..size { let row_str: Vec<String> = (0..size).map(|dpx| format!("{}", c[(dpy * size + dpx) as usize])).collect(); cabac_trace!("R: {}", row_str.join(" ")); } }
         for py in 0..size {
             for px in 0..size {
                 let sx = x0 + px;

@@ -68,10 +68,10 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
     // H.265 8.7: Deblocking and SAO are post-reconstruction filters applied
     // after all CTUs in the picture are decoded. Applying deblocking in-loop
     // (per-CTU) would corrupt intra prediction reference samples for later CTUs.
-    if !pps.pps_deblocking_filter_disabled_flag {
+    if !pps.pps_deblocking_filter_disabled_flag && !std::env::var("AGNO_NO_DEBLOCK").is_ok() {
         filter::deblock(&mut pic, &sps, &pps);
     }
-    if sps.sample_adaptive_offset_enabled_flag {
+    if sps.sample_adaptive_offset_enabled_flag && !std::env::var("AGNO_NO_SAO").is_ok() {
         filter::apply_sao(&mut pic, &sps);
     }
 
