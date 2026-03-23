@@ -2,6 +2,27 @@ use std::io::{Read, Seek, SeekFrom};
 
 use crate::exif::ExifError;
 
+// Security limits ported from libheif (security_limits.h / security_limits.cc).
+// These cap resource consumption when parsing untrusted HEIF containers.
+
+/// Maximum number of items allowed in iloc/iinf boxes.
+const MAX_ITEMS: usize = 10_000;
+
+/// Maximum nesting depth (iteration count) when scanning sibling boxes.
+/// Prevents stack-like exhaustion on deeply nested or cyclic box structures.
+const MAX_BOX_ITERATIONS: usize = 2_048;
+
+/// Maximum number of extents per item in an iloc box.
+const MAX_EXTENTS_PER_ITEM: usize = 1_000;
+
+/// Format a 4-byte box type as a printable string.
+/// Non-ASCII bytes are replaced with '?' so the string is always safe to embed in errors.
+fn box_type_str(b: &[u8]) -> String {
+    b.iter()
+        .map(|&c| if c.is_ascii_graphic() || c == b' ' { c as char } else { '?' })
+        .collect()
+}
+
 /// Iterate boxes in [start, end) and return (content_start, box_end) of the first match.
 pub fn isobmff_find_box<R: Read + Seek>(
     reader: &mut R,
@@ -10,7 +31,16 @@ pub fn isobmff_find_box<R: Read + Seek>(
     target: &[u8; 4],
 ) -> Result<Option<(u64, u64)>, ExifError> {
     let mut pos = start;
+    let mut iterations = 0usize;
     while pos + 8 <= end {
+        iterations += 1;
+        if iterations > MAX_BOX_ITERATIONS {
+            return Err(ExifError::Malformed(format!(
+                "Exceeded {} box iterations searching for '{}' in range [{:#x}, {:#x})",
+                MAX_BOX_ITERATIONS, box_type_str(target), start, end,
+            )));
+        }
+
         reader.seek(SeekFrom::Start(pos))?;
         let mut hdr = [0u8; 8];
         if reader.read(&mut hdr)? < 8 {
@@ -22,12 +52,32 @@ pub fn isobmff_find_box<R: Read + Seek>(
         let (content_start, box_end) = if size == 1 {
             let mut ext = [0u8; 8];
             reader.read_exact(&mut ext)?;
-            (pos + 16, pos + u64::from_be_bytes(ext))
+            let large_size = u64::from_be_bytes(ext);
+            if large_size < 16 {
+                return Err(ExifError::Malformed(format!(
+                    "Box '{}' at offset {:#x}: extended size {} is smaller than header",
+                    box_type_str(box_type), pos, large_size,
+                )));
+            }
+            (pos + 16, pos + large_size)
         } else if size == 0 {
             (pos + 8, end)
         } else {
+            if (size as u64) < 8 {
+                return Err(ExifError::Malformed(format!(
+                    "Box '{}' at offset {:#x}: size {} is smaller than box header",
+                    box_type_str(box_type), pos, size,
+                )));
+            }
             (pos + 8, pos + size as u64)
         };
+
+        if box_end > end {
+            return Err(ExifError::Malformed(format!(
+                "Box '{}' at offset {:#x}: end {:#x} exceeds container boundary {:#x}",
+                box_type_str(box_type), pos, box_end, end,
+            )));
+        }
 
         if box_type == target {
             return Ok(Some((content_start, box_end)));
@@ -62,14 +112,27 @@ pub fn isobmff_find_item_id_by_type<R: Read + Seek>(
         u32::from_be_bytes(buf)
     };
 
+    if entry_count as usize > MAX_ITEMS {
+        return Err(ExifError::Malformed(format!(
+            "iinf box at offset {:#x}: entry count {} exceeds security limit of {}",
+            iinf_content_start, entry_count, MAX_ITEMS,
+        )));
+    }
+
     // Iterate child 'infe' boxes
-    for _ in 0..entry_count {
+    for i in 0..entry_count {
         let box_pos = reader.stream_position()?;
         let mut hdr = [0u8; 8];
         if reader.read(&mut hdr)? < 8 {
             break;
         }
         let size = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as u64;
+        if size < 8 {
+            return Err(ExifError::Malformed(format!(
+                "infe box {} at offset {:#x}: size {} is smaller than box header",
+                i, box_pos, size,
+            )));
+        }
         let box_end = box_pos + size;
 
         if &hdr[4..8] == b"infe" {
@@ -142,7 +205,15 @@ pub fn isobmff_find_item_extent<R: Read + Seek>(
         u32::from_be_bytes(buf)
     };
 
+    if item_count as usize > MAX_ITEMS {
+        return Err(ExifError::Malformed(format!(
+            "iloc box at offset {:#x}: item count {} exceeds security limit of {}",
+            iloc_content_start, item_count, MAX_ITEMS,
+        )));
+    }
+
     for _ in 0..item_count {
+        let item_pos = reader.stream_position()?;
         let item_id = if version < 2 {
             let mut buf = [0u8; 2];
             reader.read_exact(&mut buf)?;
@@ -165,6 +236,13 @@ pub fn isobmff_find_item_extent<R: Read + Seek>(
         let mut ec = [0u8; 2];
         reader.read_exact(&mut ec)?;
         let extent_count = u16::from_be_bytes(ec);
+
+        if extent_count as usize > MAX_EXTENTS_PER_ITEM {
+            return Err(ExifError::Malformed(format!(
+                "iloc box: item {} at offset {:#x} has {} extents, exceeds security limit of {}",
+                item_id, item_pos, extent_count, MAX_EXTENTS_PER_ITEM,
+            )));
+        }
 
         for _ in 0..extent_count {
             if version >= 1 && index_size > 0 {
@@ -200,8 +278,8 @@ pub fn isobmff_read_uint<R: Read>(reader: &mut R, size: usize) -> Result<u64, Ex
             Ok(u64::from_be_bytes(buf))
         }
         _ => Err(ExifError::Malformed(format!(
-            "Invalid ISOBMFF field size: {}",
-            size
+            "Invalid ISOBMFF field size: {} (expected 0, 2, 4, or 8)",
+            size,
         ))),
     }
 }

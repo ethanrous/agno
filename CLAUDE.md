@@ -41,7 +41,7 @@ Three crates in a Cargo workspace:
 ## Key Architecture Decisions
 
 - **GPU-first with CPU fallback**: All GPU operations return `Option` — caller always provides CPU fallback path. GPU unavailability is normal (Docker, CI), not an error.
-- **Native codecs**: JPEG, WebP, PNG, and HEVC decoders/encoders are implemented from scratch in `codec/` (no C library dependencies). This keeps the static library self-contained.
+- **Native codecs**: JPEG, WebP, PNG, HEIF/HEVC decoders/encoders are all implemented in pure Rust in `codec/` (no C library dependencies). HEIC images are decoded natively via the HEIF container parser and HEVC still-image decoder. This keeps the static library fully self-contained.
 - **C FFI with dual allocators**: `AgnoImage` buffers use `libc::malloc()` for C/Go interop; `AgnoBuffer` (in-memory encoding) uses Rust's allocator. Each has its own free function. See `.claude/rules/ffi-interface.md`.
 - **Format auto-detection**: `agno_image/load/load.rs` detects format by magic bytes, not file extension.
 - **EXIF-driven transforms**: Orientation, white balance, color matrix all sourced from EXIF metadata.
@@ -55,6 +55,9 @@ Three crates in a Cargo workspace:
 | `png` | yes | Native PNG decode |
 | `webp` | yes | Native WebP encode/decode |
 | `pdf` | no | PDF rendering via pdfium (incomplete) |
+| `cabac-trace` | no | Debug: log every CABAC decision for HEVC decoder comparison |
+
+HEIF/HEVC decoding is always compiled (not feature-gated). The `heic-experimental-decoder` flag in Cargo.toml is a legacy artifact with no effect.
 
 ## Toolchain
 

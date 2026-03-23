@@ -6,6 +6,15 @@ use super::params::{Pps, Sps};
 use super::picture::{CtuSaoParams, Picture, SaoParams};
 use super::transform;
 
+#[cfg(feature = "cabac-trace")]
+macro_rules! cabac_trace {
+    ($($arg:tt)*) => { eprintln!($($arg)*); }
+}
+#[cfg(not(feature = "cabac-trace"))]
+macro_rules! cabac_trace {
+    ($($arg:tt)*) => {};
+}
+
 // ---------------------------------------------------------------------------
 // CABAC engine (ITU-T H.265 section 9.3)
 // ---------------------------------------------------------------------------
@@ -202,17 +211,20 @@ impl<'a> CabacReader<'a> {
             self.renorm();
             decoded = mp;
         }
+        cabac_trace!("DEC ctx={} bit={} range={} offset={}", ctx_idx, decoded, self.range, self.offset);
         decoded
     }
 
     fn decode_bypass(&mut self) -> u8 {
         self.offset = (self.offset << 1) | self.read_raw(1);
-        if self.offset >= self.range {
+        let bit = if self.offset >= self.range {
             self.offset -= self.range;
             1
         } else {
             0
-        }
+        };
+        cabac_trace!("BYP bit={} range={} offset={}", bit, self.range, self.offset);
+        bit
     }
 
     fn decode_bypass_bits(&mut self, n: u32) -> u32 {
@@ -225,12 +237,14 @@ impl<'a> CabacReader<'a> {
 
     fn decode_terminate(&mut self) -> bool {
         self.range -= 2;
-        if self.offset >= self.range {
+        let bit = if self.offset >= self.range {
             true
         } else {
             self.renorm();
             false
-        }
+        };
+        cabac_trace!("TRM bit={} range={} offset={}", bit as u8, self.range, self.offset);
+        bit
     }
 
     /// Save CABAC context state for WPP (H.265 Section 9.3.2.3).
@@ -271,12 +285,21 @@ const CTX_CU_QP_DELTA: usize = 138; // 2 contexts (138, 139), init value 154
 struct QpState {
     /// Whether cu_qp_delta has been decoded in this quantization group.
     is_cu_qp_delta_coded: bool,
-    /// Current QP (persists across QG boundaries as QpY_PREV per H.265 8.6.1).
+    /// Current QP (the QPY of the most recently decoded QG).
     current_qp: i32,
+    /// QPY from the previous QG (H.265 8.6.1: lastQPYinPreviousQG).
+    last_qp_in_previous_qg: i32,
+    /// Top-left position of the current quantization group.
+    current_qg_x: i32,
+    current_qg_y: i32,
     /// Log2 of the minimum CU QP delta size (determines QG boundaries).
     log2_min_cu_qp_delta_size: u32,
     /// Whether cu_qp_delta_enabled_flag is set in PPS.
     enabled: bool,
+    /// Slice QP for CTB row reset.
+    slice_qp: i32,
+    /// Log2 CTB size for same-CTB neighbor checks.
+    ctb_log2: u32,
 }
 
 impl QpState {
@@ -289,20 +312,88 @@ impl QpState {
         Self {
             is_cu_qp_delta_coded: false,
             current_qp: slice_qp,
+            last_qp_in_previous_qg: slice_qp,
+            current_qg_x: -1,
+            current_qg_y: -1,
             log2_min_cu_qp_delta_size: log2_min,
             enabled: pps._cu_qp_delta_enabled_flag,
+            slice_qp,
+            ctb_log2: sps.ctb_log2_size(),
         }
     }
 
     /// H.265 8.6.1: Reset qPY_PREV to SliceQpY at CTU row boundaries.
-    fn reset_for_row(&mut self, slice_qp: i32) {
+    fn reset_for_row(&mut self) {
         self.is_cu_qp_delta_coded = false;
-        self.current_qp = slice_qp;
+        self.current_qp = self.slice_qp;
+        self.last_qp_in_previous_qg = self.slice_qp;
+        self.current_qg_x = -1;
+        self.current_qg_y = -1;
     }
 
-    /// Reset for a new quantization group (called at CU boundaries aligned to QG).
-    fn reset_for_qg(&mut self) {
-        self.is_cu_qp_delta_coded = false;
+    /// Enter a new quantization group at CU position (x_cu, y_cu).
+    /// If the QG position changes, save current_qp as last_qp_in_previous_qg.
+    fn enter_qg(&mut self, x_cu: u32, y_cu: u32) {
+        let qg_mask = (1u32 << self.log2_min_cu_qp_delta_size) - 1;
+        let xqg = (x_cu & !qg_mask) as i32;
+        let yqg = (y_cu & !qg_mask) as i32;
+
+        if xqg != self.current_qg_x || yqg != self.current_qg_y {
+            // Entering a new QG: save current QPY
+            self.last_qp_in_previous_qg = self.current_qp;
+            self.current_qg_x = xqg;
+            self.current_qg_y = yqg;
+            self.is_cu_qp_delta_coded = false;
+        }
+    }
+
+    /// Derive qPY_PRED per H.265 8.6.1 using left/above neighbor QPs.
+    /// `pic` provides the stored QPY grid. `x_cu`, `y_cu` is the CU base position.
+    fn derive_qp_pred(&self, pic: &Picture, x_cu: u32, y_cu: u32) -> i32 {
+        let qg_mask = (1u32 << self.log2_min_cu_qp_delta_size) - 1;
+        let xqg = x_cu & !qg_mask;
+        let yqg = y_cu & !qg_mask;
+
+        // First QG in CTB row: qPY_PRED = SliceQPY
+        let ctb_mask = (1u32 << self.ctb_log2) - 1;
+        let first_in_ctb_row = xqg == 0 && (yqg & ctb_mask) == 0;
+        if first_in_ctb_row {
+            return self.slice_qp;
+        }
+
+        let base_pred = self.last_qp_in_previous_qg;
+
+        // Left neighbor QP: QPY at (xQG-1, yQG), only if in same CTB
+        let qp_a = if xqg > 0 {
+            let left_ctb_x = (xqg - 1) >> self.ctb_log2;
+            let cur_ctb_x = xqg >> self.ctb_log2;
+            let left_ctb_y = yqg >> self.ctb_log2;
+            let cur_ctb_y = yqg >> self.ctb_log2;
+            if left_ctb_x == cur_ctb_x && left_ctb_y == cur_ctb_y {
+                pic.qp_y_at(xqg - 1, yqg)
+            } else {
+                base_pred
+            }
+        } else {
+            base_pred
+        };
+
+        // Above neighbor QP: QPY at (xQG, yQG-1), only if in same CTB
+        let qp_b = if yqg > 0 {
+            let above_ctb_x = xqg >> self.ctb_log2;
+            let cur_ctb_x = xqg >> self.ctb_log2;
+            let above_ctb_y = (yqg - 1) >> self.ctb_log2;
+            let cur_ctb_y = yqg >> self.ctb_log2;
+            if above_ctb_x == cur_ctb_x && above_ctb_y == cur_ctb_y {
+                pic.qp_y_at(xqg, yqg - 1)
+            } else {
+                base_pred
+            }
+        } else {
+            base_pred
+        };
+
+        (qp_a + qp_b + 1) >> 1
     }
 }
 
@@ -662,9 +753,7 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
 
         // H.265 8.6.1: qPY_PREV = SliceQpY at start of each CTU row
         if cx == 0 {
-            qps.reset_for_row(slice_qp);
-        } else {
-            qps.reset_for_qg();
+            qps.reset_for_row();
         }
 
         if sps.sample_adaptive_offset_enabled_flag {
@@ -681,12 +770,6 @@ pub fn decode_slice(coded: &[u8], sps: &Sps, pps: &Pps, pic: &mut Picture, nal_t
         // remaining context bug in column 2+ processing.
         if wpp_enabled && cx == 1 {
             wpp_saved_ctx = Some(cab.save_contexts());
-        }
-
-        // H.265 8.7: In-loop deblocking applied per-CTU so that subsequent CTUs
-        // use deblocked reference samples. Deblock the CURRENT CTU's edges.
-        if !pps.pps_deblocking_filter_disabled_flag {
-            super::filter::deblock_ctu(pic, sps, pps, x0, y0, ctb);
         }
 
         // H.265: end_of_slice_segment_data (decode_terminate) MUST be called at
@@ -835,9 +918,9 @@ fn decode_quadtree(
         decode_quadtree(cab, pic, sps, pps, x0, y0+h, h, l, d, qps, cb_qp, cr_qp);
         decode_quadtree(cab, pic, sps, pps, x0+h, y0+h, h, l, d, qps, cb_qp, cr_qp);
     } else {
-        // Reset QP delta state at QG boundaries (H.265 7.4.9.10)
+        // Enter quantization group at CU boundary (H.265 8.6.1)
         if log2 >= qps.log2_min_cu_qp_delta_size {
-            qps.reset_for_qg();
+            qps.enter_qg(x0, y0);
         }
         decode_cu(cab, pic, sps, pps, x0, y0, size, log2, depth, qps, cb_qp, cr_qp);
     }
@@ -849,7 +932,8 @@ fn decode_cu(
     x0: u32, y0: u32, size: u32, log2: u32, depth: u32,
     qps: &mut QpState, cb_qp: i32, cr_qp: i32,
 ) {
-    // Store CU depth for neighbor context derivation
+    // Store CU depth for neighbor context derivation (CABAC split_cu_flag).
+    // This must be set before any neighbor CU reads it for context.
     pic.set_cu_depth(x0, y0, size, depth as u8);
 
     // H.265 Section 7.3.8.4, Table 9-34: For I-slices, part_mode is present
@@ -1028,9 +1112,10 @@ fn decode_tu_nxn(
     // H.265 7.3.8.11: cu_qp_delta decoded in first TU with non-zero cbf in a QG
     if qps.enabled && !qps.is_cu_qp_delta_coded && (cbf_y || cbf_cb || cbf_cr) {
         let delta = decode_cu_qp_delta(cab);
-        // H.265 8.6.1: QpY relative to previous QP, not slice QP
+        // H.265 8.6.1: QPY = (qPY_PRED + CuQpDelta + 52) % 52
+        let qp_pred = qps.derive_qp_pred(pic, x_base, y_base);
         let bd_offset = 6 * (pic.bit_depth as i32 - 8);
-        qps.current_qp = ((qps.current_qp + delta + 52 + 2 * bd_offset) % (52 + bd_offset)) - bd_offset;
+        qps.current_qp = ((qp_pred + delta + 52 + 2 * bd_offset) % (52 + bd_offset)) - bd_offset;
         qps.is_cu_qp_delta_coded = true;
     }
 
@@ -1045,7 +1130,7 @@ fn decode_tu_nxn(
     if cbf_y {
         let mut c = vec![0i32; (size * size) as usize];
         decode_residual(cab, &mut c, log2, 0, sign_data_hiding, scan_luma);
-        transform::dequantize(&mut c, qp, bd, log2);
+        transform::dequantize(&mut c, qp, bd, log2, sps.scaling_list_enabled_flag, 0);
         transform::inverse_transform(&mut c, size, size == 4, bd);
         for py in 0..size { for px in 0..size {
             let sx = x0 + px; let sy = y0 + py;
@@ -1054,6 +1139,7 @@ fn decode_tu_nxn(
                 pic.set_y(sx, sy, (pred[i] as i32 + c[i]).clamp(0, max_val) as i16);
             }
         }}
+        pic.mark_reconstructed(x0, y0, size);
     } else {
         for py in 0..size { for px in 0..size {
             let sx = x0 + px; let sy = y0 + py;
@@ -1061,6 +1147,7 @@ fn decode_tu_nxn(
                 pic.set_y(sx, sy, pred[(py * size + px) as usize]);
             }
         }}
+        pic.mark_reconstructed(x0, y0, size);
     }
 
     // H.265 7.3.8.11: chroma decoded only at blkIdx==3 for 4x4 sub-TUs
@@ -1082,7 +1169,7 @@ fn decode_tu_nxn(
     if cbf_cb {
         let mut c = vec![0i32; (cs * cs) as usize];
         decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
-        transform::dequantize(&mut c, cb_qp_actual, bd, cl);
+        transform::dequantize(&mut c, cb_qp_actual, bd, cl, sps.scaling_list_enabled_flag, 1);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
             let sx = cx + px; let sy = cy + py;
@@ -1104,7 +1191,7 @@ fn decode_tu_nxn(
     if cbf_cr {
         let mut c = vec![0i32; (cs * cs) as usize];
         decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
-        transform::dequantize(&mut c, cr_qp_actual, bd, cl);
+        transform::dequantize(&mut c, cr_qp_actual, bd, cl, sps.scaling_list_enabled_flag, 2);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
             let sx = cx + px; let sy = cy + py;
@@ -1143,11 +1230,10 @@ fn decode_tu(
     // H.265 7.3.8.11: cu_qp_delta decoded in first TU with non-zero cbf in a QG
     if qps.enabled && !qps.is_cu_qp_delta_coded && (cbf_y || cbf_cb || cbf_cr) {
         let delta = decode_cu_qp_delta(cab);
-        // H.265 8.6.1: QpY = ((QpY_PREV + CuQpDeltaVal + 52 + 2*QpBdOffsetY)
-        //                      % (52 + QpBdOffsetY)) - QpBdOffsetY
-        // For 8-bit (QpBdOffsetY=0): QpY = (current_qp + delta + 52) % 52
+        // H.265 8.6.1: QPY = (qPY_PRED + CuQpDelta + 52) % 52
+        let qp_pred = qps.derive_qp_pred(pic, x0, y0);
         let bd_offset = 6 * (pic.bit_depth as i32 - 8);
-        qps.current_qp = ((qps.current_qp + delta + 52 + 2 * bd_offset) % (52 + bd_offset)) - bd_offset;
+        qps.current_qp = ((qp_pred + delta + 52 + 2 * bd_offset) % (52 + bd_offset)) - bd_offset;
         qps.is_cu_qp_delta_coded = true;
     }
 
@@ -1165,7 +1251,7 @@ fn decode_tu(
     if cbf_y {
         let mut c = vec![0i32; (size*size) as usize];
         decode_residual(cab, &mut c, log2, 0, sign_data_hiding, scan_luma);
-        transform::dequantize(&mut c, qp, bd, log2);
+        transform::dequantize(&mut c, qp, bd, log2, sps.scaling_list_enabled_flag, 0);
         transform::inverse_transform(&mut c, size, size == 4, bd);
         for py in 0..size { for px in 0..size {
             let sx = x0+px; let sy = y0+py;
@@ -1174,6 +1260,7 @@ fn decode_tu(
                 pic.set_y(sx, sy, (pred[i] as i32 + c[i]).clamp(0, max_val) as i16);
             }
         }}
+        pic.mark_reconstructed(x0, y0, size);
     } else {
         for py in 0..size { for px in 0..size {
             let sx = x0+px; let sy = y0+py;
@@ -1181,6 +1268,7 @@ fn decode_tu(
                 pic.set_y(sx, sy, pred[(py*size+px) as usize]);
             }
         }}
+        pic.mark_reconstructed(x0, y0, size);
     }
 
     if log2 <= 2 { return; }
@@ -1196,7 +1284,7 @@ fn decode_tu(
     if cbf_cb {
         let mut c = vec![0i32; (cs*cs) as usize];
         decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
-        transform::dequantize(&mut c, cb_qp_actual, bd, cl);
+        transform::dequantize(&mut c, cb_qp_actual, bd, cl, sps.scaling_list_enabled_flag, 1);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
             let sx = cx+px; let sy = cy+py;
@@ -1219,7 +1307,7 @@ fn decode_tu(
     if cbf_cr {
         let mut c = vec![0i32; (cs*cs) as usize];
         decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
-        transform::dequantize(&mut c, cr_qp_actual, bd, cl);
+        transform::dequantize(&mut c, cr_qp_actual, bd, cl, sps.scaling_list_enabled_flag, 2);
         transform::inverse_transform(&mut c, cs, false, bd);
         for py in 0..cs { for px in 0..cs {
             let sx = cx+px; let sy = cy+py;

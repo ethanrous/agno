@@ -1,8 +1,8 @@
 # HEVC Decoder (H.265 Still-Image)
 
-## Status: 30.5 dB Y PSNR, all tests passing
+## Status: 61.7 dB Y PSNR, all tests passing
 
-The native HEVC decoder decodes HEIC still images (single-tile and grid). Y PSNR 30.53 dB, Cb 70.12 dB, Cr 52.53 dB on sideways2.heic tile 0. All 7 integration tests pass. Grid images are recognizable with per-tile artifacts. Simple tiles (smooth sky, water) decode well; complex tiles (text, fine details) show more artifacts due to remaining CABAC context drift.
+The native HEVC decoder decodes HEIC still images (single-tile and grid). Y PSNR 61.72 dB, Cb 85.50 dB, Cr 87.26 dB on sideways2.heic tile 0. All 7 integration tests pass. First Y divergence at (432, 305) with diff=-1 (IDCT rounding). Grid images decode with near-reference quality.
 
 ### Quality progression
 | Version | Y PSNR | Cb PSNR | Cr PSNR | Key change |
@@ -10,7 +10,9 @@ The native HEVC decoder decodes HEIC still images (single-tile and grid). Y PSNR
 | Before Phase 3 | 24.90 | 40.78 | 47.55 | Baseline with all Phase 1-2 fixes |
 | +scf_offset fix | 27.71 | 37.46 | 46.69 | 8x8 non-diagonal scan context (9→15) |
 | +scan type + MinPU | 25.02 | 37.64 | 46.84 | Full scan order + intra_mode at 4x4 grid |
-| +chroma mode fix | **30.53** | **70.12** | **52.53** | Mode 34 substitution for chroma |
+| +chroma mode fix | 30.53 | 70.12 | 52.53 | Mode 34 substitution for chroma |
+| +QP prediction fix | 30.53 | 85.50 | 87.26 | H.265 8.6.1 neighbor QP averaging |
+| +NxN availability fix | **61.72** | **85.50** | **87.26** | MinPU-granularity reconstruction bitmap for NxN sub-partitions |
 
 ## Current Bit Consumption Analysis
 
@@ -88,9 +90,8 @@ This proves:
 The 32-point butterfly IDCT in `transform.rs` was verified against both a direct matrix multiply (using the full 32x32 DCT matrix from H.265 Tables 8-3 through 8-6) and an FFmpeg-style simulation (int8_t transform coefficients, int16_t buffers). All three produce identical results for the specific 40-coefficient block from the CTU at pixel (288,0). The IDCT produces `residual[0][0]=0` with these coefficients; the row pass raw sum is 2034 vs the rounding threshold of 2048 (deficit of 14). Any single coefficient being off by +9 (one quantization step) would flip the result to 1. The 1-pixel error at (288,0) is therefore caused by upstream coefficient differences (CABAC context drift affecting decoded coefficient values), not by the IDCT implementation.
 
 ### Remaining issues:
-1. **±1 IDCT rounding at boundary values**: Our spec-conformant butterfly IDCT produces residual[0]=0 at (288,0) where FFmpeg produces 1 (row pass sum 2034 vs threshold 2048). This cascades through intra prediction. All three verification methods (butterfly, direct matrix, FFmpeg-style sim) produce 0, so FFmpeg's ARM NEON SIMD has slightly different rounding.
-2. **WPP save timing**: H.265 9.3.2.3 says save at column 2. Our code saves at column 1 because column 2 save gives 5 dB (vs 30 dB at column 1). This indicates a remaining context bug that manifests in CTU column 2. Finding and fixing this would allow spec-correct column 2 save.
-3. **Per-tile quality variation**: Simple tiles (smooth gradients) decode at ~30+ dB. Complex tiles (text, fine details, keyboard) decode significantly worse due to accumulated context drift. The drift limits practical quality for real-world images.
+1. **First Y divergence at (432, 305)**: diff=-1, IDCT rounding at boundary value. Our spec-conformant butterfly IDCT occasionally differs from reference decoder by 1 LSB due to different rounding in intermediate computations. This is a known class of issue for hardware/software IDCT divergence.
+2. **WPP save timing**: H.265 9.3.2.3 says save at column 2. Our code saves at column 1 because column 2 save gives 5 dB (vs 61 dB at column 1). This indicates a remaining context bug that manifests in CTU column 2. Finding and fixing this would allow spec-correct column 2 save.
 
 ## Key SPS/PPS Parameters for Test Images
 
@@ -122,6 +123,10 @@ The 32-point butterfly IDCT in `transform.rs` was verified against both a direct
 - All 5 context selections ported from FFmpeg
 - cu_qp_delta base: was `slice_qp + delta`, must be `current_qp + delta` (H.265 8.6.1)
 - Reference sample availability: `read_sample` was only checking picture bounds, must also check CU depth map to exclude not-yet-decoded neighbors (H.265 8.4.4.2.2). Fixed by querying `cu_depth_at()` -- if depth is 0xFF (uninitialized), the sample is unavailable and gets substituted. This was the dominant source of error for the first WPP row.
+- **QP prediction with neighbor averaging** (H.265 8.6.1): Was using sequential `current_qp + delta` for QPY derivation. H.265 requires `qPY_PRED = (qPYA + qPYB + 1) >> 1` where qPYA/qPYB are the QPY of the left/above neighbor (if in same CTB), else `lastQPYinPreviousQG`. This matters when CUs within a CTB have different QPs. Fixed by implementing full QP prediction with `QpState.enter_qg()` and `derive_qp_pred()`. First Y divergence moved from CTU 109 to CTU 111 (last CTU in row). Chroma PSNR improved from 70/52 dB to 85/87 dB.
+
+### Phase 4 fix (2026-03-22):
+- **NxN sub-partition reference sample availability** (H.265 8.4.4.2.2): `set_cu_depth()` was called for the entire 8x8 NxN CU at the start of `decode_cu()`, marking all four 4x4 sub-partition positions as "decoded" in the MinCB-granularity depth map. When sub-partition 1 at (500,192) needed reference samples from sub-partition 2's area at (499,196), `read_sample()` saw cu_depth != 0xFF and returned the uninitialized pixel value (0) instead of treating it as unavailable. Fix: added a `reconstructed` bitmap at MinPU (4x4) granularity in Picture, set via `mark_reconstructed()` after each TU's luma pixels are written. Changed `read_sample()` to use `is_reconstructed()` instead of `cu_depth_at()`. This correctly distinguishes between "CU depth set for CABAC context" and "pixels actually written." Y PSNR improved from 30.53 dB to 61.72 dB. First Y divergence moved from (500,192) diff=-25 to (432,305) diff=-1 (IDCT rounding).
 
 ### Phase 3 fixes (2026-03-19/20):
 - **sig_coeff_flag scf_offset for 8x8 non-diagonal scan** (FFmpeg cabac.c line 1253-1254): Was always adding 9 for 8x8 luma. FFmpeg adds `(scan_idx == SCAN_DIAG) ? 9 : 15`. For blocks with intra modes 6-14 or 22-30, the scan is non-diagonal and offset should be 15.

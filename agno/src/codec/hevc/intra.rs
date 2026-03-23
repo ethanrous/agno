@@ -33,9 +33,10 @@ const INTRA_PRED_ANGLE: [i32; 33] = [
     -26, -21, -17, -13, -9, -5, -2, 0, 2, 5, 9, 13, 17, 21, 26, 32,
 ];
 
-/// `invAngle` for negative `intraPredAngle` values.
+/// `invAngle` for negative `intraPredAngle` values (H.265 Table 8-5).
+/// invAngle = Round(256 * 32 / |intraPredAngle|).
 /// Indexed by the magnitude bucket: |angle| ∈ {2, 5, 9, 13, 17, 21, 26}.
-const INV_ANGLE: [i32; 7] = [256, 315, 390, 512, 630, 819, 1024];
+const INV_ANGLE: [i32; 7] = [4096, 1638, 910, 630, 482, 390, 315];
 
 /// Map a negative `intraPredAngle` to the corresponding `invAngle` entry.
 fn inv_angle_for(angle: i32) -> i32 {
@@ -86,17 +87,16 @@ fn read_sample(pic: &Picture, comp: Component, sx: i32, sy: i32) -> Option<i16> 
         return None;
     }
 
-    // Check whether this position has been decoded using the CU depth map.
-    // The depth map operates in luma coordinates at MinCB granularity.
-    // Only perform this check when metadata has been initialized (during
-    // actual HEVC slice decoding). When metadata is absent (unit tests,
-    // standalone prediction), all in-bounds samples are considered available.
+    // Check whether this position has been decoded.
+    // Uses the MinPU-granularity reconstruction bitmap when available (handles
+    // NxN sub-partitions within a single CU correctly), falling back to the
+    // MinCB-granularity CU depth map.
     if pic.has_metadata() {
         let (luma_x, luma_y) = match comp {
             Component::Y => (ux, uy),
             Component::Cb | Component::Cr => (ux * 2, uy * 2),
         };
-        if pic.cu_depth_at(luma_x, luma_y).is_none() {
+        if !pic.is_reconstructed(luma_x, luma_y) {
             return None;
         }
     }
@@ -928,13 +928,14 @@ mod tests {
 
     #[test]
     fn inv_angle_lookup() {
-        assert_eq!(inv_angle_for(-2), 256);
-        assert_eq!(inv_angle_for(-5), 315);
-        assert_eq!(inv_angle_for(-9), 390);
-        assert_eq!(inv_angle_for(-13), 512);
-        assert_eq!(inv_angle_for(-17), 630);
-        assert_eq!(inv_angle_for(-21), 819);
-        assert_eq!(inv_angle_for(-26), 1024);
+        // H.265 Table 8-5: invAngle = Round(256 * 32 / |intraPredAngle|)
+        assert_eq!(inv_angle_for(-2), 4096);
+        assert_eq!(inv_angle_for(-5), 1638);
+        assert_eq!(inv_angle_for(-9), 910);
+        assert_eq!(inv_angle_for(-13), 630);
+        assert_eq!(inv_angle_for(-17), 482);
+        assert_eq!(inv_angle_for(-21), 390);
+        assert_eq!(inv_angle_for(-26), 315);
     }
 
     // ------- Negative-angle modes -------

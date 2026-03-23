@@ -1,8 +1,14 @@
 use std::io::{Read, Seek, SeekFrom};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 use super::isobmff::{isobmff_find_box, isobmff_find_item_extent};
+
+/// Maximum number of tiles in a grid image.
+const MAX_TILES: usize = 16_384;
+
+/// Maximum byte size for a single tile bitstream (256 MB).
+const MAX_TILE_DATA_SIZE: u64 = 256 * 1024 * 1024;
 
 /// Extracted HEIF image data ready for HEVC decoding.
 pub struct HeifImage {
@@ -14,6 +20,29 @@ pub struct HeifImage {
     pub grid_rows: u32,
     pub width: u32,
     pub height: u32,
+}
+
+/// Parse an ISO 23008-12 ImageGrid descriptor.
+/// Returns (rows, cols, output_width, output_height).
+fn parse_grid_descriptor(data: &[u8]) -> Result<(u32, u32, u32, u32)> {
+    ensure!(data.len() >= 8, "grid descriptor too short ({} bytes)", data.len());
+    let _version = data[0];
+    let flags = data[1];
+    let rows = data[2] as u32 + 1;
+    let cols = data[3] as u32 + 1;
+    let (width, height) = if flags & 1 != 0 {
+        ensure!(data.len() >= 12, "grid descriptor too short for 32-bit dims ({} bytes)", data.len());
+        (
+            u32::from_be_bytes([data[4], data[5], data[6], data[7]]),
+            u32::from_be_bytes([data[8], data[9], data[10], data[11]]),
+        )
+    } else {
+        (
+            u16::from_be_bytes([data[4], data[5]]) as u32,
+            u16::from_be_bytes([data[6], data[7]]) as u32,
+        )
+    };
+    Ok((rows, cols, width, height))
 }
 
 /// Parse a HEIF/HEIC container and extract the primary image's HEVC data.
@@ -50,7 +79,17 @@ pub fn parse_heif<R: Read + Seek>(reader: &mut R) -> Result<HeifImage> {
         // Single-tile HEVC: primary item IS the image
         let (width, height) = extract_ispe_from_ipco(reader, ipco_start, ipco_end)?;
         let (offset, length) = isobmff_find_item_extent(reader, iloc_start, primary_item_id)?
-            .context("Primary item extent not found")?;
+            .context(format!(
+                "Primary item (id={}) extent not found in iloc",
+                primary_item_id,
+            ))?;
+
+        if length > MAX_TILE_DATA_SIZE {
+            bail!(
+                "Primary item (id={}) data size {} bytes exceeds limit of {} bytes",
+                primary_item_id, length, MAX_TILE_DATA_SIZE,
+            );
+        }
 
         reader.seek(SeekFrom::Start(offset))?;
         let mut bitstream = vec![0u8; length as usize];
@@ -71,7 +110,7 @@ pub fn parse_heif<R: Read + Seek>(reader: &mut R) -> Result<HeifImage> {
     }
 }
 
-/// Parse an image grid: find tile items, read their bitstreams.
+/// Parse an image grid: read the grid descriptor from iloc, find tile items, read their bitstreams.
 fn parse_grid_image<R: Read + Seek>(
     reader: &mut R,
     children_start: u64,
@@ -79,18 +118,59 @@ fn parse_grid_image<R: Read + Seek>(
     iloc_start: u64,
     grid_item_id: u32,
     hvcc: &[u8],
-    width: u32,
-    height: u32,
+    ispe_width: u32,
+    ispe_height: u32,
 ) -> Result<HeifImage> {
     let tile_ids = find_derived_image_refs(reader, children_start, meta_end, grid_item_id)?;
-    let actual_tiles = tile_ids.len() as u32;
-    let (cols, rows) = infer_grid_layout(actual_tiles, width, height);
+
+    if tile_ids.len() > MAX_TILES {
+        bail!(
+            "Grid item (id={}) references {} tiles, exceeds security limit of {}",
+            grid_item_id, tile_ids.len(), MAX_TILES,
+        );
+    }
+
+    // The grid item's iloc data contains the grid descriptor, not tile bitstreams.
+    let (rows, cols, width, height) = match isobmff_find_item_extent(reader, iloc_start, grid_item_id)? {
+        Some((offset, length)) if length >= 8 && length <= 64 => {
+            reader.seek(SeekFrom::Start(offset))?;
+            let mut desc = vec![0u8; length as usize];
+            reader.read_exact(&mut desc)?;
+            match parse_grid_descriptor(&desc) {
+                Ok((r, c, w, h)) => {
+                    if c * r == tile_ids.len() as u32 {
+                        (r, c, w, h)
+                    } else {
+                        // Grid descriptor tile count doesn't match iref dimg count; fall back
+                        let (c, r) = infer_grid_layout(tile_ids.len() as u32, ispe_width, ispe_height);
+                        (r, c, ispe_width, ispe_height)
+                    }
+                }
+                Err(_) => {
+                    let (c, r) = infer_grid_layout(tile_ids.len() as u32, ispe_width, ispe_height);
+                    (r, c, ispe_width, ispe_height)
+                }
+            }
+        }
+        _ => {
+            // No iloc data for grid item or too small/large; fall back to inference
+            let (c, r) = infer_grid_layout(tile_ids.len() as u32, ispe_width, ispe_height);
+            (r, c, ispe_width, ispe_height)
+        }
+    };
 
     // Read each tile's bitstream separately
     let mut tiles = Vec::with_capacity(tile_ids.len());
-    for &tile_id in &tile_ids {
+    for (i, &tile_id) in tile_ids.iter().enumerate() {
         let (offset, length) = isobmff_find_item_extent(reader, iloc_start, tile_id)?
-            .context(format!("Tile item {} extent not found", tile_id))?;
+            .context(format!("Tile {} (item id={}) extent not found in iloc", i, tile_id))?;
+
+        if length > MAX_TILE_DATA_SIZE {
+            bail!(
+                "Tile {} (item id={}) data size {} bytes exceeds limit of {} bytes",
+                i, tile_id, length, MAX_TILE_DATA_SIZE,
+            );
+        }
 
         reader.seek(SeekFrom::Start(offset))?;
         let mut tile_data = vec![0u8; length as usize];
@@ -168,6 +248,13 @@ fn find_derived_image_refs<R: Read + Seek>(
             reader.read_exact(&mut count_buf)?;
             let ref_count = u16::from_be_bytes(count_buf) as usize;
 
+            if ref_count > MAX_TILES {
+                bail!(
+                    "dimg reference at offset {:#x}: ref count {} exceeds security limit of {}",
+                    pos, ref_count, MAX_TILES,
+                );
+            }
+
             if from_id == from_item_id {
                 let mut ids = Vec::with_capacity(ref_count);
                 for _ in 0..ref_count {
@@ -192,7 +279,10 @@ fn find_derived_image_refs<R: Read + Seek>(
         pos = box_end;
     }
 
-    bail!("No dimg references found for item id={}", from_item_id);
+    bail!(
+        "No dimg references found for grid item id={} in iref at offset {:#x}",
+        from_item_id, iref_start,
+    );
 }
 
 fn parse_pitm<R: Read + Seek>(
@@ -274,7 +364,10 @@ fn find_item_type_by_id<R: Read + Seek>(
         if box_end <= box_pos { break; }
         reader.seek(SeekFrom::Start(box_end))?;
     }
-    bail!("Item id={} not found in iinf", target_id);
+    bail!(
+        "Item id={} not found in iinf (scanned {} entries starting at offset {:#x})",
+        target_id, entry_count, iinf_start,
+    );
 }
 
 fn extract_hvcc_from_ipco<R: Read + Seek>(
@@ -287,7 +380,10 @@ fn extract_hvcc_from_ipco<R: Read + Seek>(
 
     let len = (hvcc_end - hvcc_start) as usize;
     if len > 100_000 {
-        bail!("hvcC box suspiciously large: {} bytes", len);
+        bail!(
+            "hvcC box at offset {:#x}: size {} bytes exceeds 100 KB safety limit",
+            hvcc_start, len,
+        );
     }
 
     reader.seek(SeekFrom::Start(hvcc_start))?;
@@ -324,9 +420,50 @@ fn extract_largest_ispe<R: Read + Seek>(
         pos += size;
     }
     if best.0 == 0 || best.1 == 0 {
-        bail!("No valid ispe found in ipco");
+        bail!(
+            "No valid ispe found in ipco (searched range {:#x}..{:#x})",
+            ipco_start, ipco_end,
+        );
     }
     Ok(best)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_grid_descriptor;
+
+    #[test]
+    fn grid_descriptor_16bit_dims() {
+        // 6 cols (5+1), 8 rows (7+1), 4032x3024, flags=0 (16-bit dims)
+        let data = [0u8, 0, 7, 5, 0x0F, 0xC0, 0x0B, 0xD0];
+        let (rows, cols, w, h) = parse_grid_descriptor(&data).unwrap();
+        assert_eq!((rows, cols, w, h), (8, 6, 4032, 3024));
+    }
+
+    #[test]
+    fn grid_descriptor_32bit_dims() {
+        // 2 cols (1+1), 3 rows (2+1), 70000x50000, flags=1 (32-bit dims)
+        let mut data = [0u8; 12];
+        data[1] = 1; // flags: 32-bit
+        data[2] = 2; // rows - 1
+        data[3] = 1; // cols - 1
+        data[4..8].copy_from_slice(&70000u32.to_be_bytes());
+        data[8..12].copy_from_slice(&50000u32.to_be_bytes());
+        let (rows, cols, w, h) = parse_grid_descriptor(&data).unwrap();
+        assert_eq!((rows, cols, w, h), (3, 2, 70000, 50000));
+    }
+
+    #[test]
+    fn grid_descriptor_too_short() {
+        assert!(parse_grid_descriptor(&[0; 7]).is_err());
+    }
+
+    #[test]
+    fn grid_descriptor_32bit_too_short() {
+        let mut data = [0u8; 8];
+        data[1] = 1; // flags: 32-bit, but only 8 bytes
+        assert!(parse_grid_descriptor(&data).is_err());
+    }
 }
 
 fn extract_ispe_from_ipco<R: Read + Seek>(

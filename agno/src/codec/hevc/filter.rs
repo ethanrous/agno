@@ -680,7 +680,7 @@ mod tests {
             log2_diff_max_min_luma_transform_block_size: 3,
             _max_transform_hierarchy_depth_inter: 1,
             max_transform_hierarchy_depth_intra: 1,
-            _scaling_list_enabled_flag: false,
+            scaling_list_enabled_flag: false,
             _amp_enabled_flag: true,
             sample_adaptive_offset_enabled_flag: true,
             _pcm_enabled_flag: false,

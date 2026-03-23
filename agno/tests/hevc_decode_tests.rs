@@ -301,17 +301,17 @@ fn hevc_tile_y_plane() {
     }
 
     assert!(
-        y_psnr > 30.0,
+        y_psnr > 60.0,
         "Y plane PSNR {:.1} dB too low",
         y_psnr
     );
     assert!(
-        cb_psnr > 30.0,
+        cb_psnr > 80.0,
         "Cb plane PSNR {:.1} dB too low",
         cb_psnr
     );
     assert!(
-        cr_psnr > 30.0,
+        cr_psnr > 80.0,
         "Cr plane PSNR {:.1} dB too low",
         cr_psnr
     );

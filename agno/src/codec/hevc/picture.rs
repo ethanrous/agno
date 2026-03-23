@@ -63,6 +63,15 @@ pub struct Picture {
     depth_stride: u32,
     /// log2 of the minimum coding block size (needed by accessors).
     min_cb_log2: u32,
+    /// Reconstruction status at MinTB granularity (1 bit per MinTB cell).
+    /// A cell is marked after its luma pixels have been written, enabling
+    /// correct intra prediction reference sample availability for NxN
+    /// sub-partitions within the same CU.
+    reconstructed: Vec<bool>,
+    /// Stride for reconstructed grid: ceil(pic_width / min_tb_size).
+    reco_stride: u32,
+    /// log2 of minimum transform block size for reconstructed grid.
+    reco_log2: u32,
 }
 
 impl Picture {
@@ -95,6 +104,9 @@ impl Picture {
             qp_y: Vec::new(),
             depth_stride: 0,
             min_cb_log2: 0,
+            reconstructed: Vec::new(),
+            reco_stride: 0,
+            reco_log2: 0,
         }
     }
 
@@ -124,6 +136,11 @@ impl Picture {
         self.intra_mode = vec![0; (iw * ih) as usize];
         self.intra_mode_stride = iw;
         self.intra_mode_log2 = min_pu_log2;
+
+        // Reconstruction bitmap at MinPU (4x4) granularity for NxN availability
+        self.reconstructed = vec![false; (iw * ih) as usize];
+        self.reco_stride = iw;
+        self.reco_log2 = min_pu_log2;
     }
 
     /// Store CU depth for all MinCB cells covered by a CU at (x0, y0) with given size.
@@ -217,6 +234,41 @@ impl Picture {
         let gy = y / min_cb;
         let idx = (gy * self.depth_stride + gx) as usize;
         self.qp_y.get(idx).copied().unwrap_or(0)
+    }
+
+    /// Mark a rectangular region as reconstructed at MinPU granularity.
+    /// Called after a TU's luma pixels have been written to the picture buffer.
+    pub fn mark_reconstructed(&mut self, x0: u32, y0: u32, tu_size: u32) {
+        if self.reconstructed.is_empty() { return; }
+        let min_pu = 1u32 << self.reco_log2;
+        let gx = x0 / min_pu;
+        let gy = y0 / min_pu;
+        let cells = (tu_size + min_pu - 1) / min_pu;
+        for dy in 0..cells {
+            for dx in 0..cells {
+                let ix = gx + dx;
+                let iy = gy + dy;
+                if ix < self.reco_stride {
+                    let idx = (iy * self.reco_stride + ix) as usize;
+                    if idx < self.reconstructed.len() {
+                        self.reconstructed[idx] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if the sample at luma position (x, y) has been reconstructed.
+    /// Returns true if the MinPU cell containing (x, y) has been marked.
+    /// Used by intra prediction to determine reference sample availability
+    /// at sub-TU granularity (finer than the CU depth map).
+    pub fn is_reconstructed(&self, x: u32, y: u32) -> bool {
+        if self.reconstructed.is_empty() { return false; }
+        let min_pu = 1u32 << self.reco_log2;
+        let gx = x / min_pu;
+        let gy = y / min_pu;
+        let idx = (gy * self.reco_stride + gx) as usize;
+        self.reconstructed.get(idx).copied().unwrap_or(false)
     }
 
     /// Immutable slice of the full luma plane.

@@ -84,57 +84,145 @@ fn clip_residual(x: i32, bit_depth: u8) -> i32 {
     x.clamp(min, max)
 }
 
+// -- H.265 Default Scaling Lists (Tables 7-3, 7-4) --
+//
+// These are in raster order (row-major), precomputed from the H.265 spec's
+// diagonal-scan-order values via the 8x8 diagonal scan mapping.
+
+/// Default 8x8 intra scaling list (H.265 Table 7-3), raster order.
+const DEFAULT_SCALING_8X8_INTRA: [u8; 64] = [
+    16, 16, 16, 16, 17, 18, 21, 24,
+    16, 16, 16, 16, 17, 19, 22, 25,
+    16, 16, 17, 18, 20, 22, 25, 29,
+    16, 16, 18, 21, 24, 27, 31, 36,
+    17, 17, 20, 24, 30, 35, 41, 47,
+    18, 19, 22, 27, 35, 44, 54, 65,
+    21, 22, 25, 31, 41, 54, 70, 88,
+    24, 25, 29, 36, 47, 65, 88, 115,
+];
+
+/// Default 8x8 inter scaling list (H.265 Table 7-4), raster order.
+#[allow(dead_code)]
+const DEFAULT_SCALING_8X8_INTER: [u8; 64] = [
+    16, 16, 16, 16, 17, 18, 20, 24,
+    16, 16, 16, 17, 18, 20, 24, 25,
+    16, 16, 17, 18, 20, 24, 25, 28,
+    16, 17, 18, 20, 24, 25, 28, 33,
+    17, 18, 20, 24, 25, 28, 33, 41,
+    18, 20, 24, 25, 28, 33, 41, 54,
+    20, 24, 25, 28, 33, 41, 54, 71,
+    24, 25, 28, 33, 41, 54, 71, 91,
+];
+
+/// Returns the default scaling matrix value for position (x, y) in a
+/// transform block of size `1 << log2_size`, for the given component.
+///
+/// H.265 Section 7.4.5: For 4x4, all values are 16. For 8x8/16x16/32x32,
+/// the 8x8 base matrix is upscaled by element replication. For 32x32,
+/// the DC position [0][0] is overridden to 16.
+///
+/// Only handles the default (intra) list since this decoder is I-slice only.
+#[inline]
+fn default_scaling_value(x: u32, y: u32, log2_size: u32, c_idx: u8) -> i32 {
+    let _ = c_idx; // intra matrixIds 0-2 all use the same intra list
+    match log2_size {
+        2 => 16, // 4x4: flat
+        3 => {
+            // 8x8: direct lookup
+            DEFAULT_SCALING_8X8_INTRA[(y * 8 + x) as usize] as i32
+        }
+        4 => {
+            // 16x16: upscale 8x8 by 2x2 replication
+            DEFAULT_SCALING_8X8_INTRA[((y / 2) * 8 + x / 2) as usize] as i32
+        }
+        5 => {
+            // 32x32: upscale 8x8 by 4x4 replication, DC override
+            if x == 0 && y == 0 {
+                16
+            } else {
+                DEFAULT_SCALING_8X8_INTRA[((y / 4) * 8 + x / 4) as usize] as i32
+            }
+        }
+        _ => 16,
+    }
+}
+
 // -- Inverse Quantization (Section 8.6.2 / 8.6.3) --
 
 /// Inverse quantize (scale) transform coefficients in-place.
 ///
-/// Applies the HEVC scaling process from Section 8.6.3 with the flat
-/// (default) scaling matrix value of 16. After this call, `coeffs` contains
-/// the scaled transform coefficients ready for inverse transform.
+/// When `scaling_list_enabled` is true, uses the H.265 default scaling list
+/// matrices with position-dependent values. When false, uses the flat
+/// value of 16 for all positions (H.265 Section 8.6.3).
 ///
 /// # Parameters
 /// - `coeffs`: transform coefficient levels; modified in-place to scaled values
 /// - `qp`: quantization parameter (0..51 typical, can exceed for high bit depth)
 /// - `bit_depth`: luma or chroma bit depth (typically 8 or 10)
 /// - `log2_size`: log2 of the transform block width (2 for 4x4, 3 for 8x8, etc.)
-pub fn dequantize(coeffs: &mut [i32], qp: i32, bit_depth: u8, log2_size: u32) {
+/// - `scaling_list_enabled`: whether the SPS scaling_list_enable_flag is set
+/// - `c_idx`: color component index (0=Y, 1=Cb, 2=Cr)
+pub fn dequantize(
+    coeffs: &mut [i32],
+    qp: i32,
+    bit_depth: u8,
+    log2_size: u32,
+    scaling_list_enabled: bool,
+    c_idx: u8,
+) {
     // Clamp QP to valid range (0..51 + bit_depth extensions) to prevent shift overflow
     let qp_clamped = qp.clamp(0, 51 + 6 * (bit_depth as i32 - 8));
     let qp_per = qp_clamped / 6;
     let qp_rem = (qp_clamped % 6) as usize;
     let scale = LEVEL_SCALE[qp_rem];
 
-    // Default (flat) scaling matrix value per spec.
-    const DEFAULT_SCALE_M: i32 = 16;
-
-    // bdShift = bit_depth + log2_size + 10 - (bit_depth used in transform)
-    // Per spec Section 8.6.3:
-    //   bdShift = bit_depth + Log2(nTbS) - 5
-    // This shift normalizes the product of level * m * levelScale after the
-    // qp_per left-shift to the correct fixed-point range.
+    // bdShift = bit_depth + Log2(nTbS) - 5  (H.265 Section 8.6.3)
     let bd_shift = bit_depth as i32 + log2_size as i32 - 5;
 
-    // Coefficient range limits for clipping.
     let coeff_min = -(1i32 << 15);
     let coeff_max = (1i32 << 15) - 1;
+    let size = 1u32 << log2_size;
 
-    if bd_shift >= 0 {
-        let add: i64 = if bd_shift == 0 { 0 } else { 1i64 << (bd_shift - 1) };
-        for c in coeffs.iter_mut() {
-            if *c == 0 {
-                continue;
+    if !scaling_list_enabled {
+        // Flat scaling matrix value of 16 for all positions
+        const DEFAULT_SCALE_M: i32 = 16;
+        if bd_shift >= 0 {
+            let add: i64 = if bd_shift == 0 { 0 } else { 1i64 << (bd_shift - 1) };
+            for c in coeffs.iter_mut() {
+                if *c == 0 { continue; }
+                let scaled = (*c as i64 * DEFAULT_SCALE_M as i64 * scale as i64) << qp_per;
+                *c = ((scaled + add) >> bd_shift).clamp(coeff_min as i64, coeff_max as i64) as i32;
             }
-            let scaled = (*c as i64 * DEFAULT_SCALE_M as i64 * scale as i64) << qp_per;
-            *c = ((scaled + add) >> bd_shift).clamp(coeff_min as i64, coeff_max as i64) as i32;
+        } else {
+            let left = (-bd_shift) as u32;
+            for c in coeffs.iter_mut() {
+                if *c == 0 { continue; }
+                let scaled = (*c as i64 * DEFAULT_SCALE_M as i64 * scale as i64) << qp_per;
+                *c = (scaled << left).clamp(coeff_min as i64, coeff_max as i64) as i32;
+            }
         }
     } else {
-        let left = (-bd_shift) as u32;
-        for c in coeffs.iter_mut() {
-            if *c == 0 {
-                continue;
+        // Position-dependent scaling from the default scaling list
+        if bd_shift >= 0 {
+            let add: i64 = if bd_shift == 0 { 0 } else { 1i64 << (bd_shift - 1) };
+            for idx in 0..coeffs.len() {
+                if coeffs[idx] == 0 { continue; }
+                let x = (idx as u32) % size;
+                let y = (idx as u32) / size;
+                let m = default_scaling_value(x, y, log2_size, c_idx) as i64;
+                let scaled = (coeffs[idx] as i64 * m * scale as i64) << qp_per;
+                coeffs[idx] = ((scaled + add) >> bd_shift).clamp(coeff_min as i64, coeff_max as i64) as i32;
             }
-            let scaled = (*c as i64 * DEFAULT_SCALE_M as i64 * scale as i64) << qp_per;
-            *c = (scaled << left).clamp(coeff_min as i64, coeff_max as i64) as i32;
+        } else {
+            let left = (-bd_shift) as u32;
+            for idx in 0..coeffs.len() {
+                if coeffs[idx] == 0 { continue; }
+                let x = (idx as u32) % size;
+                let y = (idx as u32) / size;
+                let m = default_scaling_value(x, y, log2_size, c_idx) as i64;
+                let scaled = (coeffs[idx] as i64 * m * scale as i64) << qp_per;
+                coeffs[idx] = (scaled << left).clamp(coeff_min as i64, coeff_max as i64) as i32;
+            }
         }
     }
 }
@@ -556,7 +644,7 @@ mod tests {
     #[test]
     fn dequantize_zero_coefficients_stay_zero() {
         let mut coeffs = vec![0i32; 16];
-        dequantize(&mut coeffs, 26, 8, 2);
+        dequantize(&mut coeffs, 26, 8, 2, false, 0);
         assert!(coeffs.iter().all(|&c| c == 0));
     }
 
@@ -566,7 +654,7 @@ mod tests {
         // d = (1 * 16 * 40) << 0 = 640; (640 + 16) >> 5 = 20
         let mut coeffs = vec![0i32; 16];
         coeffs[0] = 1;
-        dequantize(&mut coeffs, 0, 8, 2);
+        dequantize(&mut coeffs, 0, 8, 2, false, 0);
         assert_eq!(coeffs[0], 20);
     }
 
@@ -578,8 +666,8 @@ mod tests {
         low[0] = 5;
         high[0] = 5;
 
-        dequantize(&mut low, 10, 8, 2);
-        dequantize(&mut high, 30, 8, 2);
+        dequantize(&mut low, 10, 8, 2, false, 0);
+        dequantize(&mut high, 30, 8, 2, false, 0);
 
         assert!(
             high[0].abs() > low[0].abs(),
@@ -593,7 +681,7 @@ mod tests {
     fn dequantize_clips_to_16bit_range() {
         let mut coeffs = vec![0i32; 16];
         coeffs[0] = 30000;
-        dequantize(&mut coeffs, 40, 8, 2);
+        dequantize(&mut coeffs, 40, 8, 2, false, 0);
         assert!(coeffs[0] <= 32767);
         assert!(coeffs[0] >= -32768);
     }
@@ -602,7 +690,7 @@ mod tests {
     fn dequantize_negative_coefficient() {
         let mut coeffs = vec![0i32; 16];
         coeffs[0] = -1;
-        dequantize(&mut coeffs, 0, 8, 2);
+        dequantize(&mut coeffs, 0, 8, 2, false, 0);
         assert_eq!(coeffs[0], -20);
     }
 
@@ -611,12 +699,42 @@ mod tests {
         let mut coeffs = vec![0i32; 64];
         coeffs[0] = 10;
         coeffs[1] = -5;
-        dequantize(&mut coeffs, 22, 8, 3);
+        dequantize(&mut coeffs, 22, 8, 3, false, 0);
         // Just verify it runs and produces nonzero values.
         assert_ne!(coeffs[0], 0);
         assert_ne!(coeffs[1], 0);
         // Negative input should produce negative output.
         assert!(coeffs[1] < 0);
+    }
+
+    #[test]
+    fn dequantize_scaling_list_8x8_dc() {
+        // With scaling list enabled, DC position (0,0) still has value 16 for
+        // the 8x8 intra default list, so result should match flat-16 at DC.
+        let mut with_sl = vec![0i32; 64];
+        let mut without_sl = vec![0i32; 64];
+        with_sl[0] = 1;
+        without_sl[0] = 1;
+        dequantize(&mut with_sl, 0, 8, 3, true, 0);
+        dequantize(&mut without_sl, 0, 8, 3, false, 0);
+        assert_eq!(with_sl[0], without_sl[0]);
+    }
+
+    #[test]
+    fn dequantize_scaling_list_8x8_ac_differs() {
+        // Position (7,7) has value 115 in the default intra list, not 16.
+        // The scaling-list-enabled result should differ from flat.
+        let mut with_sl = vec![0i32; 64];
+        let mut without_sl = vec![0i32; 64];
+        with_sl[63] = 1;   // position (7,7)
+        without_sl[63] = 1;
+        dequantize(&mut with_sl, 0, 8, 3, true, 0);
+        dequantize(&mut without_sl, 0, 8, 3, false, 0);
+        assert!(
+            with_sl[63].abs() > without_sl[63].abs(),
+            "scaling list value 115 should produce larger result than flat 16: sl={}, flat={}",
+            with_sl[63], without_sl[63]
+        );
     }
 
     // -- Transform tests --
@@ -765,7 +883,7 @@ mod tests {
         coeffs[1] = -20;
         coeffs[8] = 10;
 
-        dequantize(&mut coeffs, 26, 8, 3);
+        dequantize(&mut coeffs, 26, 8, 3, false, 0);
         inverse_transform(&mut coeffs, 8, false, 8);
 
         for &c in &coeffs[..64] {
