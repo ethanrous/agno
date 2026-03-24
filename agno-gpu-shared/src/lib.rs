@@ -311,14 +311,16 @@ impl ResizeParams {
     /// Create params for horizontal resize pass
     #[cfg(feature = "std")]
     pub fn new_horizontal(src_width: u32, src_height: u32, dst_width: u32) -> Self {
+        let ratio = src_width as f32 / dst_width as f32;
+        let filter_scale = if ratio > 1.0 { ratio } else { 1.0 };
         Self {
             src_width,
             src_height,
             dst_width,
             dst_height: src_height, // Height unchanged in horizontal pass
-            scale_x: src_width as f32 / dst_width as f32,
+            scale_x: ratio,
             scale_y: 1.0,
-            filter_radius: 3.0, // Lanczos3
+            filter_radius: 3.0 * filter_scale,
             _pad0: 0,
         }
     }
@@ -326,14 +328,16 @@ impl ResizeParams {
     /// Create params for vertical resize pass
     #[cfg(feature = "std")]
     pub fn new_vertical(src_width: u32, src_height: u32, dst_height: u32) -> Self {
+        let ratio = src_height as f32 / dst_height as f32;
+        let filter_scale = if ratio > 1.0 { ratio } else { 1.0 };
         Self {
             src_width,
             src_height,
             dst_width: src_width, // Width unchanged in vertical pass
             dst_height,
             scale_x: 1.0,
-            scale_y: src_height as f32 / dst_height as f32,
-            filter_radius: 3.0, // Lanczos3
+            scale_y: ratio,
+            filter_radius: 3.0 * filter_scale,
             _pad0: 0,
         }
     }

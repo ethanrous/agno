@@ -202,6 +202,9 @@ pub fn resize_horizontal_kernel(
     let src_x_f = (dst_x as f32 + 0.5) * params.scale_x - 0.5;
     let src_x_center = src_x_f as i32;
     let radius = params.filter_radius as i32;
+    // When downscaling, filter_radius is 3*scale. Normalize distances
+    // by scale so the Lanczos kernel shape is preserved over the wider window.
+    let filter_scale = if params.scale_x > 1.0 { params.scale_x } else { 1.0 };
 
     let mut sum_r = 0.0f32;
     let mut sum_g = 0.0f32;
@@ -212,8 +215,8 @@ pub fn resize_horizontal_kernel(
     let mut i = -radius;
     while i <= radius {
         let src_x = clamp_i32(src_x_center + i, 0, (params.src_width - 1) as i32) as u32;
-        let dist = (src_x_center + i) as f32 - src_x_f;
-        let weight = lanczos_weight(dist, params.filter_radius);
+        let dist = ((src_x_center + i) as f32 - src_x_f) / filter_scale;
+        let weight = lanczos_weight(dist, 3.0);
 
         let pixel = input[(dst_y * params.src_width + src_x) as usize];
         sum_r += ((pixel >> 16) & 0xFF) as f32 * weight;
@@ -255,6 +258,7 @@ pub fn resize_vertical_kernel(
     let src_y_f = (dst_y as f32 + 0.5) * params.scale_y - 0.5;
     let src_y_center = src_y_f as i32;
     let radius = params.filter_radius as i32;
+    let filter_scale = if params.scale_y > 1.0 { params.scale_y } else { 1.0 };
 
     let mut sum_r = 0.0f32;
     let mut sum_g = 0.0f32;
@@ -265,8 +269,8 @@ pub fn resize_vertical_kernel(
     let mut i = -radius;
     while i <= radius {
         let src_y = clamp_i32(src_y_center + i, 0, (params.src_height - 1) as i32) as u32;
-        let dist = (src_y_center + i) as f32 - src_y_f;
-        let weight = lanczos_weight(dist, params.filter_radius);
+        let dist = ((src_y_center + i) as f32 - src_y_f) / filter_scale;
+        let weight = lanczos_weight(dist, 3.0);
 
         // Input width is dst_width (from horizontal pass)
         let pixel = input[(src_y * params.dst_width + dst_x) as usize];

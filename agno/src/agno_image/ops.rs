@@ -144,6 +144,10 @@ fn resize_horizontal(src: &[u8], src_w: usize, src_h: usize, dst_w: usize) -> Ve
     let src_stride = src_w * BPP;
     let mut out = vec![0u8; dst_w * src_h * BPP];
     let ratio = src_w as f64 / dst_w as f64;
+    // When downscaling, widen the kernel by the scale ratio so it covers
+    // enough source pixels to act as an anti-aliasing low-pass filter.
+    let filter_scale = ratio.max(1.0);
+    let support = 3.0 * filter_scale;
 
     out.par_chunks_mut(dst_stride)
         .enumerate()
@@ -152,8 +156,8 @@ fn resize_horizontal(src: &[u8], src_w: usize, src_h: usize, dst_w: usize) -> Ve
 
             for dx in 0..dst_w {
                 let center = (dx as f64 + 0.5) * ratio - 0.5;
-                let left = (center - 3.0).ceil() as i64;
-                let right = (center + 3.0).floor() as i64;
+                let left = (center - support).ceil() as i64;
+                let right = (center + support).floor() as i64;
 
                 let mut sum_r = 0.0_f64;
                 let mut sum_g = 0.0_f64;
@@ -162,7 +166,7 @@ fn resize_horizontal(src: &[u8], src_w: usize, src_h: usize, dst_w: usize) -> Ve
 
                 for sx in left..=right {
                     let clamped = sx.clamp(0, src_w as i64 - 1) as usize;
-                    let w = lanczos3_kernel(sx as f64 - center);
+                    let w = lanczos3_kernel((sx as f64 - center) / filter_scale);
                     let off = src_row + clamped * BPP;
                     sum_r += src[off] as f64 * w;
                     sum_g += src[off + 1] as f64 * w;
@@ -189,19 +193,21 @@ fn resize_vertical(src: &[u8], width: usize, src_h: usize, dst_h: usize) -> Vec<
     let stride = width * BPP;
     let mut out = vec![0u8; width * dst_h * BPP];
     let ratio = src_h as f64 / dst_h as f64;
+    let filter_scale = ratio.max(1.0);
+    let support = 3.0 * filter_scale;
 
     out.par_chunks_mut(stride)
         .enumerate()
         .for_each(|(dy, dst_row_buf)| {
             let center = (dy as f64 + 0.5) * ratio - 0.5;
-            let top = (center - 3.0).ceil() as i64;
-            let bottom = (center + 3.0).floor() as i64;
+            let top = (center - support).ceil() as i64;
+            let bottom = (center + support).floor() as i64;
 
             let mut weights: Vec<(usize, f64)> = Vec::with_capacity((bottom - top + 1) as usize);
             let mut weight_sum = 0.0_f64;
             for sy in top..=bottom {
                 let clamped = sy.clamp(0, src_h as i64 - 1) as usize;
-                let w = lanczos3_kernel(sy as f64 - center);
+                let w = lanczos3_kernel((sy as f64 - center) / filter_scale);
                 weights.push((clamped, w));
                 weight_sum += w;
             }
