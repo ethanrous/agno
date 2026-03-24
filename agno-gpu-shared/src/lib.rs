@@ -311,14 +311,16 @@ impl ResizeParams {
     /// Create params for horizontal resize pass
     #[cfg(feature = "std")]
     pub fn new_horizontal(src_width: u32, src_height: u32, dst_width: u32) -> Self {
+        let ratio = src_width as f32 / dst_width as f32;
+        let filter_scale = if ratio > 1.0 { ratio } else { 1.0 };
         Self {
             src_width,
             src_height,
             dst_width,
             dst_height: src_height, // Height unchanged in horizontal pass
-            scale_x: src_width as f32 / dst_width as f32,
+            scale_x: ratio,
             scale_y: 1.0,
-            filter_radius: 3.0, // Lanczos3
+            filter_radius: 3.0 * filter_scale,
             _pad0: 0,
         }
     }
@@ -326,14 +328,16 @@ impl ResizeParams {
     /// Create params for vertical resize pass
     #[cfg(feature = "std")]
     pub fn new_vertical(src_width: u32, src_height: u32, dst_height: u32) -> Self {
+        let ratio = src_height as f32 / dst_height as f32;
+        let filter_scale = if ratio > 1.0 { ratio } else { 1.0 };
         Self {
             src_width,
             src_height,
             dst_width: src_width, // Width unchanged in vertical pass
             dst_height,
             scale_x: 1.0,
-            scale_y: src_height as f32 / dst_height as f32,
-            filter_radius: 3.0, // Lanczos3
+            scale_y: ratio,
+            filter_radius: 3.0 * filter_scale,
             _pad0: 0,
         }
     }
@@ -344,14 +348,14 @@ impl ResizeParams {
 #[derive(Copy, Clone)]
 #[cfg_attr(feature = "std", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct JpegDctParams {
-    pub width: u32,       // 0: image width in pixels
-    pub height: u32,      // 4: image height in pixels
-    pub blocks_x: u32,    // 8: number of 8x8 blocks horizontally
-    pub blocks_y: u32,    // 12: number of 8x8 blocks vertically
-    pub component: u32,   // 16: 0=Y, 1=Cb, 2=Cr
-    pub _pad0: u32,       // 20
-    pub _pad1: u32,       // 24
-    pub _pad2: u32,       // 28
+    pub width: u32,             // 0: image width in pixels
+    pub height: u32,            // 4: image height in pixels
+    pub blocks_x: u32,          // 8: number of 8x8 blocks horizontally
+    pub blocks_y: u32,          // 12: number of 8x8 blocks vertically
+    pub component: u32,         // 16: 0=Y, 1=Cb, 2=Cr
+    pub _pad0: u32,             // 20
+    pub _pad1: u32,             // 24
+    pub _pad2: u32,             // 28
     pub quant_table: [u32; 64], // 32-287: quantization table (scaled)
 }
 
@@ -360,8 +364,8 @@ pub struct JpegDctParams {
 #[derive(Copy, Clone)]
 #[cfg_attr(feature = "std", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct ColorConvertParams {
-    pub width: u32,      // 0
-    pub height: u32,     // 4
-    pub _pad0: u32,      // 8
-    pub _pad1: u32,      // 12
+    pub width: u32,  // 0
+    pub height: u32, // 4
+    pub _pad0: u32,  // 8
+    pub _pad1: u32,  // 12
 }

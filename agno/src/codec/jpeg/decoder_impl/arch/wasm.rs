@@ -76,14 +76,14 @@ fn idct8(data: &mut [v128; 8]) {
 #[cfg(target_arch = "wasm32")]
 #[target_feature(enable = "simd128")]
 fn transpose8(data: &mut [v128; 8]) {
-    let d01l = i16x8_shuffle::<0,  8,  1,  9,  2, 10, 3, 11>(data[0], data[1]);
-    let d23l = i16x8_shuffle::<0,  8,  1,  9,  2, 10, 3, 11>(data[2], data[3]);
-    let d45l = i16x8_shuffle::<0,  8,  1,  9,  2, 10, 3, 11>(data[4], data[5]);
-    let d67l = i16x8_shuffle::<0,  8,  1,  9,  2, 10, 3, 11>(data[6], data[7]);
-    let d01h = i16x8_shuffle::<4, 12,  5, 13,  6, 14, 7, 15>(data[0], data[1]);
-    let d23h = i16x8_shuffle::<4, 12,  5, 13,  6, 14, 7, 15>(data[2], data[3]);
-    let d45h = i16x8_shuffle::<4, 12,  5, 13,  6, 14, 7, 15>(data[4], data[5]);
-    let d67h = i16x8_shuffle::<4, 12,  5, 13,  6, 14, 7, 15>(data[6], data[7]);
+    let d01l = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(data[0], data[1]);
+    let d23l = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(data[2], data[3]);
+    let d45l = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(data[4], data[5]);
+    let d67l = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(data[6], data[7]);
+    let d01h = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(data[0], data[1]);
+    let d23h = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(data[2], data[3]);
+    let d45h = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(data[4], data[5]);
+    let d67h = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(data[6], data[7]);
 
     let d0123ll = i32x4_shuffle::<0, 4, 1, 5>(d01l, d23l);
     let d0123lh = i32x4_shuffle::<2, 6, 3, 7>(d01l, d23l);
@@ -149,10 +149,7 @@ pub fn dequantize_and_idct_block_8x8(
 
         unsafe {
             v128_store64_lane::<0>(
-                u8x16_narrow_i16x8(
-                    i16x8_shr(data_with_offset, SHIFT + 3),
-                    i16x8_splat(0),
-                ),
+                u8x16_narrow_i16x8(i16x8_shr(data_with_offset, SHIFT + 3), i16x8_splat(0)),
                 output.as_mut_ptr().wrapping_add(output_linestride * i) as *mut _,
             );
         }
@@ -161,7 +158,12 @@ pub fn dequantize_and_idct_block_8x8(
 
 #[cfg(target_arch = "wasm32")]
 #[target_feature(enable = "simd128")]
-pub fn color_convert_line_ycbcr(y_slice: &[u8], cb_slice: &[u8], cr_slice: &[u8], output: &mut [u8]) -> usize {
+pub fn color_convert_line_ycbcr(
+    y_slice: &[u8],
+    cb_slice: &[u8],
+    cr_slice: &[u8],
+    output: &mut [u8],
+) -> usize {
     assert!(output.len() % 3 == 0);
     let num = output.len() / 3;
     assert!(num <= y_slice.len());
@@ -204,14 +206,20 @@ pub fn color_convert_line_ycbcr(y_slice: &[u8], cb_slice: &[u8], cr_slice: &[u8]
         let g = u8x16_narrow_i16x8(i16x8_shr(g, SHIFT), zero);
         let b = u8x16_narrow_i16x8(i16x8_shr(b, SHIFT), zero);
 
-        let rg_lanes = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(r, g);
+        let rg_lanes =
+            i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(r, g);
 
-        let rgb_low = i8x16_shuffle::<0, 1, 16, 2, 3, 17, 4, 5, 18, 6, 7, 19, 8, 9, 20, 10>(rg_lanes, b);
-        let rgb_hi = i8x16_shuffle::<11, 21, 12, 13, 22, 14, 15, 23, 0, 0, 0, 0, 0, 0, 0, 0>(rg_lanes, b);
+        let rgb_low =
+            i8x16_shuffle::<0, 1, 16, 2, 3, 17, 4, 5, 18, 6, 7, 19, 8, 9, 20, 10>(rg_lanes, b);
+        let rgb_hi =
+            i8x16_shuffle::<11, 21, 12, 13, 22, 14, 15, 23, 0, 0, 0, 0, 0, 0, 0, 0>(rg_lanes, b);
 
         unsafe {
             v128_store(output.as_mut_ptr().wrapping_add(24 * i) as *mut _, rgb_low);
-            v128_store64_lane::<0>(rgb_hi, output.as_mut_ptr().wrapping_add(24 * i + 16) as *mut _);
+            v128_store64_lane::<0>(
+                rgb_hi,
+                output.as_mut_ptr().wrapping_add(24 * i + 16) as *mut _,
+            );
         }
     }
 

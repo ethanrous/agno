@@ -124,10 +124,10 @@ fn parse_ihdr(data: &[u8]) -> Result<IhdrInfo, Box<dyn Error>> {
     // Validate bit_depth / color_type combinations per PNG spec
     let valid = match color_type {
         0 => matches!(bit_depth, 1 | 2 | 4 | 8 | 16), // Grayscale
-        2 => matches!(bit_depth, 8 | 16),               // RGB
-        3 => matches!(bit_depth, 1 | 2 | 4 | 8),        // Indexed
-        4 => matches!(bit_depth, 8 | 16),                // Gray+Alpha
-        6 => matches!(bit_depth, 8 | 16),                // RGBA
+        2 => matches!(bit_depth, 8 | 16),             // RGB
+        3 => matches!(bit_depth, 1 | 2 | 4 | 8),      // Indexed
+        4 => matches!(bit_depth, 8 | 16),             // Gray+Alpha
+        6 => matches!(bit_depth, 8 | 16),             // RGBA
         _ => false,
     };
     if !valid {
@@ -177,10 +177,7 @@ fn scanline_bytes(ihdr: &IhdrInfo) -> usize {
     (total_bits + 7) / 8
 }
 
-fn reconstruct_filters(
-    decompressed: &[u8],
-    ihdr: &IhdrInfo,
-) -> Result<Vec<u8>, Box<dyn Error>> {
+fn reconstruct_filters(decompressed: &[u8], ihdr: &IhdrInfo) -> Result<Vec<u8>, Box<dyn Error>> {
     let h = ihdr.height as usize;
     let stride = scanline_bytes(ihdr);
     let bpp = bytes_per_pixel(ihdr);
@@ -217,11 +214,7 @@ fn reconstruct_filters(
             };
 
             // b = byte at same position in prior row (0 for first row)
-            let b = if y > 0 {
-                output[prev_row_start + x]
-            } else {
-                0
-            };
+            let b = if y > 0 { output[prev_row_start + x] } else { 0 };
 
             // c = byte at position x-bpp in prior row (0 if first row or x < bpp)
             let c = if y > 0 && x >= bpp {
@@ -271,11 +264,7 @@ fn paeth_predictor(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
-fn to_rgb8(
-    raw: &[u8],
-    ihdr: &IhdrInfo,
-    palette: &[u8],
-) -> Result<Vec<u8>, Box<dyn Error>> {
+fn to_rgb8(raw: &[u8], ihdr: &IhdrInfo, palette: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let w = ihdr.width as usize;
     let h = ihdr.height as usize;
     let pixel_count = w * h;
@@ -588,10 +577,7 @@ mod tests {
         let data_with_no_plte = build_minimal_png(1, 1, 8, 3, &[], &[0, 0]);
         let result = decode_png(&data_with_no_plte);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("PLTE"));
+        assert!(result.unwrap_err().to_string().contains("PLTE"));
     }
 
     #[test]

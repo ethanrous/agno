@@ -107,11 +107,7 @@ pub fn parse_short_term_ref_pic_set(
 ) -> Result<ShortTermRefPicSet> {
     let mut rps = ShortTermRefPicSet::default();
 
-    let inter_ref_pic_set_prediction_flag = if idx != 0 {
-        reader.read_flag()?
-    } else {
-        false
-    };
+    let inter_ref_pic_set_prediction_flag = if idx != 0 { reader.read_flag()? } else { false };
 
     if inter_ref_pic_set_prediction_flag {
         // Predicted from a previous set
@@ -297,8 +293,7 @@ impl Vps {
         // 16 reserved 0xFFFF bits
         reader.skip_bits(16)?;
 
-        let profile_tier_level =
-            parse_profile_tier_level(reader, true, max_sub_layers_minus1)?;
+        let profile_tier_level = parse_profile_tier_level(reader, true, max_sub_layers_minus1)?;
 
         let vps_sub_layer_ordering_info_present_flag = reader.read_flag()?;
         let start = if vps_sub_layer_ordering_info_present_flag {
@@ -361,7 +356,7 @@ pub struct Sps {
     pub log2_diff_max_min_luma_transform_block_size: u32,
     pub _max_transform_hierarchy_depth_inter: u32,
     pub max_transform_hierarchy_depth_intra: u32,
-    pub _scaling_list_enabled_flag: bool,
+    pub scaling_list_enabled_flag: bool,
     pub _amp_enabled_flag: bool,
     pub sample_adaptive_offset_enabled_flag: bool,
     pub _pcm_enabled_flag: bool,
@@ -434,8 +429,7 @@ impl Sps {
         let sps_max_sub_layers_minus1 = reader.read_bits(3)? as u8;
         let sps_temporal_id_nesting_flag = reader.read_flag()?;
 
-        let profile_tier_level =
-            parse_profile_tier_level(reader, true, sps_max_sub_layers_minus1)?;
+        let profile_tier_level = parse_profile_tier_level(reader, true, sps_max_sub_layers_minus1)?;
 
         let sps_seq_parameter_set_id = reader.read_ue()?;
         let chroma_format_idc = reader.read_ue()?;
@@ -450,17 +444,21 @@ impl Sps {
         let pic_height_in_luma_samples = reader.read_ue()?;
 
         let conformance_window_flag = reader.read_flag()?;
-        let (conf_win_left_offset, conf_win_right_offset, conf_win_top_offset, conf_win_bottom_offset) =
-            if conformance_window_flag {
-                (
-                    reader.read_ue()?,
-                    reader.read_ue()?,
-                    reader.read_ue()?,
-                    reader.read_ue()?,
-                )
-            } else {
-                (0, 0, 0, 0)
-            };
+        let (
+            conf_win_left_offset,
+            conf_win_right_offset,
+            conf_win_top_offset,
+            conf_win_bottom_offset,
+        ) = if conformance_window_flag {
+            (
+                reader.read_ue()?,
+                reader.read_ue()?,
+                reader.read_ue()?,
+                reader.read_ue()?,
+            )
+        } else {
+            (0, 0, 0, 0)
+        };
 
         let bit_depth_luma_minus8 = reader.read_ue()?;
         let bit_depth_chroma_minus8 = reader.read_ue()?;
@@ -489,6 +487,7 @@ impl Sps {
         if scaling_list_enabled_flag {
             let sps_scaling_list_data_present_flag = reader.read_flag()?;
             if sps_scaling_list_data_present_flag {
+                tracing::warn!("SPS has custom scaling list data — currently discarded");
                 parse_scaling_list_data(reader)?;
             }
         }
@@ -536,7 +535,7 @@ impl Sps {
             let lt_bits = log2_max_pic_order_cnt_lsb_minus4 + 4;
             for _ in 0..num_long_term_ref_pics_sps {
                 reader.skip_bits(lt_bits as usize)?; // lt_ref_pic_poc_lsb_sps
-                reader.skip_bits(1)?;                // used_by_curr_pic_lt_sps_flag
+                reader.skip_bits(1)?; // used_by_curr_pic_lt_sps_flag
             }
         }
 
@@ -574,14 +573,15 @@ impl Sps {
             log2_diff_max_min_luma_transform_block_size,
             _max_transform_hierarchy_depth_inter: max_transform_hierarchy_depth_inter,
             max_transform_hierarchy_depth_intra,
-            _scaling_list_enabled_flag: scaling_list_enabled_flag,
+            scaling_list_enabled_flag: scaling_list_enabled_flag,
             _amp_enabled_flag: amp_enabled_flag,
             sample_adaptive_offset_enabled_flag,
             _pcm_enabled_flag: pcm_enabled_flag,
             _pcm_sample_bit_depth_luma_minus1: pcm_sample_bit_depth_luma_minus1,
             _pcm_sample_bit_depth_chroma_minus1: pcm_sample_bit_depth_chroma_minus1,
             _log2_min_pcm_luma_coding_block_size_minus3: log2_min_pcm_luma_coding_block_size_minus3,
-            _log2_diff_max_min_pcm_luma_coding_block_size: log2_diff_max_min_pcm_luma_coding_block_size,
+            _log2_diff_max_min_pcm_luma_coding_block_size:
+                log2_diff_max_min_pcm_luma_coding_block_size,
             _pcm_loop_filter_disabled_flag: pcm_loop_filter_disabled_flag,
             _num_short_term_ref_pic_sets: num_short_term_ref_pic_sets,
             _short_term_ref_pic_sets: short_term_ref_pic_sets,
@@ -605,13 +605,13 @@ pub struct Pps {
     pub _dependent_slice_segments_enabled_flag: bool,
     pub output_flag_present_flag: bool,
     pub num_extra_slice_header_bits: u8,
-    pub _sign_data_hiding_enabled_flag: bool,
+    pub sign_data_hiding_enabled_flag: bool,
     pub _cabac_init_present_flag: bool,
     pub _num_ref_idx_l0_default_active_minus1: u32,
     pub _num_ref_idx_l1_default_active_minus1: u32,
     pub init_qp_minus26: i32,
     pub _constrained_intra_pred_flag: bool,
-    pub _transform_skip_enabled_flag: bool,
+    pub transform_skip_enabled_flag: bool,
     pub _cu_qp_delta_enabled_flag: bool,
     pub _diff_cu_qp_delta_depth: u32,
     pub pps_cb_qp_offset: i32,
@@ -725,13 +725,13 @@ impl Pps {
             _dependent_slice_segments_enabled_flag: dependent_slice_segments_enabled_flag,
             output_flag_present_flag,
             num_extra_slice_header_bits,
-            _sign_data_hiding_enabled_flag: sign_data_hiding_enabled_flag,
+            sign_data_hiding_enabled_flag,
             _cabac_init_present_flag: cabac_init_present_flag,
             _num_ref_idx_l0_default_active_minus1: num_ref_idx_l0_default_active_minus1,
             _num_ref_idx_l1_default_active_minus1: num_ref_idx_l1_default_active_minus1,
             init_qp_minus26,
             _constrained_intra_pred_flag: constrained_intra_pred_flag,
-            _transform_skip_enabled_flag: transform_skip_enabled_flag,
+            transform_skip_enabled_flag,
             _cu_qp_delta_enabled_flag: cu_qp_delta_enabled_flag,
             _diff_cu_qp_delta_depth: diff_cu_qp_delta_depth,
             pps_cb_qp_offset,
@@ -755,7 +755,8 @@ impl Pps {
             _pps_scaling_list_data_present_flag: pps_scaling_list_data_present_flag,
             _lists_modification_present_flag: lists_modification_present_flag,
             _log2_parallel_merge_level_minus2: log2_parallel_merge_level_minus2,
-            _slice_segment_header_extension_present_flag: slice_segment_header_extension_present_flag,
+            _slice_segment_header_extension_present_flag:
+                slice_segment_header_extension_present_flag,
         })
     }
 }
@@ -773,7 +774,11 @@ mod tests {
 
     impl BitWriter {
         fn new() -> Self {
-            Self { bytes: Vec::new(), buf: 0, buf_bits: 0 }
+            Self {
+                bytes: Vec::new(),
+                buf: 0,
+                buf_bits: 0,
+            }
         }
 
         fn write(&mut self, val: u64, n: u8) {
@@ -844,7 +849,7 @@ mod tests {
             log2_diff_max_min_luma_transform_block_size: 3,
             _max_transform_hierarchy_depth_inter: 1,
             max_transform_hierarchy_depth_intra: 1,
-            _scaling_list_enabled_flag: false,
+            scaling_list_enabled_flag: false,
             _amp_enabled_flag: true,
             sample_adaptive_offset_enabled_flag: true,
             _pcm_enabled_flag: false,
@@ -886,43 +891,43 @@ mod tests {
         w.write(1, 1);
 
         // profile_tier_level (profile_present=true, max_sub_layers_minus1=0)
-        w.write(0, 2);  // general_profile_space
-        w.write(0, 1);  // general_tier_flag
-        w.write(1, 5);  // general_profile_idc = Main
+        w.write(0, 2); // general_profile_space
+        w.write(0, 1); // general_tier_flag
+        w.write(1, 5); // general_profile_idc = Main
         // general_profile_compatibility_flags[32]
         w.write(0b01000000_00000000_00000000_00000000u64, 32);
         w.write(0b1011, 4); // progressive, !interlaced, non_packed, frame_only
-        w.write(0, 44);     // reserved constraint bits
-        w.write(120, 8);    // general_level_idc = Level 4.0
+        w.write(0, 44); // reserved constraint bits
+        w.write(120, 8); // general_level_idc = Level 4.0
 
         // SPS fields
         w.write_ue(0); // sps_seq_parameter_set_id
         w.write_ue(1); // chroma_format_idc = 4:2:0
         w.write_ue(1920); // pic_width_in_luma_samples
         w.write_ue(1080); // pic_height_in_luma_samples
-        w.write(0, 1);    // conformance_window_flag = 0
-        w.write_ue(0);    // bit_depth_luma_minus8
-        w.write_ue(0);    // bit_depth_chroma_minus8
-        w.write_ue(4);    // log2_max_pic_order_cnt_lsb_minus4
-        w.write(0, 1);    // sps_sub_layer_ordering_info_present_flag
-        w.write_ue(1);    // max_dec_pic_buffering
-        w.write_ue(0);    // max_num_reorder_pics
-        w.write_ue(0);    // max_latency_increase
-        w.write_ue(0);    // log2_min_luma_coding_block_size_minus3
-        w.write_ue(3);    // log2_diff_max_min => CTB=64
-        w.write_ue(0);    // log2_min_luma_transform_block_size_minus2
-        w.write_ue(3);    // log2_diff_max_min_luma_transform_block_size
-        w.write_ue(1);    // max_transform_hierarchy_depth_inter
-        w.write_ue(1);    // max_transform_hierarchy_depth_intra
-        w.write(0, 1);    // scaling_list_enabled_flag
-        w.write(1, 1);    // amp_enabled_flag
-        w.write(1, 1);    // sample_adaptive_offset_enabled_flag
-        w.write(0, 1);    // pcm_enabled_flag
-        w.write_ue(0);    // num_short_term_ref_pic_sets
-        w.write(0, 1);    // long_term_ref_pics_present_flag
-        w.write(1, 1);    // sps_temporal_mvp_enabled_flag
-        w.write(1, 1);    // strong_intra_smoothing_enabled_flag
-        w.write(0, 1);    // vui_parameters_present_flag
+        w.write(0, 1); // conformance_window_flag = 0
+        w.write_ue(0); // bit_depth_luma_minus8
+        w.write_ue(0); // bit_depth_chroma_minus8
+        w.write_ue(4); // log2_max_pic_order_cnt_lsb_minus4
+        w.write(0, 1); // sps_sub_layer_ordering_info_present_flag
+        w.write_ue(1); // max_dec_pic_buffering
+        w.write_ue(0); // max_num_reorder_pics
+        w.write_ue(0); // max_latency_increase
+        w.write_ue(0); // log2_min_luma_coding_block_size_minus3
+        w.write_ue(3); // log2_diff_max_min => CTB=64
+        w.write_ue(0); // log2_min_luma_transform_block_size_minus2
+        w.write_ue(3); // log2_diff_max_min_luma_transform_block_size
+        w.write_ue(1); // max_transform_hierarchy_depth_inter
+        w.write_ue(1); // max_transform_hierarchy_depth_intra
+        w.write(0, 1); // scaling_list_enabled_flag
+        w.write(1, 1); // amp_enabled_flag
+        w.write(1, 1); // sample_adaptive_offset_enabled_flag
+        w.write(0, 1); // pcm_enabled_flag
+        w.write_ue(0); // num_short_term_ref_pic_sets
+        w.write(0, 1); // long_term_ref_pics_present_flag
+        w.write(1, 1); // sps_temporal_mvp_enabled_flag
+        w.write(1, 1); // strong_intra_smoothing_enabled_flag
+        w.write(0, 1); // vui_parameters_present_flag
 
         let data = w.finish();
         let mut reader = BitReader::new(&data);
@@ -948,18 +953,18 @@ mod tests {
     fn parse_synthetic_vps() {
         let mut w = BitWriter::new();
 
-        w.write(0, 4);  // vps_video_parameter_set_id
-        w.write(1, 1);  // vps_base_layer_internal_flag
-        w.write(1, 1);  // vps_base_layer_available_flag
-        w.write(0, 6);  // max_layers_minus1
-        w.write(0, 3);  // max_sub_layers_minus1
-        w.write(1, 1);  // temporal_id_nesting_flag
+        w.write(0, 4); // vps_video_parameter_set_id
+        w.write(1, 1); // vps_base_layer_internal_flag
+        w.write(1, 1); // vps_base_layer_available_flag
+        w.write(0, 6); // max_layers_minus1
+        w.write(0, 3); // max_sub_layers_minus1
+        w.write(1, 1); // temporal_id_nesting_flag
         w.write(0xFFFF, 16); // reserved 16 bits
 
         // profile_tier_level
-        w.write(0, 2);  // general_profile_space
-        w.write(0, 1);  // general_tier_flag
-        w.write(1, 5);  // general_profile_idc
+        w.write(0, 2); // general_profile_space
+        w.write(0, 1); // general_tier_flag
+        w.write(1, 5); // general_profile_idc
         w.write(0b01000000_00000000_00000000_00000000u64, 32);
         w.write(0b1011, 4);
         w.write(0, 44);
@@ -989,37 +994,37 @@ mod tests {
     fn parse_synthetic_pps() {
         let mut w = BitWriter::new();
 
-        w.write_ue(0);  // pps_pic_parameter_set_id
-        w.write_ue(0);  // pps_seq_parameter_set_id
-        w.write(0, 1);  // dependent_slice_segments_enabled_flag
-        w.write(0, 1);  // output_flag_present_flag
-        w.write(0, 3);  // num_extra_slice_header_bits
-        w.write(1, 1);  // sign_data_hiding_enabled_flag
-        w.write(1, 1);  // cabac_init_present_flag
-        w.write_ue(0);  // num_ref_idx_l0_default_active_minus1
-        w.write_ue(0);  // num_ref_idx_l1_default_active_minus1
-        w.write_se(0);  // init_qp_minus26
-        w.write(0, 1);  // constrained_intra_pred_flag
-        w.write(0, 1);  // transform_skip_enabled_flag
-        w.write(0, 1);  // cu_qp_delta_enabled_flag = 0 (no diff_cu_qp_delta_depth)
-        w.write_se(0);  // pps_cb_qp_offset
-        w.write_se(0);  // pps_cr_qp_offset
-        w.write(0, 1);  // pps_slice_chroma_qp_offsets_present_flag
-        w.write(0, 1);  // weighted_pred_flag
-        w.write(0, 1);  // weighted_bipred_flag
-        w.write(0, 1);  // transquant_bypass_enabled_flag
-        w.write(0, 1);  // tiles_enabled_flag
-        w.write(0, 1);  // entropy_coding_sync_enabled_flag
-        w.write(1, 1);  // loop_filter_across_slices_enabled_flag
-        w.write(1, 1);  // deblocking_filter_control_present_flag
-        w.write(0, 1);  // deblocking_filter_override_enabled_flag
-        w.write(0, 1);  // pps_deblocking_filter_disabled_flag = 0
-        w.write_se(0);  // pps_beta_offset_div2
-        w.write_se(0);  // pps_tc_offset_div2
-        w.write(0, 1);  // pps_scaling_list_data_present_flag
-        w.write(0, 1);  // lists_modification_present_flag
-        w.write_ue(0);  // log2_parallel_merge_level_minus2
-        w.write(0, 1);  // slice_segment_header_extension_present_flag
+        w.write_ue(0); // pps_pic_parameter_set_id
+        w.write_ue(0); // pps_seq_parameter_set_id
+        w.write(0, 1); // dependent_slice_segments_enabled_flag
+        w.write(0, 1); // output_flag_present_flag
+        w.write(0, 3); // num_extra_slice_header_bits
+        w.write(1, 1); // sign_data_hiding_enabled_flag
+        w.write(1, 1); // cabac_init_present_flag
+        w.write_ue(0); // num_ref_idx_l0_default_active_minus1
+        w.write_ue(0); // num_ref_idx_l1_default_active_minus1
+        w.write_se(0); // init_qp_minus26
+        w.write(0, 1); // constrained_intra_pred_flag
+        w.write(0, 1); // transform_skip_enabled_flag
+        w.write(0, 1); // cu_qp_delta_enabled_flag = 0 (no diff_cu_qp_delta_depth)
+        w.write_se(0); // pps_cb_qp_offset
+        w.write_se(0); // pps_cr_qp_offset
+        w.write(0, 1); // pps_slice_chroma_qp_offsets_present_flag
+        w.write(0, 1); // weighted_pred_flag
+        w.write(0, 1); // weighted_bipred_flag
+        w.write(0, 1); // transquant_bypass_enabled_flag
+        w.write(0, 1); // tiles_enabled_flag
+        w.write(0, 1); // entropy_coding_sync_enabled_flag
+        w.write(1, 1); // loop_filter_across_slices_enabled_flag
+        w.write(1, 1); // deblocking_filter_control_present_flag
+        w.write(0, 1); // deblocking_filter_override_enabled_flag
+        w.write(0, 1); // pps_deblocking_filter_disabled_flag = 0
+        w.write_se(0); // pps_beta_offset_div2
+        w.write_se(0); // pps_tc_offset_div2
+        w.write(0, 1); // pps_scaling_list_data_present_flag
+        w.write(0, 1); // lists_modification_present_flag
+        w.write_ue(0); // log2_parallel_merge_level_minus2
+        w.write(0, 1); // slice_segment_header_extension_present_flag
 
         let data = w.finish();
         let mut reader = BitReader::new(&data);
@@ -1028,7 +1033,7 @@ mod tests {
         assert_eq!(pps._pps_pic_parameter_set_id, 0);
         assert_eq!(pps._pps_seq_parameter_set_id, 0);
         assert!(!pps._dependent_slice_segments_enabled_flag);
-        assert!(pps._sign_data_hiding_enabled_flag);
+        assert!(pps.sign_data_hiding_enabled_flag);
         assert!(pps._cabac_init_present_flag);
         assert_eq!(pps.init_qp_minus26, 0);
         assert!(!pps._cu_qp_delta_enabled_flag);
@@ -1044,38 +1049,38 @@ mod tests {
     fn parse_pps_with_tiles() {
         let mut w = BitWriter::new();
 
-        w.write_ue(1);  // pps_pic_parameter_set_id
-        w.write_ue(0);  // pps_seq_parameter_set_id
-        w.write(0, 1);  // dependent_slice_segments_enabled_flag
-        w.write(0, 1);  // output_flag_present_flag
-        w.write(0, 3);  // num_extra_slice_header_bits
-        w.write(0, 1);  // sign_data_hiding_enabled_flag
-        w.write(0, 1);  // cabac_init_present_flag
-        w.write_ue(0);  // num_ref_idx_l0_default_active_minus1
-        w.write_ue(0);  // num_ref_idx_l1_default_active_minus1
-        w.write_se(0);  // init_qp_minus26
-        w.write(0, 1);  // constrained_intra_pred_flag
-        w.write(0, 1);  // transform_skip_enabled_flag
-        w.write(0, 1);  // cu_qp_delta_enabled_flag
-        w.write_se(0);  // pps_cb_qp_offset
-        w.write_se(0);  // pps_cr_qp_offset
-        w.write(0, 1);  // pps_slice_chroma_qp_offsets_present_flag
-        w.write(0, 1);  // weighted_pred_flag
-        w.write(0, 1);  // weighted_bipred_flag
-        w.write(0, 1);  // transquant_bypass_enabled_flag
-        w.write(1, 1);  // tiles_enabled_flag = 1
-        w.write(0, 1);  // entropy_coding_sync_enabled_flag
+        w.write_ue(1); // pps_pic_parameter_set_id
+        w.write_ue(0); // pps_seq_parameter_set_id
+        w.write(0, 1); // dependent_slice_segments_enabled_flag
+        w.write(0, 1); // output_flag_present_flag
+        w.write(0, 3); // num_extra_slice_header_bits
+        w.write(0, 1); // sign_data_hiding_enabled_flag
+        w.write(0, 1); // cabac_init_present_flag
+        w.write_ue(0); // num_ref_idx_l0_default_active_minus1
+        w.write_ue(0); // num_ref_idx_l1_default_active_minus1
+        w.write_se(0); // init_qp_minus26
+        w.write(0, 1); // constrained_intra_pred_flag
+        w.write(0, 1); // transform_skip_enabled_flag
+        w.write(0, 1); // cu_qp_delta_enabled_flag
+        w.write_se(0); // pps_cb_qp_offset
+        w.write_se(0); // pps_cr_qp_offset
+        w.write(0, 1); // pps_slice_chroma_qp_offsets_present_flag
+        w.write(0, 1); // weighted_pred_flag
+        w.write(0, 1); // weighted_bipred_flag
+        w.write(0, 1); // transquant_bypass_enabled_flag
+        w.write(1, 1); // tiles_enabled_flag = 1
+        w.write(0, 1); // entropy_coding_sync_enabled_flag
         // tile params
-        w.write_ue(1);  // num_tile_columns_minus1 = 1 (2 columns)
-        w.write_ue(1);  // num_tile_rows_minus1 = 1 (2 rows)
-        w.write(1, 1);  // uniform_spacing_flag
-        w.write(1, 1);  // loop_filter_across_tiles_enabled_flag
-        w.write(1, 1);  // loop_filter_across_slices_enabled_flag
-        w.write(0, 1);  // deblocking_filter_control_present_flag
-        w.write(0, 1);  // pps_scaling_list_data_present_flag
-        w.write(0, 1);  // lists_modification_present_flag
-        w.write_ue(0);  // log2_parallel_merge_level_minus2
-        w.write(0, 1);  // slice_segment_header_extension_present_flag
+        w.write_ue(1); // num_tile_columns_minus1 = 1 (2 columns)
+        w.write_ue(1); // num_tile_rows_minus1 = 1 (2 rows)
+        w.write(1, 1); // uniform_spacing_flag
+        w.write(1, 1); // loop_filter_across_tiles_enabled_flag
+        w.write(1, 1); // loop_filter_across_slices_enabled_flag
+        w.write(0, 1); // deblocking_filter_control_present_flag
+        w.write(0, 1); // pps_scaling_list_data_present_flag
+        w.write(0, 1); // lists_modification_present_flag
+        w.write_ue(0); // log2_parallel_merge_level_minus2
+        w.write(0, 1); // slice_segment_header_extension_present_flag
 
         let data = w.finish();
         let mut reader = BitReader::new(&data);
@@ -1093,36 +1098,46 @@ mod tests {
     fn sps_bit_depth_computed() {
         let mut w = BitWriter::new();
 
-        w.write(0, 4);  // sps_video_parameter_set_id
-        w.write(0, 3);  // sps_max_sub_layers_minus1
-        w.write(1, 1);  // sps_temporal_id_nesting_flag
+        w.write(0, 4); // sps_video_parameter_set_id
+        w.write(0, 3); // sps_max_sub_layers_minus1
+        w.write(1, 1); // sps_temporal_id_nesting_flag
 
         // Minimal profile_tier_level
-        w.write(0, 2); w.write(0, 1); w.write(1, 5);
-        w.write(0, 32); w.write(0, 4); w.write(0, 44); w.write(120, 8);
+        w.write(0, 2);
+        w.write(0, 1);
+        w.write(1, 5);
+        w.write(0, 32);
+        w.write(0, 4);
+        w.write(0, 44);
+        w.write(120, 8);
 
-        w.write_ue(0);    // sps_seq_parameter_set_id
-        w.write_ue(1);    // chroma_format_idc
+        w.write_ue(0); // sps_seq_parameter_set_id
+        w.write_ue(1); // chroma_format_idc
         w.write_ue(3840); // width
         w.write_ue(2160); // height
-        w.write(0, 1);    // conformance_window_flag
-        w.write_ue(2);    // bit_depth_luma_minus8 = 2 => 10-bit
-        w.write_ue(2);    // bit_depth_chroma_minus8 = 2 => 10-bit
-        w.write_ue(4);    // log2_max_pic_order_cnt_lsb_minus4
-        w.write(0, 1);    // sps_sub_layer_ordering_info_present_flag
-        w.write_ue(1); w.write_ue(0); w.write_ue(0); // ordering info
-        w.write_ue(0); w.write_ue(3); // coding block sizes
-        w.write_ue(0); w.write_ue(3); // transform block sizes
-        w.write_ue(1); w.write_ue(1); // hierarchy depths
-        w.write(0, 1);    // scaling_list_enabled_flag
-        w.write(1, 1);    // amp_enabled_flag
-        w.write(1, 1);    // sample_adaptive_offset_enabled_flag
-        w.write(0, 1);    // pcm_enabled_flag
-        w.write_ue(0);    // num_short_term_ref_pic_sets
-        w.write(0, 1);    // long_term_ref_pics_present_flag
-        w.write(1, 1);    // sps_temporal_mvp_enabled_flag
-        w.write(1, 1);    // strong_intra_smoothing_enabled_flag
-        w.write(0, 1);    // vui_parameters_present_flag
+        w.write(0, 1); // conformance_window_flag
+        w.write_ue(2); // bit_depth_luma_minus8 = 2 => 10-bit
+        w.write_ue(2); // bit_depth_chroma_minus8 = 2 => 10-bit
+        w.write_ue(4); // log2_max_pic_order_cnt_lsb_minus4
+        w.write(0, 1); // sps_sub_layer_ordering_info_present_flag
+        w.write_ue(1);
+        w.write_ue(0);
+        w.write_ue(0); // ordering info
+        w.write_ue(0);
+        w.write_ue(3); // coding block sizes
+        w.write_ue(0);
+        w.write_ue(3); // transform block sizes
+        w.write_ue(1);
+        w.write_ue(1); // hierarchy depths
+        w.write(0, 1); // scaling_list_enabled_flag
+        w.write(1, 1); // amp_enabled_flag
+        w.write(1, 1); // sample_adaptive_offset_enabled_flag
+        w.write(0, 1); // pcm_enabled_flag
+        w.write_ue(0); // num_short_term_ref_pic_sets
+        w.write(0, 1); // long_term_ref_pics_present_flag
+        w.write(1, 1); // sps_temporal_mvp_enabled_flag
+        w.write(1, 1); // strong_intra_smoothing_enabled_flag
+        w.write(0, 1); // vui_parameters_present_flag
 
         let data = w.finish();
         let mut reader = BitReader::new(&data);

@@ -89,17 +89,6 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// Create a BitReader for already-cleaned RBSP data (no EP removal).
-    pub fn new_rbsp(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            byte_pos: 0,
-            bit_pos: 0,
-            num_zeros: 0,
-            skip_ep: true,
-        }
-    }
-
     /// Returns the number of bits remaining in the stream (approximate -- does
     /// not account for emulation prevention bytes that have not yet been
     /// encountered; an exact count would require a full forward scan).
@@ -396,11 +385,7 @@ impl<'a> CabacReader<'a> {
     ///
     /// The slice must start at the first byte of CABAC-coded data
     /// (immediately after the slice header byte-alignment).
-    pub fn from_bytes(
-        data: &'a [u8],
-        init_values: &[u8],
-        slice_qp: i32,
-    ) -> Result<Self> {
+    pub fn from_bytes(data: &'a [u8], init_values: &[u8], slice_qp: i32) -> Result<Self> {
         let contexts: Vec<ContextModel> = init_values
             .iter()
             .map(|&iv| ContextModel::from_init_value(iv, slice_qp))
@@ -963,8 +948,10 @@ mod tests {
 
     #[test]
     fn cabac_decode_decision_smoke() {
-        let data = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
-                     0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
+        let data = [
+            0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x80, 0x40, 0x20, 0x10, 0x08, 0x04,
+            0x02, 0x01,
+        ];
         let init_values = [154];
         let mut cabac = CabacReader::from_bytes(&data, &init_values, 26).unwrap();
 

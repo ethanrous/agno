@@ -80,18 +80,3 @@ pub fn quantize_block(coeffs: &[i16; 16], dc_quant: i16, ac_quant: i16) -> [i16;
     out
 }
 
-/// Quantize a 4x4 block uniformly (all coefficients use the same quant factor).
-/// Used for Y2 (WHT) blocks.
-pub fn quantize_block_uniform(coeffs: &[i16; 16], quant: i16) -> [i16; 16] {
-    let mut out = [0i16; 16];
-    let q = quant.max(1) as i32;
-    for i in 0..16 {
-        let c = coeffs[i] as i32;
-        out[i] = if c >= 0 {
-            ((c + q / 2) / q) as i16
-        } else {
-            ((c - q / 2) / q) as i16
-        };
-    }
-    out
-}

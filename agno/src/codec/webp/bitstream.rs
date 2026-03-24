@@ -435,7 +435,9 @@ pub fn encode_vp8_frame(
     //   2 bytes height LE (bits 0-13 = height, bits 14-15 = vscale=0)
     let w_bytes = (width & 0x3FFF).to_le_bytes();
     let h_bytes = (height & 0x3FFF).to_le_bytes();
-    let key_header = [0x9D, 0x01, 0x2A, w_bytes[0], w_bytes[1], h_bytes[0], h_bytes[1]];
+    let key_header = [
+        0x9D, 0x01, 0x2A, w_bytes[0], w_bytes[1], h_bytes[0], h_bytes[1],
+    ];
 
     let total = 3 + 7 + first_part.len() + token_part.len();
     let mut out = Vec::with_capacity(total);
@@ -581,9 +583,7 @@ fn encode_token_partition(
             for x in 0..4usize {
                 let blk_idx = y * 4 + x;
                 let init = (top[mb_col][x + 1] + row_left).min(2) as usize;
-                let has = encode_coefficient_block_vp8(
-                    &mut enc, &coeffs[1 + blk_idx], 0, 1, init,
-                );
+                let has = encode_coefficient_block_vp8(&mut enc, &coeffs[1 + blk_idx], 0, 1, init);
                 let c = u8::from(has);
                 row_left = c;
                 top[mb_col][x + 1] = c;
@@ -597,9 +597,7 @@ fn encode_token_partition(
             for x in 0..2usize {
                 let blk_idx = y * 2 + x;
                 let init = (top[mb_col][x + 5] + row_left).min(2) as usize;
-                let has = encode_coefficient_block_vp8(
-                    &mut enc, &coeffs[17 + blk_idx], 2, 0, init,
-                );
+                let has = encode_coefficient_block_vp8(&mut enc, &coeffs[17 + blk_idx], 2, 0, init);
                 let c = u8::from(has);
                 row_left = c;
                 top[mb_col][x + 5] = c;
@@ -613,9 +611,7 @@ fn encode_token_partition(
             for x in 0..2usize {
                 let blk_idx = y * 2 + x;
                 let init = (top[mb_col][x + 7] + row_left).min(2) as usize;
-                let has = encode_coefficient_block_vp8(
-                    &mut enc, &coeffs[21 + blk_idx], 2, 0, init,
-                );
+                let has = encode_coefficient_block_vp8(&mut enc, &coeffs[21 + blk_idx], 2, 0, init);
                 let c = u8::from(has);
                 row_left = c;
                 top[mb_col][x + 7] = c;

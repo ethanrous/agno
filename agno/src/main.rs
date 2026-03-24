@@ -2,31 +2,10 @@ use std::env;
 use std::error::Error;
 use std::fs::File;
 
-use crate::agno_image::load::load_agno_image_from_file;
-use crate::agno_image::transform::scale_image;
-use crate::exif::{ExifContext, ExifValue};
-use crate::logging::{LogConfig, init};
-
-mod agno_image;
-mod canon_decoder;
-mod codec;
-mod demosaic;
-mod exif;
-mod logging;
-mod sony_decoder;
-mod sony_jpeg;
-mod tiff;
-
-#[cfg(feature = "gpu")]
-mod demosaic_gpu;
-#[cfg(feature = "gpu")]
-mod gpu;
-#[cfg(all(feature = "gpu", feature = "jpeg"))]
-mod jpeg_gpu;
-#[cfg(feature = "gpu")]
-mod resize_gpu;
-#[cfg(all(feature = "gpu", feature = "webp"))]
-mod webp_gpu;
+use agno::agno_image::load::load_agno_image_from_file;
+use agno::agno_image::transform::scale_image;
+use agno::exif::{ExifContext, ExifValue};
+use agno::logging::{LogConfig, init};
 
 fn main() -> Result<(), Box<dyn Error>> {
     init(LogConfig::cli());

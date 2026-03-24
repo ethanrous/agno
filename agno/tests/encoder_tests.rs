@@ -18,28 +18,16 @@ fn jpeg_header_validity() {
     assert_eq!(&data[data.len() - 2..], &[0xFF, 0xD9], "missing EOI marker");
 
     // Must contain DQT marker (0xFFDB)
-    assert!(
-        contains_marker(&data, 0xDB),
-        "missing DQT marker"
-    );
+    assert!(contains_marker(&data, 0xDB), "missing DQT marker");
 
     // Must contain SOF0 marker (0xFFC0)
-    assert!(
-        contains_marker(&data, 0xC0),
-        "missing SOF0 marker"
-    );
+    assert!(contains_marker(&data, 0xC0), "missing SOF0 marker");
 
     // Must contain DHT marker (0xFFC4)
-    assert!(
-        contains_marker(&data, 0xC4),
-        "missing DHT marker"
-    );
+    assert!(contains_marker(&data, 0xC4), "missing DHT marker");
 
     // Must contain SOS marker (0xFFDA)
-    assert!(
-        contains_marker(&data, 0xDA),
-        "missing SOS marker"
-    );
+    assert!(contains_marker(&data, 0xDA), "missing SOS marker");
 }
 
 #[test]
@@ -65,10 +53,7 @@ fn jpeg_roundtrip_psnr() {
 
     // Compute PSNR
     let psnr = compute_psnr(&rgb, &decoded_rgb, width * height);
-    assert!(
-        psnr > 15.0,
-        "PSNR {:.1}dB is too low for quality 90", psnr,
-    );
+    assert!(psnr > 15.0, "PSNR {:.1}dB is too low for quality 90", psnr,);
 }
 
 #[test]
@@ -370,7 +355,10 @@ fn webp_roundtrip_psnr_camera_photo() {
     assert_eq!(dh, h);
 
     let psnr = compute_psnr(&rgb, &decoded_rgb, (w * h) as usize);
-    eprintln!("WebP roundtrip PSNR ({}x{} camera photo, q90): {:.1} dB", w, h, psnr);
+    eprintln!(
+        "WebP roundtrip PSNR ({}x{} camera photo, q90): {:.1} dB",
+        w, h, psnr
+    );
     assert!(
         psnr > 5.0,
         "WebP roundtrip PSNR {:.1}dB is too low for a camera photo at quality 90",
@@ -391,7 +379,10 @@ fn webp_cpu_roundtrip_psnr_camera_photo() {
     assert_eq!(dh, h);
 
     let psnr = compute_psnr(&rgb, &decoded_rgb, (w * h) as usize);
-    eprintln!("CPU WebP roundtrip PSNR ({}x{} camera photo, q90): {:.1} dB", w, h, psnr);
+    eprintln!(
+        "CPU WebP roundtrip PSNR ({}x{} camera photo, q90): {:.1} dB",
+        w, h, psnr
+    );
     assert!(
         psnr > 25.0,
         "CPU WebP PSNR {:.1}dB is too low for a camera photo at quality 90",
@@ -446,7 +437,10 @@ fn webp_cpu_roundtrip_psnr() {
 
     // Verify our decoder and the standard decoder produce similar results
     let cross_psnr = compute_psnr(&decoded_rgb, &std_decoded, width * height);
-    eprintln!("Cross-decoder PSNR (ours vs standard): {:.1} dB", cross_psnr);
+    eprintln!(
+        "Cross-decoder PSNR (ours vs standard): {:.1} dB",
+        cross_psnr
+    );
     assert!(
         cross_psnr > 25.0,
         "Cross-decoder PSNR {:.1}dB is too low — decoders disagree",
@@ -488,8 +482,7 @@ fn jpeg_decode_progressive() {
 // --- Helpers ---
 
 fn contains_marker(data: &[u8], marker_byte: u8) -> bool {
-    data.windows(2)
-        .any(|w| w[0] == 0xFF && w[1] == marker_byte)
+    data.windows(2).any(|w| w[0] == 0xFF && w[1] == marker_byte)
 }
 
 fn compute_psnr(original: &[u8], decoded: &[u8], num_pixels: usize) -> f64 {

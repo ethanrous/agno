@@ -32,8 +32,7 @@ pub fn fdct4x4(input: &[i16; 16]) -> [i16; 16] {
 
         result[i] = ((a + b + 7) >> 4) as i16;
         result[i + 8] = ((a - b + 7) >> 4) as i16;
-        result[i + 4] =
-            (((c * 2217 + d * 5352 + 12000) >> 16) + i32::from(d != 0)) as i16;
+        result[i + 4] = (((c * 2217 + d * 5352 + 12000) >> 16) + i32::from(d != 0)) as i16;
         result[i + 12] = ((d * 2217 - c * 5352 + 51000) >> 16) as i16;
     }
     result

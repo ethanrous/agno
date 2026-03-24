@@ -7,7 +7,7 @@
 fn main() {
     #[cfg(feature = "gpu")]
     {
-        use spirv_builder::{SpirvMetadata, SpirvBuilder};
+        use spirv_builder::{SpirvBuilder, SpirvMetadata};
         use std::fs;
         use std::path::PathBuf;
 

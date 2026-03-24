@@ -6,9 +6,8 @@
 #![cfg_attr(target_arch = "spirv", no_std)]
 
 use agno_gpu_shared::{
-    apply_saturation, apply_tone_curve, cfa_color_at, clamp_i32, clamp_u8, lanczos_weight,
-    max_f32, pow_f32, ColorConvertParams, DemosaicParams, ResizeParams, Vec4, CFA_B, CFA_G,
-    CFA_R,
+    apply_saturation, apply_tone_curve, cfa_color_at, clamp_i32, clamp_u8, lanczos_weight, max_f32,
+    pow_f32, ColorConvertParams, DemosaicParams, ResizeParams, Vec4, CFA_B, CFA_G, CFA_R,
 };
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
@@ -31,12 +30,7 @@ fn idx(row: u32, col: u32, stride: u32) -> usize {
 
 /// Sample a raw pixel, apply black level subtraction, normalization, and white balance.
 #[inline]
-fn sample_wb(
-    raw_input: &[u32],
-    row: u32,
-    col: u32,
-    params: &DemosaicParams,
-) -> f32 {
+fn sample_wb(raw_input: &[u32], row: u32, col: u32, params: &DemosaicParams) -> f32 {
     let raw_val = raw_input[idx(row, col, params.stride)];
     let v = saturating_sub_u32(raw_val, params.black_level) as f32 * params.inv_range;
     let color = cfa_color_at(row, col, params.pattern);
@@ -208,6 +202,9 @@ pub fn resize_horizontal_kernel(
     let src_x_f = (dst_x as f32 + 0.5) * params.scale_x - 0.5;
     let src_x_center = src_x_f as i32;
     let radius = params.filter_radius as i32;
+    // When downscaling, filter_radius is 3*scale. Normalize distances
+    // by scale so the Lanczos kernel shape is preserved over the wider window.
+    let filter_scale = if params.scale_x > 1.0 { params.scale_x } else { 1.0 };
 
     let mut sum_r = 0.0f32;
     let mut sum_g = 0.0f32;
@@ -218,8 +215,8 @@ pub fn resize_horizontal_kernel(
     let mut i = -radius;
     while i <= radius {
         let src_x = clamp_i32(src_x_center + i, 0, (params.src_width - 1) as i32) as u32;
-        let dist = (src_x_center + i) as f32 - src_x_f;
-        let weight = lanczos_weight(dist, params.filter_radius);
+        let dist = ((src_x_center + i) as f32 - src_x_f) / filter_scale;
+        let weight = lanczos_weight(dist, 3.0);
 
         let pixel = input[(dst_y * params.src_width + src_x) as usize];
         sum_r += ((pixel >> 16) & 0xFF) as f32 * weight;
@@ -261,6 +258,7 @@ pub fn resize_vertical_kernel(
     let src_y_f = (dst_y as f32 + 0.5) * params.scale_y - 0.5;
     let src_y_center = src_y_f as i32;
     let radius = params.filter_radius as i32;
+    let filter_scale = if params.scale_y > 1.0 { params.scale_y } else { 1.0 };
 
     let mut sum_r = 0.0f32;
     let mut sum_g = 0.0f32;
@@ -271,8 +269,8 @@ pub fn resize_vertical_kernel(
     let mut i = -radius;
     while i <= radius {
         let src_y = clamp_i32(src_y_center + i, 0, (params.src_height - 1) as i32) as u32;
-        let dist = (src_y_center + i) as f32 - src_y_f;
-        let weight = lanczos_weight(dist, params.filter_radius);
+        let dist = ((src_y_center + i) as f32 - src_y_f) / filter_scale;
+        let weight = lanczos_weight(dist, 3.0);
 
         // Input width is dst_width (from horizontal pass)
         let pixel = input[(src_y * params.dst_width + dst_x) as usize];

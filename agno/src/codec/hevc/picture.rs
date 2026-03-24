@@ -63,6 +63,15 @@ pub struct Picture {
     depth_stride: u32,
     /// log2 of the minimum coding block size (needed by accessors).
     min_cb_log2: u32,
+    /// Reconstruction status at MinTB granularity (1 bit per MinTB cell).
+    /// A cell is marked after its luma pixels have been written, enabling
+    /// correct intra prediction reference sample availability for NxN
+    /// sub-partitions within the same CU.
+    reconstructed: Vec<bool>,
+    /// Stride for reconstructed grid: ceil(pic_width / min_tb_size).
+    reco_stride: u32,
+    /// log2 of minimum transform block size for reconstructed grid.
+    reco_log2: u32,
 }
 
 impl Picture {
@@ -95,6 +104,9 @@ impl Picture {
             qp_y: Vec::new(),
             depth_stride: 0,
             min_cb_log2: 0,
+            reconstructed: Vec::new(),
+            reco_stride: 0,
+            reco_log2: 0,
         }
     }
 
@@ -124,11 +136,18 @@ impl Picture {
         self.intra_mode = vec![0; (iw * ih) as usize];
         self.intra_mode_stride = iw;
         self.intra_mode_log2 = min_pu_log2;
+
+        // Reconstruction bitmap at MinPU (4x4) granularity for NxN availability
+        self.reconstructed = vec![false; (iw * ih) as usize];
+        self.reco_stride = iw;
+        self.reco_log2 = min_pu_log2;
     }
 
     /// Store CU depth for all MinCB cells covered by a CU at (x0, y0) with given size.
     pub fn set_cu_depth(&mut self, x0: u32, y0: u32, cu_size: u32, depth: u8) {
-        if self.cu_depth.is_empty() { return; }
+        if self.cu_depth.is_empty() {
+            return;
+        }
         let min_cb = 1u32 << self.min_cb_log2;
         let gx = x0 / min_cb;
         let gy = y0 / min_cb;
@@ -149,7 +168,9 @@ impl Picture {
 
     /// Read CU depth at sample position (x, y). Returns None if unavailable.
     pub fn cu_depth_at(&self, x: u32, y: u32) -> Option<u8> {
-        if self.cu_depth.is_empty() { return None; }
+        if self.cu_depth.is_empty() {
+            return None;
+        }
         let min_cb = 1u32 << self.min_cb_log2;
         let gx = x / min_cb;
         let gy = y / min_cb;
@@ -159,7 +180,9 @@ impl Picture {
 
     /// Store intra prediction mode for all MinPU cells covered by a PU.
     pub fn set_intra_mode(&mut self, x0: u32, y0: u32, pu_size: u32, mode: u8) {
-        if self.intra_mode.is_empty() { return; }
+        if self.intra_mode.is_empty() {
+            return;
+        }
         let min_pu = 1u32 << self.intra_mode_log2;
         let gx = x0 / min_pu;
         let gy = y0 / min_pu;
@@ -180,7 +203,9 @@ impl Picture {
 
     /// Read intra mode at sample position. Returns 0 (Planar) if unavailable.
     pub fn intra_mode_at(&self, x: u32, y: u32) -> u8 {
-        if self.intra_mode.is_empty() { return 0; }
+        if self.intra_mode.is_empty() {
+            return 0;
+        }
         let min_pu = 1u32 << self.intra_mode_log2;
         let gx = x / min_pu;
         let gy = y / min_pu;
@@ -190,7 +215,9 @@ impl Picture {
 
     /// Store luma QP for all MinCB cells covered by a CU at (x0, y0) with given size.
     pub fn set_qp_y(&mut self, x0: u32, y0: u32, cu_size: u32, qp: i32) {
-        if self.qp_y.is_empty() { return; }
+        if self.qp_y.is_empty() {
+            return;
+        }
         let min_cb = 1u32 << self.min_cb_log2;
         let gx = x0 / min_cb;
         let gy = y0 / min_cb;
@@ -211,12 +238,53 @@ impl Picture {
 
     /// Read luma QP at sample position (x, y). Returns 0 if unavailable.
     pub fn qp_y_at(&self, x: u32, y: u32) -> i32 {
-        if self.qp_y.is_empty() { return 0; }
+        if self.qp_y.is_empty() {
+            return 0;
+        }
         let min_cb = 1u32 << self.min_cb_log2;
         let gx = x / min_cb;
         let gy = y / min_cb;
         let idx = (gy * self.depth_stride + gx) as usize;
         self.qp_y.get(idx).copied().unwrap_or(0)
+    }
+
+    /// Mark a rectangular region as reconstructed at MinPU granularity.
+    /// Called after a TU's luma pixels have been written to the picture buffer.
+    pub fn mark_reconstructed(&mut self, x0: u32, y0: u32, tu_size: u32) {
+        if self.reconstructed.is_empty() {
+            return;
+        }
+        let min_pu = 1u32 << self.reco_log2;
+        let gx = x0 / min_pu;
+        let gy = y0 / min_pu;
+        let cells = (tu_size + min_pu - 1) / min_pu;
+        for dy in 0..cells {
+            for dx in 0..cells {
+                let ix = gx + dx;
+                let iy = gy + dy;
+                if ix < self.reco_stride {
+                    let idx = (iy * self.reco_stride + ix) as usize;
+                    if idx < self.reconstructed.len() {
+                        self.reconstructed[idx] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if the sample at luma position (x, y) has been reconstructed.
+    /// Returns true if the MinPU cell containing (x, y) has been marked.
+    /// Used by intra prediction to determine reference sample availability
+    /// at sub-TU granularity (finer than the CU depth map).
+    pub fn is_reconstructed(&self, x: u32, y: u32) -> bool {
+        if self.reconstructed.is_empty() {
+            return false;
+        }
+        let min_pu = 1u32 << self.reco_log2;
+        let gx = x / min_pu;
+        let gy = y / min_pu;
+        let idx = (gy * self.reco_stride + gx) as usize;
+        self.reconstructed.get(idx).copied().unwrap_or(false)
     }
 
     /// Immutable slice of the full luma plane.
@@ -334,17 +402,17 @@ impl Picture {
     }
 }
 
-/// BT.709 / BT.601 conversion coefficients.
+/// BT.709 / BT.601 conversion coefficients (f32 to match libheif).
 ///
 /// YCbCr to RGB:
 ///   R = Y + cr_r * (Cr - 128)
 ///   G = Y + cb_g * (Cb - 128) + cr_g * (Cr - 128)
 ///   B = Y + cb_b * (Cb - 128)
 struct ColorCoeffs {
-    cr_r: f64,
-    cb_g: f64,
-    cr_g: f64,
-    cb_b: f64,
+    cr_r: f32,
+    cb_g: f32,
+    cr_g: f32,
+    cb_b: f32,
 }
 
 const BT709: ColorCoeffs = ColorCoeffs {
@@ -369,27 +437,24 @@ fn matrix_for(matrix_coeffs: u8) -> &'static ColorCoeffs {
 }
 
 /// Convert a single YCbCr sample to RGB using the given color matrix.
+/// Uses f32 arithmetic to match libheif's rounding behavior.
 /// Cb and Cr are expected centered at 128 (8-bit range).
 fn ycbcr_to_rgb(y: i16, cb: i16, cr: i16, c: &ColorCoeffs) -> (u8, u8, u8) {
-    let yf = y as f64;
-    let cb_off = (cb - 128) as f64;
-    let cr_off = (cr - 128) as f64;
+    let yf = y as f32;
+    let cb_off = (cb - 128) as f32;
+    let cr_off = (cr - 128) as f32;
 
     let r = yf + c.cr_r * cr_off;
     let g = yf + c.cb_g * cb_off + c.cr_g * cr_off;
     let b = yf + c.cb_b * cb_off;
 
-    (clip_u8(r), clip_u8(g), clip_u8(b))
+    (clip_f32_u8(r), clip_f32_u8(g), clip_f32_u8(b))
 }
 
-fn clip_u8(v: f64) -> u8 {
-    if v < 0.0 {
-        0
-    } else if v > 255.0 {
-        255
-    } else {
-        (v + 0.5) as u8
-    }
+/// Clip float to u8 with +0.5 rounding, matching libheif's clip_f_u16.
+fn clip_f32_u8(v: f32) -> u8 {
+    let x = (v + 0.5f32) as i32;
+    if x < 0 { 0 } else if x > 255 { 255 } else { x as u8 }
 }
 
 #[cfg(test)]
@@ -631,12 +696,12 @@ mod tests {
     }
 
     #[test]
-    fn clip_u8_boundaries() {
-        assert_eq!(clip_u8(-1.0), 0);
-        assert_eq!(clip_u8(0.0), 0);
-        assert_eq!(clip_u8(255.0), 255);
-        assert_eq!(clip_u8(256.0), 255);
-        assert_eq!(clip_u8(127.3), 127);
-        assert_eq!(clip_u8(127.7), 128);
+    fn clip_f32_u8_boundaries() {
+        assert_eq!(clip_f32_u8(-1.0), 0);
+        assert_eq!(clip_f32_u8(0.0), 0);
+        assert_eq!(clip_f32_u8(255.0), 255);
+        assert_eq!(clip_f32_u8(256.0), 255);
+        assert_eq!(clip_f32_u8(127.3), 127);
+        assert_eq!(clip_f32_u8(127.7), 128);
     }
 }

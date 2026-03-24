@@ -97,7 +97,8 @@ impl AgnoImage {
         self.height = dims.output_height as u64;
 
         // Mark orientation as applied so no downstream consumer re-rotates
-        self.exif.set_tag_value(ORIENTATION, ExifValue::Short(vec![1]));
+        self.exif
+            .set_tag_value(ORIENTATION, ExifValue::Short(vec![1]));
 
         Ok(())
     }
@@ -105,7 +106,12 @@ impl AgnoImage {
     #[cfg(feature = "jpeg")]
     #[allow(dead_code)]
     pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
-        crate::codec::jpeg::encode_jpeg(self.as_slice(), self.width as u32, self.height as u32, quality)
+        crate::codec::jpeg::encode_jpeg(
+            self.as_slice(),
+            self.width as u32,
+            self.height as u32,
+            quality,
+        )
     }
 
     #[cfg(feature = "jpeg")]

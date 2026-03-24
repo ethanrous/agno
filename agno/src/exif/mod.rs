@@ -4,7 +4,6 @@ use std::fmt;
 use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
-use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::agno_image::load::{ImageType, detect_image_type};
@@ -110,7 +109,6 @@ pub enum ExifError {
     Io(std::io::Error, Backtrace),
     NotExif,
     BadTiff,
-    SerializeErr(serde_json::Error),
     // NotFound,
     Unsupported(String),
     Malformed(String),
@@ -122,7 +120,6 @@ impl std::fmt::Display for ExifError {
             ExifError::Io(e, bt) => write!(f, "I/O error: {}\n{}", e, bt),
             ExifError::NotExif => write!(f, "Not a valid EXIF/JPEG file"),
             ExifError::BadTiff => write!(f, "Invalid TIFF header in EXIF data"),
-            ExifError::SerializeErr(e) => write!(f, "Serialization error: {}", e),
             // ExifError::NotFound => write!(f, "Requested EXIF tag not found"),
             ExifError::Unsupported(msg) => {
                 write!(f, "Unsupported EXIF data type or format: {}", msg)
@@ -135,12 +132,6 @@ impl std::fmt::Display for ExifError {
 impl From<std::io::Error> for ExifError {
     fn from(err: std::io::Error) -> ExifError {
         ExifError::Io(err, backtrace::Backtrace::capture())
-    }
-}
-
-impl From<serde_json::Error> for ExifError {
-    fn from(err: serde_json::Error) -> ExifError {
-        ExifError::SerializeErr(err)
     }
 }
 
@@ -170,7 +161,7 @@ struct IfdInfo {
     next_ifd: u32, // offset to next IFD (0 if none)
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub enum ExifValue {
     Byte(Vec<u8>),              // BYTE(1) or UNDEFINED(7)
     Ascii(String),              // ASCII(2)
@@ -180,7 +171,6 @@ pub enum ExifValue {
     SLong(Vec<i32>),            // SLONG(9)
     SRational(Vec<(i32, i32)>), // SRATIONAL(10)
 }
-
 
 #[derive(Debug, Clone)]
 #[repr(C)] // Ensure C-compatible layout
@@ -326,7 +316,9 @@ impl ExifContext {
     }
 
     // Parse EXIF from an ISOBMFF container (HEIC/HEIF/AVIF) by walking the box structure
-    fn from_isobmff(reader: &mut File) -> Result<(u64, Endian, HashMap<u16, ExifValue>), ExifError> {
+    fn from_isobmff(
+        reader: &mut File,
+    ) -> Result<(u64, Endian, HashMap<u16, ExifValue>), ExifError> {
         let file_end = reader.seek(SeekFrom::End(0))?;
 
         // Find 'meta' box at top level (FullBox — 4 bytes version+flags before children)
@@ -342,16 +334,15 @@ impl ExifContext {
             .ok_or(ExifError::NotExif)?
             .0;
 
-        // Find the item ID whose type is "Exif", then locate its data extent
+        // idat box: optional, needed when iloc construction_method=1
+        let idat_content_start = isobmff_find_box(reader, children_start, meta_end, b"idat")?
+            .map(|(content_start, _)| content_start);
+
+        // Find the item ID whose type is "Exif", then read all its extents
         let exif_id =
             isobmff_find_item_id_by_type(reader, iinf_start, b"Exif")?.ok_or(ExifError::NotExif)?;
-        let (offset, length) =
-            isobmff_find_item_extent(reader, iloc_start, exif_id)?.ok_or(ExifError::NotExif)?;
-
-        // Exif item data starts with a 4-byte BE offset to the TIFF header
-        reader.seek(SeekFrom::Start(offset))?;
-        let mut data = vec![0u8; length as usize];
-        reader.read_exact(&mut data)?;
+        let data = isobmff_read_item_data(reader, iloc_start, exif_id, idat_content_start)?
+            .ok_or(ExifError::NotExif)?;
 
         if data.len() < 10 {
             return Err(ExifError::Malformed(
@@ -381,9 +372,7 @@ impl ExifContext {
         let file_end = reader.seek(SeekFrom::End(0))?;
 
         // Try moov/udta/meta path
-        if let Some((moov_start, moov_end)) =
-            isobmff_find_box(reader, 0, file_end, b"moov")?
-        {
+        if let Some((moov_start, moov_end)) = isobmff_find_box(reader, 0, file_end, b"moov")? {
             if let Some((udta_start, udta_end)) =
                 isobmff_find_box(reader, moov_start, moov_end, b"udta")?
             {
@@ -397,19 +386,18 @@ impl ExifContext {
                         isobmff_find_box(reader, children_start, meta_end, b"iinf")?,
                         isobmff_find_box(reader, children_start, meta_end, b"iloc")?,
                     ) {
+                        let idat_cs = isobmff_find_box(reader, children_start, meta_end, b"idat")?
+                            .map(|(cs, _)| cs);
                         if let Some(exif_id) =
                             isobmff_find_item_id_by_type(reader, iinf_start, b"Exif")?
                         {
-                            if let Some((offset, length)) =
-                                isobmff_find_item_extent(reader, iloc_start, exif_id)?
+                            if let Some(data) =
+                                isobmff_read_item_data(reader, iloc_start, exif_id, idat_cs)?
                             {
-                                reader.seek(SeekFrom::Start(offset))?;
-                                let mut data = vec![0u8; length as usize];
-                                reader.read_exact(&mut data)?;
                                 if data.len() >= 10 {
-                                    let tiff_off = u32::from_be_bytes([
-                                        data[0], data[1], data[2], data[3],
-                                    ]) as usize;
+                                    let tiff_off =
+                                        u32::from_be_bytes([data[0], data[1], data[2], data[3]])
+                                            as usize;
                                     let start = 4 + tiff_off;
                                     if start < data.len() {
                                         return Self::from_tiff(
@@ -460,8 +448,10 @@ impl ExifContext {
                     // Width and height as 16.16 fixed-point
                     let mut dim_buf = [0u8; 8];
                     reader.read_exact(&mut dim_buf)?;
-                    let width = u32::from_be_bytes([dim_buf[0], dim_buf[1], dim_buf[2], dim_buf[3]]) >> 16;
-                    let height = u32::from_be_bytes([dim_buf[4], dim_buf[5], dim_buf[6], dim_buf[7]]) >> 16;
+                    let width =
+                        u32::from_be_bytes([dim_buf[0], dim_buf[1], dim_buf[2], dim_buf[3]]) >> 16;
+                    let height =
+                        u32::from_be_bytes([dim_buf[4], dim_buf[5], dim_buf[6], dim_buf[7]]) >> 16;
 
                     if width > 0 && height > 0 {
                         let values = HashMap::from([
@@ -1151,7 +1141,7 @@ fn parse_ifd_from_bytes(
 // Canonical implementations live in codec::isobmff; re-export for backward compat.
 
 pub(crate) use crate::codec::isobmff::{
-    isobmff_find_box, isobmff_find_item_extent, isobmff_find_item_id_by_type,
+    isobmff_find_box, isobmff_find_item_id_by_type, isobmff_read_item_data,
 };
 
 /// Parse Sony MakerNotes - starts directly with IFD entry count (no TIFF header)

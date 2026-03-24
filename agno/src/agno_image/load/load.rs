@@ -10,7 +10,7 @@ use crate::{
         load::{load_canon_raw, load_heic, load_mov_thumbnail, load_pdf, load_sony_raw},
     },
     exif::ExifContext,
-    tiff::{detect_raw, RawMaker, TiffDetectResult},
+    tiff::{RawMaker, TiffDetectResult, detect_raw},
 };
 
 pub enum ImageType {
@@ -118,16 +118,7 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         }
         ImageType::SonyRaw(det) => load_sony_raw(det, &mut file, exif),
         ImageType::CanonRaw(det) => load_canon_raw(det, &mut file, exif),
-        ImageType::Heic => {
-            #[cfg(all(feature = "heic-c", not(feature = "heic-experimental-decoder")))]
-            {
-                super::heic_libheif::load_heic_libheif(&mut file, exif)
-            }
-            #[cfg(any(not(feature = "heic-c"), feature = "heic-experimental-decoder"))]
-            {
-                load_heic(&mut file, exif)
-            }
-        }
+        ImageType::Heic => load_heic(&mut file, exif),
         ImageType::QuickTimeMov | ImageType::Mp4 => load_mov_thumbnail(&mut file, exif),
     }?;
 

@@ -1,166 +1,4 @@
-use std::error::Error;
 use std::io::Write;
-
-// ---- Decoding ----
-
-/// Huffman decode table for JPEG decoding.
-/// Uses min/max code ranges per bit length for O(code_length) symbol lookup.
-pub struct HuffmanDecodeTable {
-    /// Minimum code value at each bit length (1-indexed; index 0 is unused).
-    min_code: [i32; 17],
-    /// Maximum code value at each bit length (1-indexed; index 0 is unused).
-    max_code: [i32; 17],
-    /// Index into `values` for the first symbol of each bit length.
-    val_ptr: [usize; 17],
-    /// Symbol values in canonical Huffman order.
-    values: Vec<u8>,
-}
-
-/// Build a Huffman decode table from BITS[16] and VALUES arrays (JPEG Annex C).
-pub fn build_huffman_decode_table(bits: &[u8; 16], values: &[u8]) -> HuffmanDecodeTable {
-    let mut min_code = [-1i32; 17];
-    let mut max_code = [-1i32; 17];
-    let mut val_ptr = [0usize; 17];
-
-    let mut code = 0i32;
-    let mut vi = 0usize;
-
-    for len in 1..=16usize {
-        let count = bits[len - 1] as usize;
-        if count > 0 {
-            val_ptr[len] = vi;
-            min_code[len] = code;
-            code += count as i32;
-            max_code[len] = code - 1;
-            vi += count;
-        }
-        code <<= 1;
-    }
-
-    HuffmanDecodeTable {
-        min_code,
-        max_code,
-        val_ptr,
-        values: values.to_vec(),
-    }
-}
-
-impl HuffmanDecodeTable {
-    /// Decode one Huffman symbol from the bit reader.
-    pub fn decode(&self, reader: &mut JpegBitReader) -> Result<u8, Box<dyn Error>> {
-        let mut code = 0i32;
-        for len in 1..=16usize {
-            code = (code << 1) | reader.read_bit()? as i32;
-            if self.max_code[len] >= 0 && code <= self.max_code[len] {
-                let idx = self.val_ptr[len] + (code - self.min_code[len]) as usize;
-                return Ok(self.values[idx]);
-            }
-        }
-        Err("Invalid Huffman code (no match in 16 bits)".into())
-    }
-}
-
-/// Bit-level reader for JPEG entropy-coded data.
-///
-/// Handles byte stuffing (`0xFF 0x00` -> literal `0xFF`) and
-/// restart markers (`0xFF 0xD0`..`0xFF 0xD7`).
-pub struct JpegBitReader<'a> {
-    data: &'a [u8],
-    pos: usize,
-    bit_buffer: u32,
-    bits_left: u8,
-}
-
-impl<'a> JpegBitReader<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            pos: 0,
-            bit_buffer: 0,
-            bits_left: 0,
-        }
-    }
-
-    /// Read the next byte from the entropy-coded stream, handling byte stuffing.
-    fn next_byte(&mut self) -> Result<u8, Box<dyn Error>> {
-        if self.pos >= self.data.len() {
-            return Err("Unexpected end of JPEG data".into());
-        }
-        let byte = self.data[self.pos];
-        self.pos += 1;
-
-        if byte == 0xFF {
-            if self.pos >= self.data.len() {
-                return Err("Unexpected end of JPEG data after 0xFF".into());
-            }
-            let next = self.data[self.pos];
-            if next == 0x00 {
-                self.pos += 1;
-                Ok(0xFF)
-            } else if (0xD0..=0xD7).contains(&next) {
-                // Restart marker encountered during byte read -- skip it
-                self.pos += 1;
-                self.next_byte()
-            } else {
-                // End of entropy data (likely EOI or next marker)
-                self.pos -= 1; // back up so caller can see the marker
-                Err(format!("Marker 0xFF{:02X} in entropy data", next).into())
-            }
-        } else {
-            Ok(byte)
-        }
-    }
-
-    /// Read a single bit (MSB first).
-    pub fn read_bit(&mut self) -> Result<u8, Box<dyn Error>> {
-        if self.bits_left == 0 {
-            self.bit_buffer = self.next_byte()? as u32;
-            self.bits_left = 8;
-        }
-        self.bits_left -= 1;
-        Ok(((self.bit_buffer >> self.bits_left) & 1) as u8)
-    }
-
-    /// Read `n` bits as a u32 (MSB first).
-    pub fn read_bits(&mut self, n: u8) -> Result<u32, Box<dyn Error>> {
-        let mut val = 0u32;
-        for _ in 0..n {
-            val = (val << 1) | self.read_bit()? as u32;
-        }
-        Ok(val)
-    }
-
-    /// Discard any remaining bits in the current byte (align to byte boundary).
-    pub fn align(&mut self) {
-        self.bits_left = 0;
-    }
-
-    /// Return the current byte position within the data slice.
-    /// This is the number of bytes consumed from entropy-coded data,
-    /// used by the progressive multi-scan loop to find the next marker.
-    pub fn position(&self) -> usize {
-        self.pos
-    }
-
-    /// Advance past the next restart marker in the stream.
-    /// Returns the restart marker index (0-7), or an error if none found.
-    pub fn skip_to_restart(&mut self) -> Result<u8, Box<dyn Error>> {
-        self.align();
-        while self.pos + 1 < self.data.len() {
-            if self.data[self.pos] == 0xFF {
-                let marker = self.data[self.pos + 1];
-                if (0xD0..=0xD7).contains(&marker) {
-                    self.pos += 2;
-                    return Ok(marker - 0xD0);
-                }
-            }
-            self.pos += 1;
-        }
-        Err("No restart marker found".into())
-    }
-}
-
-// ---- Encoding ----
 
 /// Precomputed Huffman code/size lookup table for JPEG encoding.
 pub struct HuffmanLut {
@@ -195,7 +33,11 @@ pub fn build_huffman_lut(bits: &[u8; 16], values: &[u8]) -> HuffmanLut {
 
 /// Number of bits needed to represent a value (0 -> 0, 1 -> 1, 2..3 -> 2, etc.)
 fn bit_length(v: u16) -> u8 {
-    if v == 0 { 0 } else { 16 - v.leading_zeros() as u8 }
+    if v == 0 {
+        0
+    } else {
+        16 - v.leading_zeros() as u8
+    }
 }
 
 /// Bit-level writer with JPEG byte stuffing (0xFF -> 0xFF 0x00).
@@ -249,7 +91,10 @@ impl<W: Write> JpegBitWriter<W> {
         let category = bit_length(abs_val);
 
         // Huffman code for the category
-        self.emit_bits(table.codes[category as usize], table.sizes[category as usize])?;
+        self.emit_bits(
+            table.codes[category as usize],
+            table.sizes[category as usize],
+        )?;
 
         // Actual value bits (ones-complement for negatives)
         if category > 0 {
@@ -265,7 +110,11 @@ impl<W: Write> JpegBitWriter<W> {
     }
 
     /// Encode 63 AC coefficients (zigzag-ordered, indices 1..63).
-    pub fn write_ac_block(&mut self, coeffs: &[i16; 63], table: &HuffmanLut) -> std::io::Result<()> {
+    pub fn write_ac_block(
+        &mut self,
+        coeffs: &[i16; 63],
+        table: &HuffmanLut,
+    ) -> std::io::Result<()> {
         let mut zero_run: u8 = 0;
 
         for i in 0..63 {
@@ -314,5 +163,4 @@ impl<W: Write> JpegBitWriter<W> {
         }
         self.writer.flush()
     }
-
 }

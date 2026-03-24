@@ -33,7 +33,14 @@ fn gpu_resize_produces_correct_dimensions() {
                 (target_w * target_h * 3) as usize,
                 "GPU resize output size wrong"
             );
-            eprintln!("GPU resize: {}x{} → {}x{} ({} bytes)", w, h, target_w, target_h, result.len());
+            eprintln!(
+                "GPU resize: {}x{} → {}x{} ({} bytes)",
+                w,
+                h,
+                target_w,
+                target_h,
+                result.len()
+            );
         } else {
             eprintln!("GPU unavailable — skipping GPU resize assertion");
         }
@@ -93,8 +100,11 @@ fn gpu_resize_returns_none_for_oversized_input() {
             w as u64 * 4,
             max_binding
         );
-        eprintln!("gpu_resize_returns_none_for_oversized_input: correctly returned None for {} MB input (limit {} MB)",
-            w as u64 * 4 / 1024 / 1024, max_binding / 1024 / 1024);
+        eprintln!(
+            "gpu_resize_returns_none_for_oversized_input: correctly returned None for {} MB input (limit {} MB)",
+            w as u64 * 4 / 1024 / 1024,
+            max_binding / 1024 / 1024
+        );
     }
 }
 
@@ -109,11 +119,18 @@ fn resize_timing_comparison() {
     let cpu_start = std::time::Instant::now();
     for _ in 0..iterations {
         let _ = agno::agno_image::ops::resize_lanczos3(
-            &rgb, w as usize, h as usize, target_w as usize, target_h as usize,
+            &rgb,
+            w as usize,
+            h as usize,
+            target_w as usize,
+            target_h as usize,
         );
     }
     let cpu_ms = cpu_start.elapsed().as_millis() / iterations;
-    eprintln!("CPU Lanczos3: ~{}ms per resize ({}x{} → {}x{})", cpu_ms, w, h, target_w, target_h);
+    eprintln!(
+        "CPU Lanczos3: ~{}ms per resize ({}x{} → {}x{})",
+        cpu_ms, w, h, target_w, target_h
+    );
 
     // GPU timing
     #[cfg(feature = "gpu")]
@@ -127,7 +144,10 @@ fn resize_timing_comparison() {
         }
         if gpu_succeeded {
             let gpu_ms = gpu_start.elapsed().as_millis() / iterations;
-            eprintln!("GPU Lanczos3: ~{}ms per resize ({}x{} → {}x{})", gpu_ms, w, h, target_w, target_h);
+            eprintln!(
+                "GPU Lanczos3: ~{}ms per resize ({}x{} → {}x{})",
+                gpu_ms, w, h, target_w, target_h
+            );
         } else {
             eprintln!("GPU unavailable — no GPU timing");
         }

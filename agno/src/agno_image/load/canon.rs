@@ -14,9 +14,7 @@ use crate::{
     demosaic::{BayerPattern, demosaic_bilinear_to_rgb8},
     exif::{
         ExifContext, ExifValue,
-        spec::{
-            AS_SHOT_NEUTRAL, BLACK_LEVEL_DNG, COLOR_MATRIX1, COLOR_MATRIX2, WHITE_LEVEL,
-        },
+        spec::{AS_SHOT_NEUTRAL, BLACK_LEVEL_DNG, COLOR_MATRIX1, COLOR_MATRIX2, WHITE_LEVEL},
     },
     sony_decoder::{DecodeError, Dimensions, read_concatenated_strips},
     tiff::{CanonVariant, TiffDetectResult},
@@ -36,11 +34,7 @@ pub fn load_canon_raw(
     };
 
     // Read strips into memory
-    let buf = read_concatenated_strips(
-        file,
-        &det.raw.strip_offsets,
-        &det.raw.strip_byte_counts,
-    )?;
+    let buf = read_concatenated_strips(file, &det.raw.strip_offsets, &det.raw.strip_byte_counts)?;
 
     let mut cursor = Cursor::new(buf);
 

@@ -6,7 +6,7 @@ pub mod logging;
 
 mod canon_decoder;
 mod demosaic;
-mod exif;
+pub mod exif;
 mod sony_decoder;
 mod sony_jpeg;
 mod tiff;

@@ -61,8 +61,7 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
         let has_left = mb_col > 0;
 
         // Gather Y prediction context.
-        let (y_above, y_left, y_tl) =
-            gather_borders_16(&y_plane, y_stride, mb_row, mb_col);
+        let (y_above, y_left, y_tl) = gather_borders_16(&y_plane, y_stride, mb_row, mb_col);
         let y_pred = predict_16x16(
             &y_above,
             &y_left,
@@ -73,10 +72,8 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
         );
 
         // Gather UV prediction context.
-        let (u_above, u_left, u_tl) =
-            gather_borders_8(&u_plane, uv_stride, mb_row, mb_col);
-        let (v_above, v_left, v_tl) =
-            gather_borders_8(&v_plane, uv_stride, mb_row, mb_col);
+        let (u_above, u_left, u_tl) = gather_borders_8(&u_plane, uv_stride, mb_row, mb_col);
+        let (v_above, v_left, v_tl) = gather_borders_8(&v_plane, uv_stride, mb_row, mb_col);
         let u_pred = predict_chroma_8x8(
             &u_above,
             &u_left,
@@ -111,7 +108,8 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
         // Decode 25 coefficient blocks using VP8 token tree with context tracking.
         // Y2 block (type=1, starts at scan position 0)
         let y2_init = (top_complexity[mb_col][0] + left_complexity[0]).min(2) as usize;
-        let (y2_block, y2_has) = decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 1, 0, y2_init);
+        let (y2_block, y2_has) =
+            decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 1, 0, y2_init);
         let y2_c = u8::from(y2_has);
         left_complexity[0] = y2_c;
         top_complexity[mb_col][0] = y2_c;
@@ -123,7 +121,8 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
             for x in 0..4usize {
                 let blk_idx = y * 4 + x;
                 let init = (top_complexity[mb_col][x + 1] + row_left).min(2) as usize;
-                let (blk, has) = decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 0, 1, init);
+                let (blk, has) =
+                    decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 0, 1, init);
                 y_blocks[blk_idx] = blk;
                 let c = u8::from(has);
                 row_left = c;
@@ -139,7 +138,8 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
             for x in 0..2usize {
                 let blk_idx = y * 2 + x;
                 let init = (top_complexity[mb_col][x + 5] + row_left).min(2) as usize;
-                let (blk, has) = decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 2, 0, init);
+                let (blk, has) =
+                    decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 2, 0, init);
                 u_blocks[blk_idx] = blk;
                 let c = u8::from(has);
                 row_left = c;
@@ -155,7 +155,8 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
             for x in 0..2usize {
                 let blk_idx = y * 2 + x;
                 let init = (top_complexity[mb_col][x + 7] + row_left).min(2) as usize;
-                let (blk, has) = decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 2, 0, init);
+                let (blk, has) =
+                    decode_coefficient_block_vp8(&mut token_dec, &coeff_probs, 2, 0, init);
                 v_blocks[blk_idx] = blk;
                 let c = u8::from(has);
                 row_left = c;
@@ -238,8 +239,7 @@ fn parse_riff_webp(data: &[u8]) -> Result<&[u8], Box<dyn Error>> {
     if &data[12..16] != b"VP8 " {
         return Err("only lossy VP8 WebP is supported".into());
     }
-    let chunk_size =
-        u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
+    let chunk_size = u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
     let end = (20 + chunk_size).min(data.len());
     Ok(&data[20..end])
 }
@@ -263,9 +263,7 @@ fn parse_frame_header(
         return Err("VP8 data too short".into());
     }
 
-    let tag = u32::from(vp8[0])
-        | (u32::from(vp8[1]) << 8)
-        | (u32::from(vp8[2]) << 16);
+    let tag = u32::from(vp8[0]) | (u32::from(vp8[1]) << 8) | (u32::from(vp8[2]) << 16);
     let is_keyframe = (tag & 1) == 0;
     if !is_keyframe {
         return Err("not a VP8 key frame".into());
@@ -953,10 +951,7 @@ mod tests {
         assert_eq!(dh, h as u32);
         assert_eq!(decoded.len(), w * h * 3);
         let p = psnr(&rgb, &decoded);
-        assert!(
-            p > 15.0,
-            "PSNR {p:.1} dB too low for solid-color roundtrip"
-        );
+        assert!(p > 15.0, "PSNR {p:.1} dB too low for solid-color roundtrip");
     }
 
     #[test]
@@ -976,10 +971,7 @@ mod tests {
         assert_eq!(dw, w as u32);
         assert_eq!(dh, h as u32);
         let p = psnr(&rgb, &decoded);
-        assert!(
-            p > 10.0,
-            "PSNR {p:.1} dB too low for gradient roundtrip"
-        );
+        assert!(p > 10.0, "PSNR {p:.1} dB too low for gradient roundtrip");
     }
 
     #[test]

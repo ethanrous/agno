@@ -1,14 +1,14 @@
 mod immediate;
 mod multithreaded;
 
-use super::decoder::{choose_color_convert_func, ColorTransform};
+use super::decoder::{ColorTransform, choose_color_convert_func};
 use super::error::Result;
 use super::parser::{Component, Dimensions};
 use super::upsampler::Upsampler;
 
+use core::cell::RefCell;
 use std::sync::Arc;
 use std::vec::Vec;
-use core::cell::RefCell;
 
 pub struct RowData {
     pub index: usize,

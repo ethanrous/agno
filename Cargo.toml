@@ -1,3 +1,4 @@
 [workspace]
 members = ["agno", "agno-gpu-kernels", "agno-gpu-shared"]
 resolver = "2"
+

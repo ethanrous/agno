@@ -4,150 +4,58 @@
 /// The deblocking filter operates on 8x8 block grid boundaries, filtering
 /// vertical edges first, then horizontal edges. SAO is applied per-CTU
 /// after deblocking to reduce banding and ringing artifacts.
-
 use super::params::{Pps, Sps};
 use super::picture::{Picture, SaoParams};
 
 const BETA_TABLE: [i32; 52] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-    17, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60,
-    62, 64,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+    20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, 64,
 ];
 
 const TC_TABLE: [i32; 54] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2,
-    2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 10, 11, 13, 14, 16, 18, 20, 22, 24,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3,
+    3, 3, 3, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 10, 11, 13, 14, 16, 18, 20, 22, 24,
 ];
 
 fn clip3(lo: i32, hi: i32, val: i32) -> i32 {
     val.clamp(lo, hi)
 }
 
-/// Apply the HEVC deblocking filter to the picture.
-///
-/// Deblock edges within and around a single CTU at (ctu_x, ctu_y).
-/// Called after each CTU is decoded so subsequent CTUs use deblocked references.
-pub fn deblock_ctu(pic: &mut Picture, sps: &Sps, pps: &Pps, ctu_x: u32, ctu_y: u32, ctb_size: u32) {
-    let bit_depth_y = sps.bit_depth_luma as i32;
-    let bit_depth_c = sps.bit_depth_chroma as i32;
-    let beta_offset = pps.pps_beta_offset_div2;
-    let tc_offset = pps.pps_tc_offset_div2;
-    let width = pic.width;
-    let height = pic.height;
-
-    let x_start = ctu_x;
-    let x_end = (ctu_x + ctb_size).min(width);
-    let y_start = ctu_y;
-    let y_end = (ctu_y + ctb_size).min(height);
-
-    // Vertical edges within this CTU (and the left boundary shared with previous CTU)
-    let vx_start = if ctu_x == 0 { 8 } else { ctu_x };
-    let mut x = vx_start;
-    while x < x_end && x % 8 == 0 || x == vx_start {
-        if x % 8 != 0 { x = ((x / 8) + 1) * 8; continue; }
-        let mut y = y_start;
-        while y < y_end {
-            let bs = 2i32;
-            let qp_left = pic.qp_y_at(x - 1, y);
-            let qp_right = pic.qp_y_at(x, y);
-            let qp_avg = (qp_left + qp_right + 1) >> 1;
-            let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
-            let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
-            let beta = BETA_TABLE[beta_idx as usize];
-            let tc = TC_TABLE[tc_idx as usize];
-            if tc > 0 { deblock_luma_edge_v(pic, x, y, beta, tc, bit_depth_y); }
-            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (height + 1) / 2 {
-                let tc_c = TC_TABLE[clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1)) as usize];
-                if tc_c > 0 { deblock_chroma_edge_v(pic, x, y, tc_c, bit_depth_c); }
-            }
-            y += 4;
+/// Derive boundary strength for all-intra content (H.265 8.7.2.5).
+/// Returns 2 at CU boundaries (both sides intra), 0 within a CU.
+/// If cu_depth is uninitialized (None), conservatively returns 2 to preserve
+/// deblocking behavior for pictures without CU depth tracking.
+fn derive_bs_intra(pic: &Picture, x: u32, y: u32, vertical: bool, ctb_log2: u32) -> i32 {
+    if vertical {
+        if x == 0 {
+            return 0;
         }
-        x += 8;
-    }
-
-    // Horizontal edges within this CTU (and the top boundary shared with previous row)
-    let hy_start = if ctu_y == 0 { 8 } else { ctu_y };
-    let mut y = hy_start;
-    while y < y_end {
-        if y % 8 != 0 { y = ((y / 8) + 1) * 8; continue; }
-        let mut x = x_start;
-        while x < x_end {
-            let bs = 2i32;
-            let qp_top = pic.qp_y_at(x, y.saturating_sub(1));
-            let qp_bot = pic.qp_y_at(x, y);
-            let qp_avg = (qp_top + qp_bot + 1) >> 1;
-            let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
-            let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
-            let beta = BETA_TABLE[beta_idx as usize];
-            let tc = TC_TABLE[tc_idx as usize];
-            if tc > 0 { deblock_luma_edge_h(pic, x, y, beta, tc, bit_depth_y); }
-            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (height + 1) / 2 {
-                let tc_c = TC_TABLE[clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1)) as usize];
-                if tc_c > 0 { deblock_chroma_edge_h(pic, x, y, tc_c, bit_depth_c); }
-            }
-            x += 4;
+        let dl = match pic.cu_depth_at(x - 1, y) {
+            Some(d) => d as u32,
+            None => return 2,
+        };
+        let dr = match pic.cu_depth_at(x, y) {
+            Some(d) => d as u32,
+            None => return 2,
+        };
+        let sl = 1u32 << (ctb_log2 - dl.min(ctb_log2));
+        let sr = 1u32 << (ctb_log2 - dr.min(ctb_log2));
+        if x % sl == 0 || x % sr == 0 { 2 } else { 0 }
+    } else {
+        if y == 0 {
+            return 0;
         }
-        y += 8;
-    }
-}
-
-/// Deblock a single CTU row (y_start..y_end) so that subsequent rows'
-/// intra prediction uses deblocked reference samples (in-loop filtering).
-pub fn deblock_ctu_row(pic: &mut Picture, sps: &Sps, pps: &Pps, y_start: u32, y_end: u32) {
-    let bit_depth_y = sps.bit_depth_luma as i32;
-    let bit_depth_c = sps.bit_depth_chroma as i32;
-    let beta_offset = pps.pps_beta_offset_div2;
-    let tc_offset = pps.pps_tc_offset_div2;
-    let width = pic.width;
-
-    // Vertical edges within this row
-    let mut x = 8u32;
-    while x < width {
-        let mut y = y_start;
-        while y < y_end {
-            let bs = 2i32;
-            let qp_left = pic.qp_y_at(x - 1, y);
-            let qp_right = pic.qp_y_at(x, y);
-            let qp_avg = (qp_left + qp_right + 1) >> 1;
-
-            let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
-            let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
-            let beta = BETA_TABLE[beta_idx as usize];
-            let tc = TC_TABLE[tc_idx as usize];
-            if tc > 0 { deblock_luma_edge_v(pic, x, y, beta, tc, bit_depth_y); }
-
-            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (pic.height + 1) / 2 {
-                let tc_c = TC_TABLE[clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1)) as usize];
-                if tc_c > 0 { deblock_chroma_edge_v(pic, x, y, tc_c, bit_depth_c); }
-            }
-            y += 4;
-        }
-        x += 8;
-    }
-
-    // Horizontal edges within this row (skip y_start if it's row 0)
-    let mut y = if y_start == 0 { 8 } else { y_start };
-    while y < y_end {
-        let mut x = 0u32;
-        while x < width {
-            let bs = 2i32;
-            let qp_top = pic.qp_y_at(x, y.saturating_sub(1));
-            let qp_bot = pic.qp_y_at(x, y);
-            let qp_avg = (qp_top + qp_bot + 1) >> 1;
-
-            let beta_idx = clip3(0, 51, qp_avg + (beta_offset << 1));
-            let tc_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
-            let beta = BETA_TABLE[beta_idx as usize];
-            let tc = TC_TABLE[tc_idx as usize];
-            if tc > 0 { deblock_luma_edge_h(pic, x, y, beta, tc, bit_depth_y); }
-
-            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (pic.height + 1) / 2 {
-                let tc_c = TC_TABLE[clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1)) as usize];
-                if tc_c > 0 { deblock_chroma_edge_h(pic, x, y, tc_c, bit_depth_c); }
-            }
-            x += 4;
-        }
-        y += 8;
+        let dt = match pic.cu_depth_at(x, y - 1) {
+            Some(d) => d as u32,
+            None => return 2,
+        };
+        let db = match pic.cu_depth_at(x, y) {
+            Some(d) => d as u32,
+            None => return 2,
+        };
+        let st = 1u32 << (ctb_log2 - dt.min(ctb_log2));
+        let sb = 1u32 << (ctb_log2 - db.min(ctb_log2));
+        if y % st == 0 || y % sb == 0 { 2 } else { 0 }
     }
 }
 
@@ -163,11 +71,13 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
     let height = pic.height;
 
     // Vertical edges (filter columns)
+    let ctb_log2 = sps.ctb_log2_size();
     let mut x = 8u32;
     while x < width {
         let mut y = 0u32;
         while y < height {
-            let bs = 2i32; // All-intra: Bs = 2
+            let bs = derive_bs_intra(pic, x, y, true, ctb_log2);
+            if bs == 0 { y += 4; continue; }
 
             // H.265 8.7.2.4: QP from each side of the vertical edge
             let qp_left = pic.qp_y_at(x - 1, y);
@@ -203,7 +113,8 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
     while y < height {
         let mut x = 0u32;
         while x < width {
-            let bs = 2i32;
+            let bs = derive_bs_intra(pic, x, y, false, ctb_log2);
+            if bs == 0 { x += 4; continue; }
 
             // H.265 8.7.2.4: QP from each side of the horizontal edge
             let qp_top = pic.qp_y_at(x, y - 1);
@@ -233,60 +144,82 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
     }
 }
 
-/// Filter a 4-row vertical luma edge. Applies strong or weak filter per spec.
-fn deblock_luma_edge_v(
-    pic: &mut Picture,
-    edge_x: u32,
-    y: u32,
-    beta: i32,
-    tc: i32,
-    bit_depth: i32,
-) {
+/// Read 8 samples (p3,p2,p1,p0,q0,q1,q2,q3) across a vertical edge for one line.
+fn read_v_line(pic: &Picture, edge_x: u32, line_y: u32) -> [i32; 8] {
+    [
+        pic.y_at(edge_x - 4, line_y) as i32, // p3
+        pic.y_at(edge_x - 3, line_y) as i32, // p2
+        pic.y_at(edge_x - 2, line_y) as i32, // p1
+        pic.y_at(edge_x - 1, line_y) as i32, // p0
+        pic.y_at(edge_x, line_y) as i32,     // q0
+        pic.y_at(edge_x + 1, line_y) as i32, // q1
+        pic.y_at(edge_x + 2, line_y) as i32, // q2
+        pic.y_at(edge_x + 3, line_y) as i32, // q3
+    ]
+}
+
+/// Filter a 4-row vertical luma edge per H.265 8.7.2.5.
+/// Lines 0 and 3 determine the filtering decision for all 4 lines.
+fn deblock_luma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, beta: i32, tc: i32, bit_depth: i32) {
     let max_val = (1 << bit_depth) - 1;
+
+    if edge_x < 4 || edge_x + 3 >= pic.width {
+        return;
+    }
+    if y + 3 >= pic.height {
+        return;
+    }
+
+    let s0 = read_v_line(pic, edge_x, y);
+    let s3 = read_v_line(pic, edge_x, y + 3);
+
+    // dp/dq for lines 0 and 3 (H.265 8.7.2.5.3)
+    let dp0 = (s0[1] - 2 * s0[2] + s0[3]).abs(); // |p2 - 2*p1 + p0|
+    let dq0 = (s0[6] - 2 * s0[5] + s0[4]).abs(); // |q2 - 2*q1 + q0|
+    let dp3 = (s3[1] - 2 * s3[2] + s3[3]).abs();
+    let dq3 = (s3[6] - 2 * s3[5] + s3[4]).abs();
+
+    let d = dp0 + dq0 + dp3 + dq3;
+    if d >= beta {
+        return;
+    }
+
+    // Strong filter decision using dSam0 and dSam3 (H.265 8.7.2.5.4)
+    let tc5 = (5 * tc + 1) >> 1;
+    let beta_2 = beta >> 2;
+    let beta_3 = beta >> 3;
+
+    let d_sam0 = 2 * (dp0 + dq0) < beta_2
+        && (s0[0] - s0[3]).abs() + (s0[4] - s0[7]).abs() < beta_3
+        && (s0[3] - s0[4]).abs() < tc5;
+    let d_sam3 = 2 * (dp3 + dq3) < beta_2
+        && (s3[0] - s3[3]).abs() + (s3[4] - s3[7]).abs() < beta_3
+        && (s3[3] - s3[4]).abs() < tc5;
+
+    let use_strong = d_sam0 && d_sam3;
+
+    // Weak filter secondary thresholds (H.265 8.7.2.5.5)
+    let dp = dp0 + dp3;
+    let dq = dq0 + dq3;
+    let side_thresh = (beta + (beta >> 1)) >> 3;
+    let d_ep = dp < side_thresh;
+    let d_eq = dq < side_thresh;
+
+    // Apply to all 4 lines
     for dy in 0..4u32 {
         let py = y + dy;
-        if py >= pic.height {
-            break;
-        }
-        if edge_x < 4 || edge_x + 3 >= pic.width {
-            continue;
-        }
-
-        let p0 = pic.y_at(edge_x - 1, py) as i32;
-        let p1 = pic.y_at(edge_x - 2, py) as i32;
-        let p2 = pic.y_at(edge_x - 3, py) as i32;
-        let p3 = pic.y_at(edge_x - 4, py) as i32;
-        let q0 = pic.y_at(edge_x, py) as i32;
-        let q1 = pic.y_at(edge_x + 1, py) as i32;
-        let q2 = pic.y_at(edge_x + 2, py) as i32;
-        let q3 = pic.y_at(edge_x + 3, py) as i32;
-
-        let dp = (p2 - 2 * p1 + p0).abs();
-        let dq = (q2 - 2 * q1 + q0).abs();
-        let d = dp + dq;
-
-        if d >= beta {
-            continue;
-        }
-
-        let strong_thresh = (beta + (beta >> 1)) >> 3;
-        let use_strong = d < (beta >> 2)
-            && (p0 - q0).abs() < ((5 * tc + 1) >> 1)
-            && dp < strong_thresh
-            && dq < strong_thresh;
+        let s = read_v_line(pic, edge_x, py);
+        let (p3, p2, p1, p0, q0, q1, q2, q3) =
+            (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 
         if use_strong {
             let tc2 = 2 * tc;
-            let p0f =
-                clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
+            let p0f = clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
             let p1f = clip3(p1 - tc2, p1 + tc2, (p2 + p1 + p0 + q0 + 2) >> 2);
-            let p2f =
-                clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
-            let q0f =
-                clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
+            let p2f = clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
+            let q0f = clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
             let q1f = clip3(q1 - tc2, q1 + tc2, (q2 + q1 + q0 + p0 + 2) >> 2);
-            let q2f =
-                clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
+            let q2f = clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
             pic.set_y(edge_x - 3, py, clip3(0, max_val, p2f) as i16);
             pic.set_y(edge_x - 2, py, clip3(0, max_val, p1f) as i16);
             pic.set_y(edge_x - 1, py, clip3(0, max_val, p0f) as i16);
@@ -294,7 +227,6 @@ fn deblock_luma_edge_v(
             pic.set_y(edge_x + 1, py, clip3(0, max_val, q1f) as i16);
             pic.set_y(edge_x + 2, py, clip3(0, max_val, q2f) as i16);
         } else {
-            // Weak filter
             let delta = (9 * (q0 - p0) - 3 * (q1 - p1) + 8) >> 4;
             if delta.abs() >= 10 * tc {
                 continue;
@@ -303,78 +235,95 @@ fn deblock_luma_edge_v(
             pic.set_y(edge_x - 1, py, clip3(0, max_val, p0 + delta_c) as i16);
             pic.set_y(edge_x, py, clip3(0, max_val, q0 - delta_c) as i16);
 
-            // Secondary p1/q1 filtering
             let tc_half = tc >> 1;
-            let dp1 = clip3(
-                -tc_half,
-                tc_half,
-                ((p2 + p0 + 1) >> 1) - p1 + delta_c / 2,
-            );
-            let dq1 = clip3(
-                -tc_half,
-                tc_half,
-                ((q2 + q0 + 1) >> 1) - q1 - delta_c / 2,
-            );
-            pic.set_y(edge_x - 2, py, clip3(0, max_val, p1 + dp1) as i16);
-            pic.set_y(edge_x + 1, py, clip3(0, max_val, q1 + dq1) as i16);
+            if d_ep {
+                let dp1 = clip3(-tc_half, tc_half, ((p2 + p0 + 1) >> 1) - p1 + delta_c / 2);
+                pic.set_y(edge_x - 2, py, clip3(0, max_val, p1 + dp1) as i16);
+            }
+            if d_eq {
+                let dq1 = clip3(-tc_half, tc_half, ((q2 + q0 + 1) >> 1) - q1 - delta_c / 2);
+                pic.set_y(edge_x + 1, py, clip3(0, max_val, q1 + dq1) as i16);
+            }
         }
     }
 }
 
-/// Filter a 4-column horizontal luma edge. Applies strong or weak filter per spec.
-fn deblock_luma_edge_h(
-    pic: &mut Picture,
-    x: u32,
-    edge_y: u32,
-    beta: i32,
-    tc: i32,
-    bit_depth: i32,
-) {
+/// Read 8 samples (p3,p2,p1,p0,q0,q1,q2,q3) across a horizontal edge for one column.
+fn read_h_col(pic: &Picture, col_x: u32, edge_y: u32) -> [i32; 8] {
+    [
+        pic.y_at(col_x, edge_y - 4) as i32, // p3
+        pic.y_at(col_x, edge_y - 3) as i32, // p2
+        pic.y_at(col_x, edge_y - 2) as i32, // p1
+        pic.y_at(col_x, edge_y - 1) as i32, // p0
+        pic.y_at(col_x, edge_y) as i32,     // q0
+        pic.y_at(col_x, edge_y + 1) as i32, // q1
+        pic.y_at(col_x, edge_y + 2) as i32, // q2
+        pic.y_at(col_x, edge_y + 3) as i32, // q3
+    ]
+}
+
+/// Filter a 4-column horizontal luma edge per H.265 8.7.2.5.
+/// Columns 0 and 3 determine the filtering decision for all 4 columns.
+fn deblock_luma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, beta: i32, tc: i32, bit_depth: i32) {
     let max_val = (1 << bit_depth) - 1;
+
+    if edge_y < 4 || edge_y + 3 >= pic.height {
+        return;
+    }
+    if x + 3 >= pic.width {
+        return;
+    }
+
+    let s0 = read_h_col(pic, x, edge_y);
+    let s3 = read_h_col(pic, x + 3, edge_y);
+
+    // dp/dq for columns 0 and 3 (H.265 8.7.2.5.3)
+    let dp0 = (s0[1] - 2 * s0[2] + s0[3]).abs(); // |p2 - 2*p1 + p0|
+    let dq0 = (s0[6] - 2 * s0[5] + s0[4]).abs(); // |q2 - 2*q1 + q0|
+    let dp3 = (s3[1] - 2 * s3[2] + s3[3]).abs();
+    let dq3 = (s3[6] - 2 * s3[5] + s3[4]).abs();
+
+    let d = dp0 + dq0 + dp3 + dq3;
+    if d >= beta {
+        return;
+    }
+
+    // Strong filter decision using dSam0 and dSam3 (H.265 8.7.2.5.4)
+    let tc5 = (5 * tc + 1) >> 1;
+    let beta_2 = beta >> 2;
+    let beta_3 = beta >> 3;
+
+    let d_sam0 = 2 * (dp0 + dq0) < beta_2
+        && (s0[0] - s0[3]).abs() + (s0[4] - s0[7]).abs() < beta_3
+        && (s0[3] - s0[4]).abs() < tc5;
+    let d_sam3 = 2 * (dp3 + dq3) < beta_2
+        && (s3[0] - s3[3]).abs() + (s3[4] - s3[7]).abs() < beta_3
+        && (s3[3] - s3[4]).abs() < tc5;
+
+    let use_strong = d_sam0 && d_sam3;
+
+    // Weak filter secondary thresholds (H.265 8.7.2.5.5)
+    let dp = dp0 + dp3;
+    let dq = dq0 + dq3;
+    let side_thresh = (beta + (beta >> 1)) >> 3;
+    let d_ep = dp < side_thresh;
+    let d_eq = dq < side_thresh;
+
+    // Apply to all 4 columns
     for dx in 0..4u32 {
         let px = x + dx;
-        if px >= pic.width {
-            break;
-        }
-        if edge_y < 4 || edge_y + 3 >= pic.height {
-            continue;
-        }
-
-        let p0 = pic.y_at(px, edge_y - 1) as i32;
-        let p1 = pic.y_at(px, edge_y - 2) as i32;
-        let p2 = pic.y_at(px, edge_y - 3) as i32;
-        let p3 = pic.y_at(px, edge_y - 4) as i32;
-        let q0 = pic.y_at(px, edge_y) as i32;
-        let q1 = pic.y_at(px, edge_y + 1) as i32;
-        let q2 = pic.y_at(px, edge_y + 2) as i32;
-        let q3 = pic.y_at(px, edge_y + 3) as i32;
-
-        let dp = (p2 - 2 * p1 + p0).abs();
-        let dq = (q2 - 2 * q1 + q0).abs();
-        let d = dp + dq;
-
-        if d >= beta {
-            continue;
-        }
-
-        let strong_thresh = (beta + (beta >> 1)) >> 3;
-        let use_strong = d < (beta >> 2)
-            && (p0 - q0).abs() < ((5 * tc + 1) >> 1)
-            && dp < strong_thresh
-            && dq < strong_thresh;
+        let s = read_h_col(pic, px, edge_y);
+        let (p3, p2, p1, p0, q0, q1, q2, q3) =
+            (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 
         if use_strong {
             let tc2 = 2 * tc;
-            let p0f =
-                clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
+            let p0f = clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
             let p1f = clip3(p1 - tc2, p1 + tc2, (p2 + p1 + p0 + q0 + 2) >> 2);
-            let p2f =
-                clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
-            let q0f =
-                clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
+            let p2f = clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
+            let q0f = clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
             let q1f = clip3(q1 - tc2, q1 + tc2, (q2 + q1 + q0 + p0 + 2) >> 2);
-            let q2f =
-                clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
+            let q2f = clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
             pic.set_y(px, edge_y - 3, clip3(0, max_val, p2f) as i16);
             pic.set_y(px, edge_y - 2, clip3(0, max_val, p1f) as i16);
             pic.set_y(px, edge_y - 1, clip3(0, max_val, p0f) as i16);
@@ -391,18 +340,14 @@ fn deblock_luma_edge_h(
             pic.set_y(px, edge_y, clip3(0, max_val, q0 - delta_c) as i16);
 
             let tc_half = tc >> 1;
-            let dp1 = clip3(
-                -tc_half,
-                tc_half,
-                ((p2 + p0 + 1) >> 1) - p1 + delta_c / 2,
-            );
-            let dq1 = clip3(
-                -tc_half,
-                tc_half,
-                ((q2 + q0 + 1) >> 1) - q1 - delta_c / 2,
-            );
-            pic.set_y(px, edge_y - 2, clip3(0, max_val, p1 + dp1) as i16);
-            pic.set_y(px, edge_y + 1, clip3(0, max_val, q1 + dq1) as i16);
+            if d_ep {
+                let dp1 = clip3(-tc_half, tc_half, ((p2 + p0 + 1) >> 1) - p1 + delta_c / 2);
+                pic.set_y(px, edge_y - 2, clip3(0, max_val, p1 + dp1) as i16);
+            }
+            if d_eq {
+                let dq1 = clip3(-tc_half, tc_half, ((q2 + q0 + 1) >> 1) - q1 - delta_c / 2);
+                pic.set_y(px, edge_y + 1, clip3(0, max_val, q1 + dq1) as i16);
+            }
         }
     }
 }
@@ -422,18 +367,34 @@ fn deblock_chroma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, tc: i32, bit_de
 
         // Cb
         let p0 = pic.cb_at(cx - 1, c_y) as i32;
-        let p1 = if cx >= 2 { pic.cb_at(cx - 2, c_y) as i32 } else { p0 };
+        let p1 = if cx >= 2 {
+            pic.cb_at(cx - 2, c_y) as i32
+        } else {
+            p0
+        };
         let q0 = pic.cb_at(cx, c_y) as i32;
-        let q1 = if cx + 1 < cw { pic.cb_at(cx + 1, c_y) as i32 } else { q0 };
+        let q1 = if cx + 1 < cw {
+            pic.cb_at(cx + 1, c_y) as i32
+        } else {
+            q0
+        };
         let delta = clip3(-tc, tc, ((q0 - p0) * 4 + p1 - q1 + 4) >> 3);
         pic.set_cb(cx - 1, c_y, clip3(0, max_val, p0 + delta) as i16);
         pic.set_cb(cx, c_y, clip3(0, max_val, q0 - delta) as i16);
 
         // Cr
         let p0 = pic.cr_at(cx - 1, c_y) as i32;
-        let p1 = if cx >= 2 { pic.cr_at(cx - 2, c_y) as i32 } else { p0 };
+        let p1 = if cx >= 2 {
+            pic.cr_at(cx - 2, c_y) as i32
+        } else {
+            p0
+        };
         let q0 = pic.cr_at(cx, c_y) as i32;
-        let q1 = if cx + 1 < cw { pic.cr_at(cx + 1, c_y) as i32 } else { q0 };
+        let q1 = if cx + 1 < cw {
+            pic.cr_at(cx + 1, c_y) as i32
+        } else {
+            q0
+        };
         let delta = clip3(-tc, tc, ((q0 - p0) * 4 + p1 - q1 + 4) >> 3);
         pic.set_cr(cx - 1, c_y, clip3(0, max_val, p0 + delta) as i16);
         pic.set_cr(cx, c_y, clip3(0, max_val, q0 - delta) as i16);
@@ -455,18 +416,34 @@ fn deblock_chroma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, tc: i32, bit_de
 
         // Cb
         let p0 = pic.cb_at(c_x, cy - 1) as i32;
-        let p1 = if cy >= 2 { pic.cb_at(c_x, cy - 2) as i32 } else { p0 };
+        let p1 = if cy >= 2 {
+            pic.cb_at(c_x, cy - 2) as i32
+        } else {
+            p0
+        };
         let q0 = pic.cb_at(c_x, cy) as i32;
-        let q1 = if cy + 1 < ch { pic.cb_at(c_x, cy + 1) as i32 } else { q0 };
+        let q1 = if cy + 1 < ch {
+            pic.cb_at(c_x, cy + 1) as i32
+        } else {
+            q0
+        };
         let delta = clip3(-tc, tc, ((q0 - p0) * 4 + p1 - q1 + 4) >> 3);
         pic.set_cb(c_x, cy - 1, clip3(0, max_val, p0 + delta) as i16);
         pic.set_cb(c_x, cy, clip3(0, max_val, q0 - delta) as i16);
 
         // Cr
         let p0 = pic.cr_at(c_x, cy - 1) as i32;
-        let p1 = if cy >= 2 { pic.cr_at(c_x, cy - 2) as i32 } else { p0 };
+        let p1 = if cy >= 2 {
+            pic.cr_at(c_x, cy - 2) as i32
+        } else {
+            p0
+        };
         let q0 = pic.cr_at(c_x, cy) as i32;
-        let q1 = if cy + 1 < ch { pic.cr_at(c_x, cy + 1) as i32 } else { q0 };
+        let q1 = if cy + 1 < ch {
+            pic.cr_at(c_x, cy + 1) as i32
+        } else {
+            q0
+        };
         let delta = clip3(-tc, tc, ((q0 - p0) * 4 + p1 - q1 + 4) >> 3);
         pic.set_cr(c_x, cy - 1, clip3(0, max_val, p0 + delta) as i16);
         pic.set_cr(c_x, cy, clip3(0, max_val, q0 - delta) as i16);
@@ -593,10 +570,10 @@ fn apply_sao_component(
     } else if sao.sao_type_idx == 2 {
         // Edge offset
         let (dx0, dy0, dx1, dy1): (i32, i32, i32, i32) = match sao.sao_eo_class {
-            0 => (-1, 0, 1, 0),   // horizontal
-            1 => (0, -1, 0, 1),   // vertical
-            2 => (-1, -1, 1, 1),  // 135-degree diagonal
-            _ => (1, -1, -1, 1),  // 45-degree diagonal
+            0 => (-1, 0, 1, 0),  // horizontal
+            1 => (0, -1, 0, 1),  // vertical
+            2 => (-1, -1, 1, 1), // 135-degree diagonal
+            _ => (1, -1, -1, 1), // 45-degree diagonal
         };
 
         // Edge offset categories map to offsets:
@@ -605,7 +582,7 @@ fn apply_sao_component(
         let offsets = [
             sao.sao_offset[0] as i32, // cat 1
             sao.sao_offset[1] as i32, // cat 2
-            0,                         // cat 0 (flat)
+            0,                        // cat 0 (flat)
             sao.sao_offset[2] as i32, // cat 3
             sao.sao_offset[3] as i32, // cat 4
         ];
@@ -648,9 +625,9 @@ fn apply_sao_component(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::params::ProfileTierLevel;
     use super::super::picture::CtuSaoParams;
+    use super::*;
 
     fn test_sps(w: u32, h: u32) -> Sps {
         Sps {
@@ -680,7 +657,7 @@ mod tests {
             log2_diff_max_min_luma_transform_block_size: 3,
             _max_transform_hierarchy_depth_inter: 1,
             max_transform_hierarchy_depth_intra: 1,
-            _scaling_list_enabled_flag: false,
+            scaling_list_enabled_flag: false,
             _amp_enabled_flag: true,
             sample_adaptive_offset_enabled_flag: true,
             _pcm_enabled_flag: false,
@@ -715,13 +692,13 @@ mod tests {
             _dependent_slice_segments_enabled_flag: false,
             output_flag_present_flag: false,
             num_extra_slice_header_bits: 0,
-            _sign_data_hiding_enabled_flag: false,
+            sign_data_hiding_enabled_flag: false,
             _cabac_init_present_flag: false,
             _num_ref_idx_l0_default_active_minus1: 0,
             _num_ref_idx_l1_default_active_minus1: 0,
             init_qp_minus26: 0,
             _constrained_intra_pred_flag: false,
-            _transform_skip_enabled_flag: false,
+            transform_skip_enabled_flag: false,
             _cu_qp_delta_enabled_flag: false,
             _diff_cu_qp_delta_depth: 0,
             pps_cb_qp_offset: 0,
@@ -855,18 +832,23 @@ mod tests {
 
         let p0 = pic.y_at(0, 7);
         let q0 = pic.y_at(0, 8);
-        assert!(p0 != 50 || q0 != 200, "deblock should soften horizontal boundary");
+        assert!(
+            p0 != 50 || q0 != 200,
+            "deblock should soften horizontal boundary"
+        );
     }
 
     #[test]
     fn deblock_strong_filter_modifies_p2() {
+        // Use a step edge (flat on each side) so that dSam conditions are met:
+        // |p3-p0| + |q0-q3| must be < beta>>3, and |p0-q0| < (5*tc+1)>>1
         let sps = test_sps(16, 16);
         let pps = test_pps();
         let mut pic = Picture::new(16, 16, 8);
-        pic.init_metadata(3, 30);
+        pic.init_metadata(3, 40);
         for y in 0..16u32 {
             for x in 0..16u32 {
-                pic.set_y(x, y, (120 + x) as i16);
+                pic.set_y(x, y, if x < 8 { 120 } else { 130 });
             }
         }
         for s in pic.cb_mut().iter_mut() {
@@ -932,7 +914,10 @@ mod tests {
 
         let cb_p0 = pic.cb_at(3, 0);
         let cb_q0 = pic.cb_at(4, 0);
-        assert!(cb_p0 != 50 || cb_q0 != 200, "chroma deblock should modify boundary");
+        assert!(
+            cb_p0 != 50 || cb_q0 != 200,
+            "chroma deblock should modify boundary"
+        );
     }
 
     #[test]

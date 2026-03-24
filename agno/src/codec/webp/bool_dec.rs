@@ -117,11 +117,7 @@ mod tests {
 
         let mut dec = BoolDecoder::new(&data);
         for (i, &expected) in bits.iter().enumerate() {
-            assert_eq!(
-                dec.read_bit(128),
-                expected,
-                "mismatch at bit {i}"
-            );
+            assert_eq!(dec.read_bit(128), expected, "mismatch at bit {i}");
         }
     }
 
@@ -200,11 +196,7 @@ mod tests {
 
         let mut dec = BoolDecoder::new(&data);
         for (i, &(bit, prob)) in expected.iter().enumerate() {
-            assert_eq!(
-                dec.read_bit(prob),
-                bit,
-                "mismatch at bit {i}, prob={prob}"
-            );
+            assert_eq!(dec.read_bit(prob), bit, "mismatch at bit {i}, prob={prob}");
         }
     }
 }

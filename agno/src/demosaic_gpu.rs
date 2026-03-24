@@ -5,8 +5,8 @@
 
 use crate::demosaic::BayerPattern;
 use crate::gpu::{
-    create_output_buffer, create_storage_buffer, create_uniform_buffer, dispatch_and_read,
-    workgroups_2d, GpuContext, GpuPipeline,
+    GpuContext, GpuPipeline, create_output_buffer, create_storage_buffer, create_uniform_buffer,
+    dispatch_and_read, workgroups_2d,
 };
 use crate::sony_decoder::Dimensions;
 use agno_gpu_shared::DemosaicParams;

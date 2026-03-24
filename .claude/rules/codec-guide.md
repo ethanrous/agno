@@ -63,9 +63,9 @@ Not all codecs have both (PNG is decode-only).
 | HEVC | `decode_hevc_still()` | — | — | `anyhow::Result` |
 | HEIF | `parse_heif()` | — | — | `anyhow::Result` |
 
-HEIF is a container format (parses to tile bitstreams), HEVC is the actual image decoder. They work together: `parse_heif()` → `decode_hevc_still()` per tile → stitch grid.
+HEIF is a container format (parses to tile bitstreams), HEVC is the actual image decoder. They work together: `parse_heif()` → `decode_hevc_still()` per tile → stitch grid. Both are pure Rust with no C library dependencies (libheif/libde265 were used as reference implementations during development but are not runtime dependencies).
 
-**HEVC decoder is under active development** — see `hevc-decoder.md` for detailed status, known bugs, and debugging methodology.
+See `hevc-decoder.md` for decoder status (61.7 dB Y PSNR), remaining issues, and debugging methodology.
 
 ## Quality Validation for Codecs
 

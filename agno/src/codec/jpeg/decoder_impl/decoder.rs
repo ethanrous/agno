@@ -1,23 +1,23 @@
 use super::error::{Error, Result, UnsupportedFeature};
-use super::huffman::{fill_default_mjpeg_tables, HuffmanDecoder, HuffmanTable};
+use super::huffman::{HuffmanDecoder, HuffmanTable, fill_default_mjpeg_tables};
 use super::marker::Marker;
 use super::parser::{
-    parse_app, parse_com, parse_dht, parse_dqt, parse_dri, parse_sof, parse_sos,
     AdobeColorTransform, AppData, CodingProcess, Component, Dimensions, EntropyCoding, FrameInfo,
-    IccChunk, ScanInfo,
+    IccChunk, ScanInfo, parse_app, parse_com, parse_dht, parse_dqt, parse_dri, parse_sof,
+    parse_sos,
 };
 use super::read_u8;
 use super::upsampler::Upsampler;
-use super::worker::{compute_image_parallel, PreferWorkerKind, RowData, Worker, WorkerScope};
-use std::borrow::ToOwned;
-use std::sync::Arc;
-use std::vec::Vec;
-use std::format;
-use std::vec;
+use super::worker::{PreferWorkerKind, RowData, Worker, WorkerScope, compute_image_parallel};
 use core::cmp;
 use core::mem;
 use core::ops::Range;
+use std::borrow::ToOwned;
+use std::format;
 use std::io::Read;
+use std::sync::Arc;
+use std::vec;
+use std::vec::Vec;
 
 pub const MAX_COMPONENTS: usize = 4;
 
@@ -479,7 +479,7 @@ impl<R: Read> Decoder<R> {
                 Marker::DAC => {
                     return Err(Error::Unsupported(
                         UnsupportedFeature::ArithmeticEntropyCoding,
-                    ))
+                    ));
                 }
                 // Restart interval definition
                 Marker::DRI => self.restart_interval = parse_dri(&mut self.reader)?,
@@ -527,7 +527,7 @@ impl<R: Read> Decoder<R> {
 
                 // Hierarchical mode markers
                 Marker::DHP | Marker::EXP => {
-                    return Err(Error::Unsupported(UnsupportedFeature::Hierarchical))
+                    return Err(Error::Unsupported(UnsupportedFeature::Hierarchical));
                 }
 
                 // End of image
@@ -537,7 +537,7 @@ impl<R: Read> Decoder<R> {
                     return Err(Error::Format(format!(
                         "{:?} marker found where not allowed",
                         marker
-                    )))
+                    )));
                 }
             }
 
@@ -715,7 +715,7 @@ impl<R: Read> Decoder<R> {
         }
     }
 
-#[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity)]
     fn decode_scan(
         &mut self,
         frame: &FrameInfo,
@@ -856,13 +856,13 @@ impl<R: Read> Decoder<R> {
                                 return Err(Error::Format(format!(
                                     "found marker {:?} inside scan where RST{} was expected",
                                     marker, expected_rst_num
-                                )))
+                                )));
                             }
                             None => {
                                 return Err(Error::Format(format!(
                                     "no marker found where RST{} was expected",
                                     expected_rst_num
-                                )))
+                                )));
                             }
                         }
                     }

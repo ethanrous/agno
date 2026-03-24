@@ -1,8 +1,8 @@
-pub mod tables;
 pub mod dct;
-pub mod huffman;
-pub mod encode;
 mod decoder_impl;
+pub mod encode;
+pub mod huffman;
+pub mod tables;
 
 pub use encode::encode_jpeg;
 
