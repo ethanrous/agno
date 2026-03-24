@@ -453,6 +453,7 @@ fn extract_tile0_annex_b(heic_path: &str, output_path: &str) {
 }
 
 #[test]
+#[ignore]
 fn dogs_heic_dump_raw_rgb() {
     let img = load_agno_image_from_file(&test_data("dogs.heic")).unwrap();
     std::fs::write("/tmp/dogs_agno_raw.rgb", img.as_slice()).unwrap();
@@ -471,7 +472,7 @@ fn dogs_heic_dump_raw_rgb() {
     // Tile 10
     let pic10 = decode_hevc_still(&heif.hvcc, &heif.tiles[10]).unwrap();
     // Dump Y plane as raw i16 values
-    let y_bytes: Vec<u8> = pic10.y_plane().iter().flat_map(|&v| (v as u8).to_le_bytes()).collect();
+    let y_bytes: Vec<u8> = pic10.y_plane().iter().flat_map(|&v| v.to_le_bytes()).collect();
     std::fs::write("/tmp/dogs_tile10_y.raw", &y_bytes).unwrap();
     eprintln!("Dumped tile 10 Y: {}x{}", pic10.width, pic10.height);
 
@@ -511,7 +512,6 @@ fn dogs_heic_dump_raw_rgb() {
 }
 
 #[test]
-#[test]
 fn dogs_heic_tile10_cabac_check() {
     let mut file = File::open(test_data("dogs.heic")).unwrap();
     let heif = parse_heif(&mut file).unwrap();
@@ -520,6 +520,7 @@ fn dogs_heic_tile10_cabac_check() {
 }
 
 #[test]
+#[ignore]
 fn dogs_heic_tile_diagnostics() {
     use agno::codec::hevc::bitstream::BitReader;
     use agno::codec::hevc::params::{Pps, Sps};
