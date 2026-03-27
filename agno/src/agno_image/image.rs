@@ -11,6 +11,7 @@ pub struct AgnoImage {
 
     pub width: u64,
     pub height: u64,
+    pub page_count: u64,
 
     pub exif: ExifContext,
 }
@@ -25,6 +26,7 @@ impl AgnoImage {
                 len: 0,
                 height: 0,
                 width: 0,
+                page_count: 1,
             };
         }
 
@@ -38,6 +40,7 @@ impl AgnoImage {
             len: data.len(),
             height,
             width,
+            page_count: 1,
         }
     }
 
