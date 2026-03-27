@@ -15,7 +15,7 @@ pub mod spec;
 #[allow(dead_code)]
 #[repr(C)] // Ensure C-compatible layout
 pub struct ExifData {
-    pub data: *mut u32,
+    pub data: *mut u8,
     pub len: usize,
     pub typ: u16,
 }
@@ -32,72 +32,61 @@ impl ExifData {
 
     fn from_bytes(bytes: &Vec<u8>, typ: u16) -> Self {
         let len = bytes.len();
-        let data = unsafe { libc::malloc(len) as *mut u32 };
+        let data = unsafe { libc::malloc(len) as *mut u8 };
         if data.is_null() {
             return ExifData::null();
         }
         unsafe {
-            data.copy_from_nonoverlapping(bytes.as_ptr() as *mut u32, len);
+            data.copy_from_nonoverlapping(bytes.as_ptr(), len);
         }
         ExifData { data, len, typ }
     }
 
     pub fn from_exif_value(v: &ExifValue) -> Self {
         match v {
-            ExifValue::Byte(b) => {
-                let data = u16::from_le_bytes((*b.clone()).try_into().unwrap());
-                ExifData {
-                    data: Box::into_raw(Box::new(data as u32)),
-                    len: 1,
-                    typ: 1,
-                }
-            }
+            ExifValue::Byte(b) => ExifData::from_bytes(b, 1),
             ExifValue::Ascii(s) => ExifData {
-                data: s.as_ptr() as *mut u32,
+                // Note: borrows the String's buffer directly. Safe because Go copies
+                // the bytes immediately in getExifValue before this data can be freed.
+                data: s.as_ptr() as *mut u8,
                 len: s.len(),
                 typ: 2,
             },
-            ExifValue::Short(v) => ExifData {
-                data: Box::into_raw(Box::new(v[0] as u32)),
-                len: 1,
-                typ: 3,
-            },
+            ExifValue::Short(v) => {
+                let mut bytes = Vec::with_capacity(v.len() * 4);
+                for n in v {
+                    bytes.extend_from_slice(&(*n as u32).to_le_bytes());
+                }
+                ExifData::from_bytes(&bytes, 3)
+            }
             ExifValue::Long(v) => {
-                debug!(count = v.len(), "Got long value");
                 let mut bytes = Vec::with_capacity(v.len() * 4);
                 for n in v {
                     bytes.extend_from_slice(&n.to_le_bytes());
                 }
-
                 ExifData::from_bytes(&bytes, 4)
             }
             ExifValue::Rational(v) => {
-                debug!(count = v.len(), "Got rational value");
                 let mut bytes = Vec::with_capacity(v.len() * 8);
                 for (num, den) in v {
                     bytes.extend_from_slice(&num.to_le_bytes());
                     bytes.extend_from_slice(&den.to_le_bytes());
                 }
-
                 ExifData::from_bytes(&bytes, 5)
             }
             ExifValue::SLong(v) => {
-                debug!(count = v.len(), "Got slong value");
                 let mut bytes = Vec::with_capacity(v.len() * 4);
                 for n in v {
                     bytes.extend_from_slice(&n.to_le_bytes());
                 }
-
                 ExifData::from_bytes(&bytes, 9)
             }
             ExifValue::SRational(v) => {
-                debug!(count = v.len(), "Got srational value");
                 let mut bytes = Vec::with_capacity(v.len() * 8);
                 for (num, den) in v {
                     bytes.extend_from_slice(&num.to_le_bytes());
                     bytes.extend_from_slice(&den.to_le_bytes());
                 }
-
                 ExifData::from_bytes(&bytes, 10)
             }
         }
