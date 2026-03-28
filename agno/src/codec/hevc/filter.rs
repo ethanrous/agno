@@ -40,7 +40,11 @@ fn derive_bs_intra(pic: &Picture, x: u32, y: u32, vertical: bool, ctb_log2: u32)
         };
         let sl = 1u32 << (ctb_log2 - dl.min(ctb_log2));
         let sr = 1u32 << (ctb_log2 - dr.min(ctb_log2));
-        if x % sl == 0 || x % sr == 0 { 2 } else { 0 }
+        if x.is_multiple_of(sl) || x.is_multiple_of(sr) {
+            2
+        } else {
+            0
+        }
     } else {
         if y == 0 {
             return 0;
@@ -55,7 +59,11 @@ fn derive_bs_intra(pic: &Picture, x: u32, y: u32, vertical: bool, ctb_log2: u32)
         };
         let st = 1u32 << (ctb_log2 - dt.min(ctb_log2));
         let sb = 1u32 << (ctb_log2 - db.min(ctb_log2));
-        if y % st == 0 || y % sb == 0 { 2 } else { 0 }
+        if y.is_multiple_of(st) || y.is_multiple_of(sb) {
+            2
+        } else {
+            0
+        }
     }
 }
 
@@ -77,7 +85,10 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
         let mut y = 0u32;
         while y < height {
             let bs = derive_bs_intra(pic, x, y, true, ctb_log2);
-            if bs == 0 { y += 4; continue; }
+            if bs == 0 {
+                y += 4;
+                continue;
+            }
 
             // H.265 8.7.2.4: QP from each side of the vertical edge
             let qp_left = pic.qp_y_at(x - 1, y);
@@ -95,7 +106,7 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
             }
 
             // Chroma (when Bs >= 2)
-            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (height + 1) / 2 {
+            if bs >= 2 && x / 2 < width.div_ceil(2) && y / 2 < height.div_ceil(2) {
                 let tc_c_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
                 let tc_c = TC_TABLE[tc_c_idx as usize];
                 if tc_c > 0 {
@@ -114,7 +125,10 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
         let mut x = 0u32;
         while x < width {
             let bs = derive_bs_intra(pic, x, y, false, ctb_log2);
-            if bs == 0 { x += 4; continue; }
+            if bs == 0 {
+                x += 4;
+                continue;
+            }
 
             // H.265 8.7.2.4: QP from each side of the horizontal edge
             let qp_top = pic.qp_y_at(x, y - 1);
@@ -130,7 +144,7 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
                 deblock_luma_edge_h(pic, x, y, beta, tc, bit_depth_y);
             }
 
-            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (height + 1) / 2 {
+            if bs >= 2 && x / 2 < width.div_ceil(2) && y / 2 < height.div_ceil(2) {
                 let tc_c_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
                 let tc_c = TC_TABLE[tc_c_idx as usize];
                 if tc_c > 0 {
@@ -209,17 +223,32 @@ fn deblock_luma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, beta: i32, tc: i3
     for dy in 0..4u32 {
         let py = y + dy;
         let s = read_v_line(pic, edge_x, py);
-        let (p3, p2, p1, p0, q0, q1, q2, q3) =
-            (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+        let (p3, p2, p1, p0, q0, q1, q2, q3) = (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 
         if use_strong {
             let tc2 = 2 * tc;
-            let p0f = clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
+            let p0f = clip3(
+                p0 - tc2,
+                p0 + tc2,
+                (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3,
+            );
             let p1f = clip3(p1 - tc2, p1 + tc2, (p2 + p1 + p0 + q0 + 2) >> 2);
-            let p2f = clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
-            let q0f = clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
+            let p2f = clip3(
+                p2 - tc2,
+                p2 + tc2,
+                (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3,
+            );
+            let q0f = clip3(
+                q0 - tc2,
+                q0 + tc2,
+                (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3,
+            );
             let q1f = clip3(q1 - tc2, q1 + tc2, (q2 + q1 + q0 + p0 + 2) >> 2);
-            let q2f = clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
+            let q2f = clip3(
+                q2 - tc2,
+                q2 + tc2,
+                (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3,
+            );
             pic.set_y(edge_x - 3, py, clip3(0, max_val, p2f) as i16);
             pic.set_y(edge_x - 2, py, clip3(0, max_val, p1f) as i16);
             pic.set_y(edge_x - 1, py, clip3(0, max_val, p0f) as i16);
@@ -313,17 +342,32 @@ fn deblock_luma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, beta: i32, tc: i3
     for dx in 0..4u32 {
         let px = x + dx;
         let s = read_h_col(pic, px, edge_y);
-        let (p3, p2, p1, p0, q0, q1, q2, q3) =
-            (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+        let (p3, p2, p1, p0, q0, q1, q2, q3) = (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 
         if use_strong {
             let tc2 = 2 * tc;
-            let p0f = clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
+            let p0f = clip3(
+                p0 - tc2,
+                p0 + tc2,
+                (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3,
+            );
             let p1f = clip3(p1 - tc2, p1 + tc2, (p2 + p1 + p0 + q0 + 2) >> 2);
-            let p2f = clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
-            let q0f = clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
+            let p2f = clip3(
+                p2 - tc2,
+                p2 + tc2,
+                (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3,
+            );
+            let q0f = clip3(
+                q0 - tc2,
+                q0 + tc2,
+                (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3,
+            );
             let q1f = clip3(q1 - tc2, q1 + tc2, (q2 + q1 + q0 + p0 + 2) >> 2);
-            let q2f = clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
+            let q2f = clip3(
+                q2 - tc2,
+                q2 + tc2,
+                (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3,
+            );
             pic.set_y(px, edge_y - 3, clip3(0, max_val, p2f) as i16);
             pic.set_y(px, edge_y - 2, clip3(0, max_val, p1f) as i16);
             pic.set_y(px, edge_y - 1, clip3(0, max_val, p0f) as i16);
@@ -356,8 +400,8 @@ fn deblock_chroma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, tc: i32, bit_de
     let max_val = (1 << bit_depth) - 1;
     let cx = edge_x / 2;
     let cy = y / 2;
-    let cw = (pic.width + 1) / 2;
-    let ch = (pic.height + 1) / 2;
+    let cw = pic.width.div_ceil(2);
+    let ch = pic.height.div_ceil(2);
 
     for dy in 0..2u32 {
         let c_y = cy + dy;
@@ -405,8 +449,8 @@ fn deblock_chroma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, tc: i32, bit_de
     let max_val = (1 << bit_depth) - 1;
     let cx = x / 2;
     let cy = edge_y / 2;
-    let cw = (pic.width + 1) / 2;
-    let ch = (pic.height + 1) / 2;
+    let cw = pic.width.div_ceil(2);
+    let ch = pic.height.div_ceil(2);
 
     for dx in 0..2u32 {
         let c_x = cx + dx;
@@ -497,8 +541,8 @@ pub fn apply_sao(pic: &mut Picture, sps: &Sps) {
             );
 
             // Chroma
-            let cw = (width + 1) / 2;
-            let ch = (height + 1) / 2;
+            let cw = width.div_ceil(2);
+            let ch = height.div_ceil(2);
             let cx0 = x0 / 2;
             let cy0 = y0 / 2;
             let c_ctb = ctb_size / 2;
@@ -531,6 +575,7 @@ pub fn apply_sao(pic: &mut Picture, sps: &Sps) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_sao_component(
     dst: &mut [i16],
     src: &[i16],
@@ -561,7 +606,7 @@ fn apply_sao_component(
                 let band = (sample >> shift) & 31;
                 let band_start = sao.sao_band_position as i32;
                 let band_off = band - band_start;
-                if band_off >= 0 && band_off < 4 {
+                if (0..4).contains(&band_off) {
                     let offset = sao.sao_offset[band_off as usize] as i32;
                     dst[idx] = clip3(0, max_val, sample + offset) as i16;
                 }

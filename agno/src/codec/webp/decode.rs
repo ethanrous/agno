@@ -27,8 +27,8 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
     let vp8_data = parse_riff_webp(data)?;
     let (header, first_part_data, token_part_data, coeff_probs) = parse_frame_header(vp8_data)?;
 
-    let mb_width = ((header.width as usize) + 15) / 16;
-    let mb_height = ((header.height as usize) + 15) / 16;
+    let mb_width = (header.width as usize).div_ceil(16);
+    let mb_height = (header.height as usize).div_ceil(16);
     let mb_count = mb_width * mb_height;
 
     let quantizer = VpxQuantizer::new(header.q_index);
@@ -256,6 +256,7 @@ struct FrameHeader {
 ///
 /// Also reads and applies coefficient probability updates from the first partition,
 /// returning the (possibly modified) coefficient probability table.
+#[allow(clippy::type_complexity)]
 fn parse_frame_header(
     vp8: &[u8],
 ) -> Result<(FrameHeader, &[u8], &[u8], [[[[u8; 11]; 3]; 8]; 4]), Box<dyn Error>> {
@@ -394,6 +395,7 @@ fn parse_frame_header(
 /// Re-decode the first partition to extract per-MB skip flags, Y modes, and
 /// UV modes.  We re-create a fresh `BoolDecoder` because the header parsing
 /// already consumed the decoder state above.
+#[allow(clippy::type_complexity)]
 fn decode_first_partition(
     first_part: &[u8],
     mb_count: usize,
@@ -444,11 +446,11 @@ fn decode_first_partition(
     dec.read_bit(128);
 
     // Read coefficient probability updates (must match parse_frame_header)
-    for t in 0..4 {
-        for b in 0..8 {
-            for c in 0..3 {
-                for n in 0..11 {
-                    let update = dec.read_bit(COEFF_UPDATE_PROBS[t][b][c][n]);
+    for probs_t in &COEFF_UPDATE_PROBS {
+        for probs_b in probs_t {
+            for probs_c in probs_b {
+                for &prob_n in probs_c {
+                    let update = dec.read_bit(prob_n);
                     if update {
                         dec.read_literal(8);
                     }
@@ -695,8 +697,8 @@ fn idct4x4(input: &[i32; 16]) -> [i32; 16] {
 
         let a1 = c0 + c2;
         let b1 = c0 - c2;
-        let temp1 = (c1 * 35468 >> 16) - c3 - (c3 * 20091 >> 16);
-        let temp2 = c1 + (c1 * 20091 >> 16) + (c3 * 35468 >> 16);
+        let temp1 = ((c1 * 35468) >> 16) - c3 - ((c3 * 20091) >> 16);
+        let temp2 = c1 + ((c1 * 20091) >> 16) + ((c3 * 35468) >> 16);
 
         tmp[i * 4] = a1 + temp2;
         tmp[i * 4 + 3] = a1 - temp2;
@@ -714,8 +716,8 @@ fn idct4x4(input: &[i32; 16]) -> [i32; 16] {
 
         let a1 = c0 + c2;
         let b1 = c0 - c2;
-        let temp1 = (c1 * 35468 >> 16) - c3 - (c3 * 20091 >> 16);
-        let temp2 = c1 + (c1 * 20091 >> 16) + (c3 * 35468 >> 16);
+        let temp1 = ((c1 * 35468) >> 16) - c3 - ((c3 * 20091) >> 16);
+        let temp2 = c1 + ((c1 * 20091) >> 16) + ((c3 * 35468) >> 16);
 
         result[i] = (a1 + temp2 + 4) >> 3;
         result[i + 12] = (a1 - temp2 + 4) >> 3;

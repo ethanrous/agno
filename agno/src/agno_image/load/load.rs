@@ -7,7 +7,7 @@ use std::{
 use crate::{
     agno_image::{
         AgnoImage,
-        load::{load_canon_raw, load_heic, load_mov_thumbnail, load_pdf, load_sony_raw},
+        load::{load_canon_raw, load_heic, load_mov_thumbnail, load_sony_raw},
     },
     exif::ExifContext,
     tiff::{RawMaker, TiffDetectResult, detect_raw},
@@ -109,12 +109,14 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         ImageType::Webp => {
             Err("WebP support is not enabled. Please enable the 'webp' feature.".into())
         }
+        #[cfg(feature = "pdf")]
         ImageType::Pdf => {
-            if cfg!(feature = "pdf") {
-                load_pdf(path, exif)
-            } else {
-                Err("PDF support is not enabled. Please enable the 'pdf' feature.".into())
-            }
+            let file_data = std::fs::read(path)?;
+            super::load_pdf_page_from_bytes(&file_data, 0, None, exif)
+        }
+        #[cfg(not(feature = "pdf"))]
+        ImageType::Pdf => {
+            Err("PDF support is not enabled. Please enable the 'pdf' feature.".into())
         }
         ImageType::SonyRaw(det) => load_sony_raw(det, &mut file, exif),
         ImageType::CanonRaw(det) => load_canon_raw(det, &mut file, exif),

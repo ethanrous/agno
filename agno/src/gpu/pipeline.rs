@@ -150,5 +150,5 @@ pub fn dispatch_and_read<T: bytemuck::Pod + Clone>(
 
 /// Calculate workgroup counts for a 2D dispatch with 16x16 workgroup size.
 pub fn workgroups_2d(width: u32, height: u32) -> (u32, u32, u32) {
-    ((width + 15) / 16, (height + 15) / 16, 1)
+    (width.div_ceil(16), height.div_ceil(16), 1)
 }

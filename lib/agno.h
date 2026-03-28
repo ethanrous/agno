@@ -12,6 +12,7 @@ struct AgnoImage {
   size_t len;
   unsigned long long width;
   unsigned long long height;
+  unsigned long long page_count;
 };
 
 struct ExifData {
@@ -49,6 +50,9 @@ struct GpsCoordinates {
 };
 
 struct GpsCoordinates get_gps_coordinates(struct AgnoImage *img);
+
+struct AgnoImage *load_pdf_page(char *path, size_t len, size_t page_num,
+                                unsigned int max_width, unsigned int max_height);
 
 #ifdef __cplusplus
 }

@@ -8,8 +8,7 @@
 
 // === Constants ===
 
-/// Pi constant for filter calculations
-pub const PI: f32 = 3.14159265358979323846;
+pub const PI: f32 = core::f32::consts::PI;
 
 /// Exposure adjustment in EV (Sony RAW is typically underexposed)
 pub const EXPOSURE_EV: f32 = 1.2;
@@ -251,6 +250,7 @@ pub struct DemosaicParams {
 
 impl DemosaicParams {
     #[cfg(feature = "std")]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         width: u32,
         height: u32,

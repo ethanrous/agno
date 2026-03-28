@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target.platform }}${{ matrix.gpu.suffix }})
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      matrix:
+        target:
+          - triple: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            platform: linux-x86_64
+          - triple: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            platform: linux-aarch64
+          - triple: aarch64-apple-darwin
+            runner: macos-latest
+            platform: macos-aarch64
+        gpu:
+          - enabled: true
+            features: "gpu,jpeg,png,webp,pdf"
+            suffix: "-gpu"
+          - enabled: false
+            features: "jpeg,png,webp,pdf"
+            suffix: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target.triple }}
+
+      - name: Install cross-compilation tools (aarch64 Linux)
+        if: matrix.target.triple == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target.triple }}${{ matrix.gpu.suffix }}
+
+      - name: Build static library
+        env:
+          TARGET_TRIPLE: ${{ matrix.target.triple }}
+          AGNO_FEATURES: ${{ matrix.gpu.features }}
+        run: |
+          if [ "$TARGET_TRIPLE" = "aarch64-unknown-linux-gnu" ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+          fi
+          ./build/sh/build-agno.bash libagno.a
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libagno-${{ matrix.target.platform }}${{ matrix.gpu.suffix }}.a
+          path: libagno.a
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/libagno-*.a; do
+            name="$(basename "$dir")"
+            cp "$dir/libagno.a" "release/$name"
+          done
+          ls -lh release/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" release/*.a \
+            --title "$TAG" \
+            --generate-notes

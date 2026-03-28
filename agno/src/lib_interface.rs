@@ -83,9 +83,7 @@ pub extern "C" fn resize_image(
 
     unsafe {
         let real_img = Box::from_raw(img);
-        let new_img = ok_or_null!(scale_image(*real_img, new_width as u32, new_height as u32));
-
-        new_img
+        ok_or_null!(scale_image(*real_img, new_width as u32, new_height as u32))
     }
 }
 
@@ -160,6 +158,38 @@ pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) 
             }
         }
     }
+}
+
+/// Load a specific page from a PDF file and return it as an AgnoImage.
+/// `page_num` is 0-based. `max_width`/`max_height` of 0 uses default 2x scale.
+/// Returns null on error.
+#[cfg(feature = "pdf")]
+#[unsafe(no_mangle)]
+pub extern "C" fn load_pdf_page(
+    path: *const u8,
+    len: usize,
+    page_num: usize,
+    max_width: u32,
+    max_height: u32,
+) -> *mut AgnoImage {
+    let wrapped_path = CString::new(path, len);
+    let max_dims = if max_width > 0 && max_height > 0 {
+        Some((max_width, max_height))
+    } else {
+        None
+    };
+
+    let data: Result<Vec<u8>, Box<dyn std::error::Error>> =
+        std::fs::read(wrapped_path.as_str()).map_err(|e| e.into());
+
+    ok_or_null!(data.and_then(|d| {
+        crate::agno_image::load::load_pdf_page_from_bytes(
+            &d,
+            page_num,
+            max_dims,
+            crate::exif::ExifContext::default(),
+        )
+    }))
 }
 
 #[unsafe(no_mangle)]

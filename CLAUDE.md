@@ -8,27 +8,43 @@ Agno is a Rust image processing library with GPU acceleration. Supports JPEG, PN
 
 ## Build & Test
 
+Uses [`just`](https://github.com/casey/just) as the task runner (install: `cargo install just` or `brew install just`).
+
 ```bash
-# Build (GPU enabled by default)
-cargo build -p agno
-
-# Build without GPU (CPU-only)
-cargo build -p agno --no-default-features
-
 # Build release static library
-./build/sh/build-agno.bash /path/to/output/libagno.a
+just build                                          # default output: libagno.a
+just build libagno.a --target aarch64-apple-darwin  # cross-compile
+just build libagno.a --features gpu,jpeg,png,webp   # custom features
+
+# Build via Docker (cross-compilation)
+just docker-build arm64
+just docker-build amd64 --pdf
 
 # Run tests
-cargo test -p agno
-cargo test -p agno --test encoder_tests
-
-# Run CLI
-cargo run -p agno -- exif <file>
-cargo run -p agno -- convert <input> <output>
+just test                       # all tests
+just test jpeg_roundtrip        # specific test
+just test --release             # release mode
 
 # Lint
-cargo clippy -p agno
+just lint                       # check formatting + clippy
+just lint --fix                 # auto-fix
+
+# Format / clippy individually
+just fmt
+just clippy
+
+# Fast compile check (no codegen)
+just check
+
+# Run CLI
+just run exif <file>
+just run convert <input> <output>
+
+# Clean
+just clean
 ```
+
+Raw cargo commands also work — see `justfile` for the exact invocations.
 
 ## Workspace Structure
 
@@ -40,6 +56,7 @@ Three crates in a Cargo workspace:
 
 ## Key Architecture Decisions
 
+- **No runtime dynamic library dependencies**: The default build must produce a fully self-contained static library with zero `.so`/`.dylib` requirements at runtime. All C/C++ dependencies (e.g., pdfium) must be statically linked. Opt-in feature flags may offer dynamic linking as an alternative, but the default must always be self-contained. This is critical — agno produces `libagno.a` consumed via CGO, and runtime deps break deployment (Docker, cross-compilation).
 - **GPU-first with CPU fallback**: All GPU operations return `Option` — caller always provides CPU fallback path. GPU unavailability is normal (Docker, CI), not an error.
 - **Native codecs**: JPEG, WebP, PNG, HEIF/HEVC decoders/encoders are all implemented in pure Rust in `codec/` (no C library dependencies). HEIC images are decoded natively via the HEIF container parser and HEVC still-image decoder. This keeps the static library fully self-contained.
 - **C FFI with dual allocators**: `AgnoImage` buffers use `libc::malloc()` for C/Go interop; `AgnoBuffer` (in-memory encoding) uses Rust's allocator. Each has its own free function. See `.claude/rules/ffi-interface.md`.
@@ -54,7 +71,8 @@ Three crates in a Cargo workspace:
 | `jpeg` | yes | Native JPEG encode/decode |
 | `png` | yes | Native PNG decode |
 | `webp` | yes | Native WebP encode/decode |
-| `pdf` | no | PDF rendering via pdfium (incomplete) |
+| `pdf` | yes | PDF rendering via hayro (pure Rust) |
+| `pdf-pdfium` | no | Adds pdfium (C++, static) fallback for PDFs hayro can't render |
 | `cabac-trace` | no | Debug: log every CABAC decision for HEVC decoder comparison |
 
 HEIF/HEVC decoding is always compiled (not feature-gated). The `heic-experimental-decoder` flag in Cargo.toml is a legacy artifact with no effect.

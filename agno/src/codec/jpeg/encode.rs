@@ -17,10 +17,11 @@ pub fn encode_jpeg(
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     #[cfg(feature = "gpu")]
     {
-        if width >= 256 && height >= 256 {
-            if let Some(result) = crate::jpeg_gpu::encode_jpeg_gpu(rgb, width, height, quality) {
-                return Ok(result);
-            }
+        if width >= 256
+            && height >= 256
+            && let Some(result) = crate::jpeg_gpu::encode_jpeg_gpu(rgb, width, height, quality)
+        {
+            return Ok(result);
         }
     }
     encode_jpeg_cpu(rgb, width, height, quality)
@@ -64,6 +65,7 @@ fn encode_jpeg_cpu(
 /// Encode pre-converted YCbCr planes as baseline JPEG with 4:2:0 subsampling.
 /// Used by both the CPU path (after RGB->YCbCr conversion) and the GPU path
 /// (where color conversion is done on the GPU).
+#[allow(clippy::needless_range_loop)]
 pub fn encode_jpeg_from_ycbcr(
     y_plane: &[u8],
     cb_plane: &[u8],
@@ -80,8 +82,8 @@ pub fn encode_jpeg_from_ycbcr(
     let chroma_qt = scale_quant_table(&JPEG_CHROMA_QUANT, quality);
 
     // MCU dimensions for 4:2:0 (16x16 pixel blocks)
-    let mcu_cols = (w + 15) / 16;
-    let mcu_rows = (h + 15) / 16;
+    let mcu_cols = w.div_ceil(16);
+    let mcu_rows = h.div_ceil(16);
     let total_mcus = mcu_cols * mcu_rows;
 
     // For each MCU: 4 Y blocks + 1 Cb block + 1 Cr block = 6 blocks
@@ -191,12 +193,12 @@ pub fn encode_jpeg_from_ycbcr(
 
         for blocks in &mcu_blocks {
             // 4 Y blocks
-            for i in 0..4 {
-                let dc = blocks[i][0];
+            for block in &blocks[..4] {
+                let dc = block[0];
                 let diff = dc - prev_dc_y;
                 prev_dc_y = dc;
                 bit_writer.write_dc(diff, dc_luma)?;
-                let ac: [i16; 63] = blocks[i][1..64].try_into().unwrap();
+                let ac: [i16; 63] = block[1..64].try_into().unwrap();
                 bit_writer.write_ac_block(&ac, ac_luma)?;
             }
 

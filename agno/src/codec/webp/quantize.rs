@@ -79,4 +79,3 @@ pub fn quantize_block(coeffs: &[i16; 16], dc_quant: i16, ac_quant: i16) -> [i16;
     }
     out
 }
-

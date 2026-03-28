@@ -487,8 +487,8 @@ fn decode_ljpeg_data<R: Read>(
     // We need to store the first value of each component from the previous row
     // to use as the predictor for the first column of subsequent rows.
 
-    let mut pred = vec![initial_pred as i32; num_comps];
-    let mut row_start_pred = vec![initial_pred as i32; num_comps]; // First value of each component in prev row
+    let mut pred = vec![initial_pred; num_comps];
+    let mut row_start_pred = vec![initial_pred; num_comps]; // First value of each component in prev row
     let samples_per_slice = cr2_slice_1 * jh_high;
 
     for jrow in 0..jh_high {
@@ -507,7 +507,7 @@ fn decode_ljpeg_data<R: Read>(
             // Check for restart marker (resets decoder state)
             if bs.restart_pending {
                 for p in pred.iter_mut() {
-                    *p = initial_pred as i32;
+                    *p = initial_pred;
                 }
                 bs.reset();
             }

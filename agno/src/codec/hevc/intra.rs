@@ -116,8 +116,8 @@ fn plane_dims(pic: &Picture, comp: Component) -> (u32, u32, u32) {
     match comp {
         Component::Y => (pic.width, pic.height, pic.stride_y),
         Component::Cb | Component::Cr => {
-            let cw = (pic.width + 1) / 2;
-            let ch = (pic.height + 1) / 2;
+            let cw = pic.width.div_ceil(2);
+            let ch = pic.height.div_ceil(2);
             (cw, ch, pic.stride_c)
         }
     }
@@ -188,10 +188,10 @@ fn build_reference_samples(
 
     // Fill top (left to right)
     last = raw_top_left.unwrap_or(fallback);
-    for i in 0..total_side as usize {
-        match raw_top[i] {
-            Some(v) => last = v,
-            None => raw_top[i] = Some(last),
+    for entry in raw_top.iter_mut().take(total_side as usize) {
+        match entry {
+            Some(v) => last = *v,
+            None => *entry = Some(last),
         }
     }
 
@@ -227,12 +227,7 @@ fn find_first_available(
         return Some(v);
     }
     // Left to right along top
-    for i in 0..raw_top.len() {
-        if let Some(v) = raw_top[i] {
-            return Some(v);
-        }
-    }
-    None
+    raw_top.iter().flatten().next().copied()
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +377,7 @@ fn predict_planar(refs: &RefSamples, n_tb_s: u32) -> Vec<i16> {
 
 /// DC intra prediction: constant block value from average of top and left
 /// reference samples, with boundary filtering on the first row and column.
+#[allow(clippy::needless_range_loop)]
 fn predict_dc(refs: &RefSamples, n_tb_s: u32, comp: Component) -> Vec<i16> {
     let n = n_tb_s as usize;
     let log2n = log2_floor(n_tb_s);
@@ -454,7 +450,7 @@ pub fn predict_intra(
     // For chroma components in 4:2:0, convert luma coordinates to chroma
     let (bx, by, bs) = match component {
         Component::Y => (x, y, size),
-        Component::Cb | Component::Cr => (x / 2, y / 2, size / 2.max(1)),
+        Component::Cb | Component::Cr => (x / 2, y / 2, size / 2),
     };
     // Ensure chroma block size is at least 2 (minimum meaningful size)
     let bs = bs.max(2);
@@ -484,6 +480,7 @@ pub fn predict_intra(
 
 /// Angular prediction that correctly handles the offset for negative-angle modes.
 /// `apply_edge_filter` should be true only for luma blocks smaller than 32.
+#[allow(clippy::needless_range_loop)]
 fn predict_angular_with_offset(
     refs: &RefSamples,
     n_tb_s: u32,

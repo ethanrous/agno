@@ -24,7 +24,6 @@ pub const ZIGZAG: [usize; 64] = [
     52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
-
 /// IJG quality scaling: maps quality 1-100 to a scaled quantization table.
 pub fn scale_quant_table(base: &[u8; 64], quality: u8) -> [u16; 64] {
     let q = quality.clamp(1, 100) as u32;

@@ -158,20 +158,20 @@ pub fn load_canon_raw(
 /// as a reasonable default for Canon cameras.
 fn extract_canon_white_balance(ctx: &ExifContext) -> [f32; 3] {
     // Try AsShotNeutral first (DNG format)
-    if let Some(ExifValue::Rational(vals)) = ctx.get_tag_value(AS_SHOT_NEUTRAL) {
-        if vals.len() >= 3 {
-            // AsShotNeutral is [R, G, B] - these are the multipliers to achieve neutral
-            // We need to invert them to get gains: gain = 1/neutral
-            let r_neutral = vals[0].0 as f32 / vals[0].1.max(1) as f32;
-            let g_neutral = vals[1].0 as f32 / vals[1].1.max(1) as f32;
-            let b_neutral = vals[2].0 as f32 / vals[2].1.max(1) as f32;
+    if let Some(ExifValue::Rational(vals)) = ctx.get_tag_value(AS_SHOT_NEUTRAL)
+        && vals.len() >= 3
+    {
+        // AsShotNeutral is [R, G, B] - these are the multipliers to achieve neutral
+        // We need to invert them to get gains: gain = 1/neutral
+        let r_neutral = vals[0].0 as f32 / vals[0].1.max(1) as f32;
+        let g_neutral = vals[1].0 as f32 / vals[1].1.max(1) as f32;
+        let b_neutral = vals[2].0 as f32 / vals[2].1.max(1) as f32;
 
-            if r_neutral > 0.0 && g_neutral > 0.0 && b_neutral > 0.0 {
-                // Invert and normalize by green
-                let r_gain = (1.0 / r_neutral) / (1.0 / g_neutral);
-                let b_gain = (1.0 / b_neutral) / (1.0 / g_neutral);
-                return [r_gain, 1.0, b_gain];
-            }
+        if r_neutral > 0.0 && g_neutral > 0.0 && b_neutral > 0.0 {
+            // Invert and normalize by green
+            let r_gain = (1.0 / r_neutral) / (1.0 / g_neutral);
+            let b_gain = (1.0 / b_neutral) / (1.0 / g_neutral);
+            return [r_gain, 1.0, b_gain];
         }
     }
 

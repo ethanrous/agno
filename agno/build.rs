@@ -26,7 +26,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", spv_path.display());
 
         // Read the SPIR-V binary
-        let spv_bytes = fs::read(&spv_path).expect("Failed to read SPIR-V file");
+        let spv_bytes = fs::read(spv_path).expect("Failed to read SPIR-V file");
 
         // Write SPIR-V to output directory
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());

@@ -42,7 +42,7 @@ pub fn load_sony_raw(
     let mut cursor = Cursor::new(buf);
 
     file.seek(SeekFrom::Start(0))?;
-    let ctx = ExifContext::from_reader_auto(&mut file)?;
+    let ctx = ExifContext::from_reader_auto(file)?;
 
     // Extract Sony variant from maker
     let variant = match det.maker {

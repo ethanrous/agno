@@ -82,10 +82,8 @@ pub fn encode_jpeg_gpu(rgb: &[u8], width: u32, height: u32, quality: u8) -> Opti
         cr_plane[i] = (packed_val & 0xFF) as u8;
     }
 
-    Some(
-        crate::codec::jpeg::encode::encode_jpeg_from_ycbcr(
-            &y_plane, &cb_plane, &cr_plane, width, height, quality,
-        )
-        .ok()?,
+    crate::codec::jpeg::encode::encode_jpeg_from_ycbcr(
+        &y_plane, &cb_plane, &cr_plane, width, height, quality,
     )
+    .ok()
 }
