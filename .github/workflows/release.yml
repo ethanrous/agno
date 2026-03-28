@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -56,6 +57,7 @@ jobs:
 
       - name: Build static library
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_TRIPLE: ${{ matrix.target.triple }}
           AGNO_FEATURES: ${{ matrix.gpu.features }}
         run: |
@@ -73,6 +75,7 @@ jobs:
 
   release:
     name: Create Release
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     steps:
