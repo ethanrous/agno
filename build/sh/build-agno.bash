@@ -37,7 +37,7 @@ rustup target add "${TARGET_TRIPLE}" 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # 2) Download pdfium static lib if pdf-pdfium feature is requested
 # ---------------------------------------------------------------------------
-AGNO_FEATURES="${AGNO_FEATURES:-gpu}"
+AGNO_FEATURES="${AGNO_FEATURES:-gpu,jpeg,png,webp,pdf}"
 LIB_DIR="${REPO_ROOT}/lib"
 
 if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
@@ -74,7 +74,7 @@ fi
 # ---------------------------------------------------------------------------
 rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
 
-cargo build --release --lib --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
+cargo build --release --lib --no-default-features --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
 
 # ---------------------------------------------------------------------------
 # 4) Copy the static library to the output path

@@ -29,14 +29,14 @@ jobs:
             platform: macos-aarch64
         gpu:
           - enabled: true
-            features: "gpu,jpeg,png,webp,pdf"
+            features: "gpu,jpeg,png,webp,pdf,pdf-pdfium"
             suffix: "-gpu"
           - enabled: false
-            features: "jpeg,png,webp,pdf"
+            features: "jpeg,png,webp,pdf,pdf-pdfium"
             suffix: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         run: rustup show
@@ -66,7 +66,7 @@ jobs:
           ./build/sh/build-agno.bash libagno.a
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libagno-${{ matrix.target.platform }}${{ matrix.gpu.suffix }}.a
           path: libagno.a
@@ -76,10 +76,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
