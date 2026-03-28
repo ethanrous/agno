@@ -22,8 +22,8 @@ pub fn rgb_to_yuv420(rgb: &[u8], width: u32, height: u32) -> Yuv420 {
     let h = height as usize;
     let y_stride = (w + 15) & !15; // round up to multiple of 16
     let y_height = (h + 15) & !15;
-    let uv_stride = ((w + 1) / 2 + 7) & !7; // round up half-width to multiple of 8
-    let uv_height = ((h + 1) / 2 + 7) & !7;
+    let uv_stride = (w.div_ceil(2) + 7) & !7; // round up half-width to multiple of 8
+    let uv_height = (h.div_ceil(2) + 7) & !7;
 
     let mut y_plane = vec![0u8; y_stride * y_height];
     let mut u_plane = vec![128u8; uv_stride * uv_height];
@@ -43,8 +43,8 @@ pub fn rgb_to_yuv420(rgb: &[u8], width: u32, height: u32) -> Yuv420 {
     }
 
     // Compute subsampled U, V by averaging 2x2 pixel groups
-    let uv_w = (w + 1) / 2;
-    let uv_h = (h + 1) / 2;
+    let uv_w = w.div_ceil(2);
+    let uv_h = h.div_ceil(2);
     for row in 0..uv_h {
         for col in 0..uv_w {
             let mut r_sum = 0i32;
@@ -99,10 +99,11 @@ pub fn encode_webp(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     #[cfg(feature = "gpu")]
     {
-        if width >= 256 && height >= 256 {
-            if let Some(result) = crate::webp_gpu::encode_webp_gpu(rgb, width, height, quality) {
-                return Ok(result);
-            }
+        if width >= 256
+            && height >= 256
+            && let Some(result) = crate::webp_gpu::encode_webp_gpu(rgb, width, height, quality)
+        {
+            return Ok(result);
         }
     }
     encode_webp_cpu(rgb, width, height, quality)
@@ -145,8 +146,8 @@ pub fn encode_webp_from_yuv(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let width = yuv.width;
     let height = yuv.height;
-    let mb_cols = ((width + 15) / 16) as usize;
-    let mb_rows = ((height + 15) / 16) as usize;
+    let mb_cols = width.div_ceil(16) as usize;
+    let mb_rows = height.div_ceil(16) as usize;
     let mb_count = mb_cols * mb_rows;
 
     let q_index = quality_to_qindex(quality);

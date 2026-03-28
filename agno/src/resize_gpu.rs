@@ -100,7 +100,7 @@ pub fn resize_gpu(
     let h_workgroups = workgroups_2d(dst_width, src_height);
     let intermediate: Vec<u32> = dispatch_and_read(
         ctx,
-        &h_pipeline,
+        h_pipeline,
         &h_bind_group,
         h_workgroups,
         &h_output_buffer,
@@ -146,7 +146,7 @@ pub fn resize_gpu(
     let v_workgroups = workgroups_2d(dst_width, dst_height);
     let packed_output: Vec<u32> = dispatch_and_read(
         ctx,
-        &v_pipeline,
+        v_pipeline,
         &v_bind_group,
         v_workgroups,
         &v_output_buffer,

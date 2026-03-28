@@ -61,7 +61,7 @@ fn fdct_1d_row(block: &mut [i32; 64], base: usize) {
     block[base] = t10 + t11;
     block[base + 4] = t10 - t11;
 
-    let z1 = (t12 + t13) * FIX_0_707106781 >> SHIFT;
+    let z1 = ((t12 + t13) * FIX_0_707106781) >> SHIFT;
     block[base + 2] = t13 + z1;
     block[base + 6] = t13 - z1;
 
@@ -70,10 +70,10 @@ fn fdct_1d_row(block: &mut [i32; 64], base: usize) {
     let t11 = t5 + t6;
     let t12 = t6 + t7;
 
-    let z5 = (t10 - t12) * FIX_0_382683433 >> SHIFT;
-    let z2 = (FIX_0_541196100 * t10 >> SHIFT) + z5;
-    let z4 = (FIX_1_306562965 * t12 >> SHIFT) + z5;
-    let z3 = t11 * FIX_0_707106781 >> SHIFT;
+    let z5 = ((t10 - t12) * FIX_0_382683433) >> SHIFT;
+    let z2 = ((FIX_0_541196100 * t10) >> SHIFT) + z5;
+    let z4 = ((FIX_1_306562965 * t12) >> SHIFT) + z5;
+    let z3 = (t11 * FIX_0_707106781) >> SHIFT;
 
     let z11 = t7 + z3;
     let z13 = t7 - z3;
@@ -113,7 +113,7 @@ fn fdct_1d_col(block: &mut [i32; 64], col: usize) {
     block[col] = t10 + t11;
     block[col + 32] = t10 - t11;
 
-    let z1 = (t12 + t13) * FIX_0_707106781 >> SHIFT;
+    let z1 = ((t12 + t13) * FIX_0_707106781) >> SHIFT;
     block[col + 16] = t13 + z1;
     block[col + 48] = t13 - z1;
 
@@ -122,10 +122,10 @@ fn fdct_1d_col(block: &mut [i32; 64], col: usize) {
     let t11 = t5 + t6;
     let t12 = t6 + t7;
 
-    let z5 = (t10 - t12) * FIX_0_382683433 >> SHIFT;
-    let z2 = (FIX_0_541196100 * t10 >> SHIFT) + z5;
-    let z4 = (FIX_1_306562965 * t12 >> SHIFT) + z5;
-    let z3 = t11 * FIX_0_707106781 >> SHIFT;
+    let z5 = ((t10 - t12) * FIX_0_382683433) >> SHIFT;
+    let z2 = ((FIX_0_541196100 * t10) >> SHIFT) + z5;
+    let z4 = ((FIX_1_306562965 * t12) >> SHIFT) + z5;
+    let z3 = (t11 * FIX_0_707106781) >> SHIFT;
 
     let z11 = t7 + z3;
     let z13 = t7 - z3;

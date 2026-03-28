@@ -231,6 +231,7 @@ fn default_scaling_value(x: u32, y: u32, log2_size: u32, c_idx: u8) -> i32 {
 /// - `log2_size`: log2 of the transform block width (2 for 4x4, 3 for 8x8, etc.)
 /// - `scaling_list_enabled`: whether the SPS scaling_list_enable_flag is set
 /// - `c_idx`: color component index (0=Y, 1=Cb, 2=Cr)
+#[allow(clippy::needless_range_loop)]
 pub fn dequantize(
     coeffs: &mut [i32],
     qp: i32,

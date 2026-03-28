@@ -218,20 +218,19 @@ fn extract_item_hvcc<R: Read + Seek>(
         }
         if let Some((box_type, content_start, box_end)) =
             get_ipco_property_by_index(reader, ipco_start, ipco_end, idx)?
+            && &box_type == b"hvcC"
         {
-            if &box_type == b"hvcC" {
-                let len = (box_end - content_start) as usize;
-                ensure!(
-                    len <= 100_000,
-                    "hvcC box at offset {:#x}: size {} bytes exceeds 100 KB safety limit",
-                    content_start,
-                    len,
-                );
-                reader.seek(SeekFrom::Start(content_start))?;
-                let mut data = vec![0u8; len];
-                reader.read_exact(&mut data)?;
-                return Ok(data);
-            }
+            let len = (box_end - content_start) as usize;
+            ensure!(
+                len <= 100_000,
+                "hvcC box at offset {:#x}: size {} bytes exceeds 100 KB safety limit",
+                content_start,
+                len,
+            );
+            reader.seek(SeekFrom::Start(content_start))?;
+            let mut data = vec![0u8; len];
+            reader.read_exact(&mut data)?;
+            return Ok(data);
         }
     }
     bail!(
@@ -253,17 +252,16 @@ fn extract_item_ispe<R: Read + Seek>(
         }
         if let Some((box_type, content_start, _)) =
             get_ipco_property_by_index(reader, ipco_start, ipco_end, idx)?
+            && &box_type == b"ispe"
         {
-            if &box_type == b"ispe" {
-                // ispe is a FullBox: version(1) + flags(3) + width(4) + height(4)
-                reader.seek(SeekFrom::Start(content_start + 4))?;
-                let mut dims = [0u8; 8];
-                reader.read_exact(&mut dims)?;
-                let w = u32::from_be_bytes([dims[0], dims[1], dims[2], dims[3]]);
-                let h = u32::from_be_bytes([dims[4], dims[5], dims[6], dims[7]]);
-                if w > 0 && h > 0 {
-                    return Ok((w, h));
-                }
+            // ispe is a FullBox: version(1) + flags(3) + width(4) + height(4)
+            reader.seek(SeekFrom::Start(content_start + 4))?;
+            let mut dims = [0u8; 8];
+            reader.read_exact(&mut dims)?;
+            let w = u32::from_be_bytes([dims[0], dims[1], dims[2], dims[3]]);
+            let h = u32::from_be_bytes([dims[4], dims[5], dims[6], dims[7]]);
+            if w > 0 && h > 0 {
+                return Ok((w, h));
             }
         }
     }
@@ -390,6 +388,7 @@ pub fn parse_heif<R: Read + Seek>(reader: &mut R) -> Result<HeifImage> {
 ///
 /// Uses ipma to look up the hvcC for the first tile item, ensuring we get the
 /// correct decoder configuration even when multiple hvcC boxes exist in ipco.
+#[allow(clippy::too_many_arguments)]
 fn parse_grid_image<R: Read + Seek>(
     reader: &mut R,
     children_start: u64,
@@ -487,8 +486,8 @@ fn parse_grid_image<R: Read + Seek>(
 fn infer_grid_layout(tile_count: u32, width: u32, height: u32) -> (u32, u32) {
     // Square tile sizes
     for tile_size in [512u32, 256, 1024, 384, 640] {
-        let c = (width + tile_size - 1) / tile_size;
-        let r = (height + tile_size - 1) / tile_size;
+        let c = width.div_ceil(tile_size);
+        let r = height.div_ceil(tile_size);
         if c * r == tile_count {
             return (c, r);
         }
@@ -502,8 +501,8 @@ fn infer_grid_layout(tile_count: u32, width: u32, height: u32) -> (u32, u32) {
         (960, 640),
         (640, 960),
     ] {
-        let c = (width + tw - 1) / tw;
-        let r = (height + th - 1) / th;
+        let c = width.div_ceil(tw);
+        let r = height.div_ceil(th);
         if c * r == tile_count {
             return (c, r);
         }

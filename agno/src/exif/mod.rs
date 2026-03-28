@@ -30,7 +30,7 @@ impl ExifData {
         }
     }
 
-    fn from_bytes(bytes: &Vec<u8>, typ: u16) -> Self {
+    fn from_bytes(bytes: &[u8], typ: u16) -> Self {
         let len = bytes.len();
         let data = unsafe { libc::malloc(len) as *mut u8 };
         if data.is_null() {
@@ -301,7 +301,7 @@ impl ExifContext {
             (spec::IMAGE_HEIGHT.tag, ExifValue::Long(vec![height])),
         ]);
 
-        return Ok((0, Endian::Big, values));
+        Ok((0, Endian::Big, values))
     }
 
     // Parse EXIF from an ISOBMFF container (HEIC/HEIF/AVIF) by walking the box structure
@@ -379,22 +379,18 @@ impl ExifContext {
                             .map(|(cs, _)| cs);
                         if let Some(exif_id) =
                             isobmff_find_item_id_by_type(reader, iinf_start, b"Exif")?
-                        {
-                            if let Some(data) =
+                            && let Some(data) =
                                 isobmff_read_item_data(reader, iloc_start, exif_id, idat_cs)?
-                            {
-                                if data.len() >= 10 {
-                                    let tiff_off =
-                                        u32::from_be_bytes([data[0], data[1], data[2], data[3]])
-                                            as usize;
-                                    let start = 4 + tiff_off;
-                                    if start < data.len() {
-                                        return Self::from_tiff(
-                                            &mut Cursor::new(data[start..].to_vec()),
-                                            0,
-                                        );
-                                    }
-                                }
+                            && data.len() >= 10
+                        {
+                            let tiff_off =
+                                u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                            let start = 4 + tiff_off;
+                            if start < data.len() {
+                                return Self::from_tiff(
+                                    &mut Cursor::new(data[start..].to_vec()),
+                                    0,
+                                );
                             }
                         }
                     }
@@ -562,9 +558,7 @@ impl ExifContext {
                         // Only add MakerNotes entries that don't conflict with existing EXIF tags
                         // MakerNotes often reuse standard tag IDs for different purposes
                         for (tag, val) in makernote_tags {
-                            if !exif_values.contains_key(&tag) {
-                                exif_values.insert(tag, val);
-                            }
+                            exif_values.entry(tag).or_insert(val);
                         }
                     }
                 }
@@ -1169,7 +1163,7 @@ fn parse_sony_makernotes<R: Read + Seek>(
             buf
         };
 
-        if let Ok(val) = read_entry_value(data, endian, &entry) {
+        if let Ok(val) = read_entry_value(data, endian, entry) {
             result.insert(entry.tag, val);
         }
     }

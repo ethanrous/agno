@@ -389,14 +389,12 @@ impl Sps {
 
     /// Picture width in CTB units (rounded up).
     pub fn pic_width_in_ctbs(&self) -> u32 {
-        let ctb = self.ctb_size();
-        (self.pic_width_in_luma_samples + ctb - 1) / ctb
+        self.pic_width_in_luma_samples.div_ceil(self.ctb_size())
     }
 
     /// Picture height in CTB units (rounded up).
     pub fn pic_height_in_ctbs(&self) -> u32 {
-        let ctb = self.ctb_size();
-        (self.pic_height_in_luma_samples + ctb - 1) / ctb
+        self.pic_height_in_luma_samples.div_ceil(self.ctb_size())
     }
 
     /// Log2 of the minimum coding block size.
@@ -573,7 +571,7 @@ impl Sps {
             log2_diff_max_min_luma_transform_block_size,
             _max_transform_hierarchy_depth_inter: max_transform_hierarchy_depth_inter,
             max_transform_hierarchy_depth_intra,
-            scaling_list_enabled_flag: scaling_list_enabled_flag,
+            scaling_list_enabled_flag,
             _amp_enabled_flag: amp_enabled_flag,
             sample_adaptive_offset_enabled_flag,
             _pcm_enabled_flag: pcm_enabled_flag,

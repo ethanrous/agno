@@ -40,7 +40,11 @@ fn derive_bs_intra(pic: &Picture, x: u32, y: u32, vertical: bool, ctb_log2: u32)
         };
         let sl = 1u32 << (ctb_log2 - dl.min(ctb_log2));
         let sr = 1u32 << (ctb_log2 - dr.min(ctb_log2));
-        if x % sl == 0 || x % sr == 0 { 2 } else { 0 }
+        if x.is_multiple_of(sl) || x.is_multiple_of(sr) {
+            2
+        } else {
+            0
+        }
     } else {
         if y == 0 {
             return 0;
@@ -55,7 +59,11 @@ fn derive_bs_intra(pic: &Picture, x: u32, y: u32, vertical: bool, ctb_log2: u32)
         };
         let st = 1u32 << (ctb_log2 - dt.min(ctb_log2));
         let sb = 1u32 << (ctb_log2 - db.min(ctb_log2));
-        if y % st == 0 || y % sb == 0 { 2 } else { 0 }
+        if y.is_multiple_of(st) || y.is_multiple_of(sb) {
+            2
+        } else {
+            0
+        }
     }
 }
 
@@ -98,7 +106,7 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
             }
 
             // Chroma (when Bs >= 2)
-            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (height + 1) / 2 {
+            if bs >= 2 && x / 2 < width.div_ceil(2) && y / 2 < height.div_ceil(2) {
                 let tc_c_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
                 let tc_c = TC_TABLE[tc_c_idx as usize];
                 if tc_c > 0 {
@@ -136,7 +144,7 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
                 deblock_luma_edge_h(pic, x, y, beta, tc, bit_depth_y);
             }
 
-            if bs >= 2 && x / 2 < (width + 1) / 2 && y / 2 < (height + 1) / 2 {
+            if bs >= 2 && x / 2 < width.div_ceil(2) && y / 2 < height.div_ceil(2) {
                 let tc_c_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
                 let tc_c = TC_TABLE[tc_c_idx as usize];
                 if tc_c > 0 {
@@ -392,8 +400,8 @@ fn deblock_chroma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, tc: i32, bit_de
     let max_val = (1 << bit_depth) - 1;
     let cx = edge_x / 2;
     let cy = y / 2;
-    let cw = (pic.width + 1) / 2;
-    let ch = (pic.height + 1) / 2;
+    let cw = pic.width.div_ceil(2);
+    let ch = pic.height.div_ceil(2);
 
     for dy in 0..2u32 {
         let c_y = cy + dy;
@@ -441,8 +449,8 @@ fn deblock_chroma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, tc: i32, bit_de
     let max_val = (1 << bit_depth) - 1;
     let cx = x / 2;
     let cy = edge_y / 2;
-    let cw = (pic.width + 1) / 2;
-    let ch = (pic.height + 1) / 2;
+    let cw = pic.width.div_ceil(2);
+    let ch = pic.height.div_ceil(2);
 
     for dx in 0..2u32 {
         let c_x = cx + dx;
@@ -533,8 +541,8 @@ pub fn apply_sao(pic: &mut Picture, sps: &Sps) {
             );
 
             // Chroma
-            let cw = (width + 1) / 2;
-            let ch = (height + 1) / 2;
+            let cw = width.div_ceil(2);
+            let ch = height.div_ceil(2);
             let cx0 = x0 / 2;
             let cy0 = y0 / 2;
             let c_ctb = ctb_size / 2;
@@ -567,6 +575,7 @@ pub fn apply_sao(pic: &mut Picture, sps: &Sps) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_sao_component(
     dst: &mut [i16],
     src: &[i16],
@@ -597,7 +606,7 @@ fn apply_sao_component(
                 let band = (sample >> shift) & 31;
                 let band_start = sao.sao_band_position as i32;
                 let band_off = band - band_start;
-                if band_off >= 0 && band_off < 4 {
+                if (0..4).contains(&band_off) {
                     let offset = sao.sao_offset[band_off as usize] as i32;
                     dst[idx] = clip3(0, max_val, sample + offset) as i16;
                 }

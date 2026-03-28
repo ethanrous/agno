@@ -16,6 +16,7 @@ const GPU_KERNELS_SPV: &[u8] = include_bytes!(env!("GPU_KERNELS_SPV_PATH"));
 
 /// Attempt GPU-accelerated bilinear demosaic.
 /// Returns None if GPU is unavailable, allowing fallback to CPU.
+#[allow(clippy::too_many_arguments)]
 pub fn demosaic_bilinear_to_rgb8_gpu(
     raw: &[u16],
     dims: Dimensions,

@@ -83,9 +83,7 @@ pub extern "C" fn resize_image(
 
     unsafe {
         let real_img = Box::from_raw(img);
-        let new_img = ok_or_null!(scale_image(*real_img, new_width as u32, new_height as u32));
-
-        new_img
+        ok_or_null!(scale_image(*real_img, new_width as u32, new_height as u32))
     }
 }
 

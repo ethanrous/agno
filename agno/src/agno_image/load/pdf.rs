@@ -53,6 +53,7 @@ pub fn load_pdf_page_from_bytes(
 /// Render a PDF page using hayro (pure Rust).
 /// Returns (rgb8_data, width, height, page_count) on success.
 #[cfg(feature = "pdf")]
+#[allow(clippy::type_complexity)]
 fn render_with_hayro(
     data: &[u8],
     page_index: usize,
@@ -177,6 +178,7 @@ fn render_pdfium_fallback(
 
 /// When pdfium is not available, just propagate the original hayro error.
 #[cfg(all(feature = "pdf", not(feature = "pdf-pdfium")))]
+#[allow(clippy::type_complexity)]
 fn render_pdfium_fallback(
     _data: &[u8],
     _page_index: usize,
@@ -404,7 +406,11 @@ mod tests {
     fn multi_page_pdf_reports_correct_page_count() {
         let data = make_multi_page_pdf();
         let img = load_pdf_page_from_bytes(&data, 0, None, ExifContext::default()).unwrap();
-        assert_eq!(img.page_count, 3, "Expected 3 pages, got {}", img.page_count);
+        assert_eq!(
+            img.page_count, 3,
+            "Expected 3 pages, got {}",
+            img.page_count
+        );
     }
 
     #[test]
@@ -412,12 +418,11 @@ mod tests {
         let data = make_multi_page_pdf();
         for page in 0..3 {
             let img = load_pdf_page_from_bytes(&data, page, None, ExifContext::default()).unwrap();
-            assert!(img.width > 0 && img.height > 0, "Page {page} has zero dimensions");
-            assert_eq!(
-                img.page_count,
-                3,
-                "Page {page} should report total count 3"
+            assert!(
+                img.width > 0 && img.height > 0,
+                "Page {page} has zero dimensions"
             );
+            assert_eq!(img.page_count, 3, "Page {page} should report total count 3");
         }
     }
 }

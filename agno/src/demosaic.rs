@@ -16,7 +16,7 @@ const EXPOSURE_EV: f32 = 1.2; // Sony RAW significantly underexposed
 #[cfg(not(feature = "gpu"))]
 const SATURATION: f32 = 1.25; // 25% saturation boost
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::upper_case_acronyms)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BayerPattern {
     RGGB, // Sony and Canon sensors
@@ -102,6 +102,7 @@ fn tone_u8(v: f32, gamma: f32) -> u8 {
 
 // Returns the black-subtracted, normalized, WB-scaled value at (y,x) as f32 (linear).
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn sample_wb(
     raw: &[u16],
     row: usize,
@@ -144,6 +145,7 @@ fn apply_color_matrix(r: f32, g: f32, b: f32, m: &[f32; 9]) -> (f32, f32, f32) {
 ///
 /// When the `gpu` feature is enabled and a GPU is available, this function
 /// uses GPU-accelerated processing. Otherwise, it falls back to CPU (Rayon).
+#[allow(clippy::too_many_arguments)]
 pub fn demosaic_bilinear_to_rgb8(
     raw: &[u16],
     dims: Dimensions,
@@ -188,6 +190,7 @@ pub fn demosaic_bilinear_to_rgb8(
 }
 
 /// CPU implementation of bilinear demosaic using Rayon for parallelization.
+#[allow(clippy::too_many_arguments)]
 fn demosaic_bilinear_to_rgb8_cpu(
     raw: &[u16],
     dims: Dimensions,

@@ -436,6 +436,7 @@ pub fn decrypt_sr2_data(decryptor: &mut SonyDecryptor, data: &mut [u8], key: u32
 //       starting at bit offset 30, each 7-bit code -> value = (code << sh) + min
 //       positions imax/imin are set to max/min respectively.
 // We decode blocks until we fill active_width pixels. Any trailing row bytes are ignored.
+#[allow(clippy::needless_range_loop)]
 pub fn sony_arw2_load_raw<R: Read>(
     reader: &mut R,
     dims: Dimensions,

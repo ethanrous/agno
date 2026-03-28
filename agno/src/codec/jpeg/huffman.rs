@@ -117,8 +117,7 @@ impl<W: Write> JpegBitWriter<W> {
     ) -> std::io::Result<()> {
         let mut zero_run: u8 = 0;
 
-        for i in 0..63 {
-            let val = coeffs[i];
+        for &val in coeffs.iter() {
             if val == 0 {
                 zero_run += 1;
                 continue;

@@ -2,7 +2,6 @@
 ///
 /// Stores decoded HEVC frame data as separate luma/chroma planes and provides
 /// conversion to interleaved RGB8 using BT.709 or BT.601 color matrices.
-
 /// ITU-T H.265 matrix coefficients identifier.
 /// Determines which YCbCr-to-RGB conversion matrix to apply.
 const MATRIX_COEFFS_BT709: u8 = 1;
@@ -80,8 +79,8 @@ impl Picture {
     /// Chroma dimensions are `width/2` x `height/2` for 4:2:0 subsampling.
     /// Strides equal dimensions (no alignment padding).
     pub fn new(width: u32, height: u32, bit_depth: u8) -> Self {
-        let chroma_w = (width + 1) / 2;
-        let chroma_h = (height + 1) / 2;
+        let chroma_w = width.div_ceil(2);
+        let chroma_h = height.div_ceil(2);
 
         let luma_len = (width as usize) * (height as usize);
         let chroma_len = (chroma_w as usize) * (chroma_h as usize);
@@ -120,8 +119,8 @@ impl Picture {
     /// `default_qp` is the slice QP used to initialize the QP map.
     pub fn init_metadata(&mut self, min_cb_log2: u32, default_qp: i32) {
         let min_cb = 1u32 << min_cb_log2;
-        let w = (self.width + min_cb - 1) / min_cb;
-        let h = (self.height + min_cb - 1) / min_cb;
+        let w = self.width.div_ceil(min_cb);
+        let h = self.height.div_ceil(min_cb);
         let len = (w * h) as usize;
         self.cu_depth = vec![0xFF; len];
         self.qp_y = vec![default_qp; len];
@@ -131,8 +130,8 @@ impl Picture {
         // Intra mode stored at MinPU granularity (MinCB / 2) for NxN sub-partition support
         let min_pu_log2 = min_cb_log2 - 1;
         let min_pu = 1u32 << min_pu_log2;
-        let iw = (self.width + min_pu - 1) / min_pu;
-        let ih = (self.height + min_pu - 1) / min_pu;
+        let iw = self.width.div_ceil(min_pu);
+        let ih = self.height.div_ceil(min_pu);
         self.intra_mode = vec![0; (iw * ih) as usize];
         self.intra_mode_stride = iw;
         self.intra_mode_log2 = min_pu_log2;
@@ -186,7 +185,7 @@ impl Picture {
         let min_pu = 1u32 << self.intra_mode_log2;
         let gx = x0 / min_pu;
         let gy = y0 / min_pu;
-        let cells = (pu_size + min_pu - 1) / min_pu;
+        let cells = pu_size.div_ceil(min_pu);
         for dy in 0..cells {
             for dx in 0..cells {
                 let ix = gx + dx;
@@ -257,7 +256,7 @@ impl Picture {
         let min_pu = 1u32 << self.reco_log2;
         let gx = x0 / min_pu;
         let gy = y0 / min_pu;
-        let cells = (tu_size + min_pu - 1) / min_pu;
+        let cells = tu_size.div_ceil(min_pu);
         for dy in 0..cells {
             for dx in 0..cells {
                 let ix = gx + dx;
@@ -374,7 +373,7 @@ impl Picture {
 
         for py in 0..h {
             let cy = py / 2;
-            let chroma_h_max = ((self.height as usize + 1) / 2).saturating_sub(1);
+            let chroma_h_max = (self.height as usize).div_ceil(2).saturating_sub(1);
             let cy_clamped = cy.min(chroma_h_max);
             let row_y_base = py * stride_y;
             let row_c_base = cy_clamped * stride_c;
@@ -382,14 +381,14 @@ impl Picture {
 
             for px in 0..w {
                 let cx = px / 2;
-                let chroma_w_max = ((self.width as usize + 1) / 2).saturating_sub(1);
+                let chroma_w_max = (self.width as usize).div_ceil(2).saturating_sub(1);
                 let cx_clamped = cx.min(chroma_w_max);
 
                 let y_val = self.y[row_y_base + px] >> shift;
                 let cb_val = self.cb[row_c_base + cx_clamped] >> shift;
                 let cr_val = self.cr[row_c_base + cx_clamped] >> shift;
 
-                let (r, g, b) = ycbcr_to_rgb(y_val, cb_val, cr_val, &coeffs);
+                let (r, g, b) = ycbcr_to_rgb(y_val, cb_val, cr_val, coeffs);
 
                 let out = rgb_row_base + px * 3;
                 rgb[out] = r;

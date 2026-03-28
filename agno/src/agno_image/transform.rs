@@ -98,7 +98,7 @@ pub fn auto_rotate_image(
         _ => rgb.to_vec(),
     };
 
-    if matches!(orientation, 5 | 6 | 7 | 8) {
+    if matches!(orientation, 5..=8) {
         std::mem::swap(&mut dims.output_width, &mut dims.output_height);
     }
 

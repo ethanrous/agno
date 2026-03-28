@@ -45,7 +45,7 @@ pub fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
                 ihdr = Some(parse_ihdr(chunk_data)?);
             }
             b"PLTE" => {
-                if chunk_len % 3 != 0 {
+                if !chunk_len.is_multiple_of(3) {
                     return Err("PLTE chunk length is not a multiple of 3".into());
                 }
                 palette = chunk_data.to_vec();
@@ -160,7 +160,7 @@ fn bytes_per_pixel(ihdr: &IhdrInfo) -> usize {
     };
     let bits = samples_per_pixel * (ihdr.bit_depth as usize);
     // bpp for filtering is ceil(bits / 8), minimum 1
-    (bits + 7) / 8
+    bits.div_ceil(8)
 }
 
 /// Byte count for one raw scanline (after filter reconstruction, no filter byte).
@@ -174,7 +174,7 @@ fn scanline_bytes(ihdr: &IhdrInfo) -> usize {
     };
     let total_bits = (ihdr.width as usize) * samples_per_pixel * (ihdr.bit_depth as usize);
     // Rows are padded to byte boundaries
-    (total_bits + 7) / 8
+    total_bits.div_ceil(8)
 }
 
 fn reconstruct_filters(decompressed: &[u8], ihdr: &IhdrInfo) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -391,7 +391,7 @@ fn unpack_subbyte_grayscale(
     let pixels_per_byte = 8 / bd;
     let mask = (1u8 << bd) - 1;
     let max_val = mask as f32;
-    let stride = (width * bd + 7) / 8;
+    let stride = (width * bd).div_ceil(8);
 
     for y in 0..height {
         for x in 0..width {
@@ -422,7 +422,7 @@ fn unpack_subbyte_indexed(
     let bd = bit_depth as usize;
     let pixels_per_byte = 8 / bd;
     let mask = (1u8 << bd) - 1;
-    let stride = (width * bd + 7) / 8;
+    let stride = (width * bd).div_ceil(8);
 
     for y in 0..height {
         for x in 0..width {

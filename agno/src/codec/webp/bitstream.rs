@@ -389,7 +389,7 @@ pub fn encode_vp8_frame(
 ) -> Vec<u8> {
     let mb_count = mb_modes_y.len();
     let q_index = find_qindex(quantizer);
-    let mb_cols = ((width + 15) / 16) as usize;
+    let mb_cols = width.div_ceil(16) as usize;
 
     // Estimate prob_skip_false from skip flag statistics.
     let skip_count = skip_flags.iter().filter(|&&s| s).count();
@@ -502,11 +502,11 @@ fn encode_first_partition(
     // 4 types * 8 bands * 3 contexts * 11 nodes = 1056 flags.
     // Each flag is written with the corresponding update probability.
     // We send all false (no updates = use defaults).
-    for t in 0..4 {
-        for b in 0..8 {
-            for c in 0..3 {
-                for n in 0..11 {
-                    enc.put_bit(false, COEFF_UPDATE_PROBS[t][b][c][n]);
+    for probs_t in &COEFF_UPDATE_PROBS {
+        for probs_b in probs_t {
+            for probs_c in probs_b {
+                for &prob_n in probs_c {
+                    enc.put_bit(false, prob_n);
                 }
             }
         }
@@ -808,8 +808,8 @@ fn encode_token_tree(enc: &mut BoolEncoder, probs: &[u8; 11], abs_val: u32) {
             enc.put_bit(true, probs[8]);
             enc.put_bit(true, probs[10]);
             let extra = abs_val - 67;
-            for i in 0..11 {
-                enc.put_bit(extra >> (10 - i) & 1 != 0, CAT6_PROB[i]);
+            for (i, &prob) in CAT6_PROB.iter().enumerate() {
+                enc.put_bit(extra >> (10 - i) & 1 != 0, prob);
             }
         }
     }

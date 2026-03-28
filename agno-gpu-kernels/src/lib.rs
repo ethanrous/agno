@@ -12,8 +12,9 @@ use agno_gpu_shared::{
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
-/// Saturating subtraction for u32 (SPIR-V doesn't have this builtin)
+/// Saturating subtraction for u32 (SPIR-V doesn't have saturating_sub builtin)
 #[inline]
+#[allow(clippy::implicit_saturating_sub)]
 fn saturating_sub_u32(a: u32, b: u32) -> u32 {
     if a > b {
         a - b
@@ -163,9 +164,9 @@ pub fn demosaic_kernel(
     b = max_f32(b_cc, 0.0);
 
     // Apply exposure compensation
-    r = r * params.exposure_mult;
-    g = g * params.exposure_mult;
-    b = b * params.exposure_mult;
+    r *= params.exposure_mult;
+    g *= params.exposure_mult;
+    b *= params.exposure_mult;
 
     // Apply saturation boost
     let (r_sat, g_sat, b_sat) = apply_saturation(r, g, b, params.saturation);
@@ -204,7 +205,11 @@ pub fn resize_horizontal_kernel(
     let radius = params.filter_radius as i32;
     // When downscaling, filter_radius is 3*scale. Normalize distances
     // by scale so the Lanczos kernel shape is preserved over the wider window.
-    let filter_scale = if params.scale_x > 1.0 { params.scale_x } else { 1.0 };
+    let filter_scale = if params.scale_x > 1.0 {
+        params.scale_x
+    } else {
+        1.0
+    };
 
     let mut sum_r = 0.0f32;
     let mut sum_g = 0.0f32;
@@ -258,7 +263,11 @@ pub fn resize_vertical_kernel(
     let src_y_f = (dst_y as f32 + 0.5) * params.scale_y - 0.5;
     let src_y_center = src_y_f as i32;
     let radius = params.filter_radius as i32;
-    let filter_scale = if params.scale_y > 1.0 { params.scale_y } else { 1.0 };
+    let filter_scale = if params.scale_y > 1.0 {
+        params.scale_y
+    } else {
+        1.0
+    };
 
     let mut sum_r = 0.0f32;
     let mut sum_g = 0.0f32;

@@ -12,7 +12,7 @@ pub fn write_webp_from_rgb8_writer<W: Write>(
     quality: u8,
 ) -> Result<(), DecodeError> {
     let encoded = crate::codec::webp::encode_webp(rgb, width, height, quality)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     writer.write_all(&encoded)?;
 
     Ok(())

@@ -27,8 +27,8 @@ pub struct BoolEncoder {
     started: bool,
 }
 
-impl BoolEncoder {
-    pub fn new() -> Self {
+impl Default for BoolEncoder {
+    fn default() -> Self {
         Self {
             output: Vec::new(),
             range: 255,
@@ -38,6 +38,12 @@ impl BoolEncoder {
             pre_carry_byte: 0,
             started: false,
         }
+    }
+}
+
+impl BoolEncoder {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Encode one bit with given probability (0-255, prob of bit being 0).

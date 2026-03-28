@@ -68,14 +68,12 @@ fn try_heif_style_thumbnail(file: &mut File) -> Result<Option<Vec<u8>>, Box<dyn 
 
     // Try both "jpeg" and "JPEG" item types
     for target in [b"jpeg", b"JPEG"] {
-        if let Some(item_id) = isobmff_find_item_id_by_type(file, iinf_start, target)? {
-            if let Some(data) =
+        if let Some(item_id) = isobmff_find_item_id_by_type(file, iinf_start, target)?
+            && let Some(data) =
                 isobmff_read_item_data(file, iloc_start, item_id, idat_content_start)?
-            {
-                if is_jpeg(&data) {
-                    return Ok(Some(data));
-                }
-            }
+            && is_jpeg(&data)
+        {
+            return Ok(Some(data));
         }
     }
 
@@ -101,10 +99,10 @@ fn try_thumbnail_track(file: &mut File) -> Result<Option<Vec<u8>>, Box<dyn Error
             None => break,
         };
 
-        if let Some(data) = try_extract_from_trak(file, trak_start, trak_end)? {
-            if is_jpeg(&data) {
-                return Ok(Some(data));
-            }
+        if let Some(data) = try_extract_from_trak(file, trak_start, trak_end)?
+            && is_jpeg(&data)
+        {
+            return Ok(Some(data));
         }
 
         trak_pos = trak_end;
@@ -154,24 +152,23 @@ fn try_extract_from_trak(
     };
 
     // For video tracks, check dimensions via stsd to confirm it's a small thumbnail
-    if is_video_track {
-        if let Some((stsd_start, _stsd_end)) =
+    if is_video_track
+        && let Some((stsd_start, _stsd_end)) =
             isobmff_find_box(file, stbl_start, stbl_end, b"stsd")?
-        {
-            // stsd is a FullBox: version(1) + flags(3) + entry_count(4)
-            // Then first entry: size(4) + type(4) + reserved(6) + data_ref_index(2) +
-            // pre_defined(2) + reserved(2) + pre_defined(12) + width(2) + height(2)
-            file.seek(SeekFrom::Start(
-                stsd_start + 4 + 4 + 4 + 4 + 6 + 2 + 2 + 2 + 12,
-            ))?;
-            let mut dims = [0u8; 4];
-            file.read_exact(&mut dims)?;
-            let width = u16::from_be_bytes([dims[0], dims[1]]);
-            let height = u16::from_be_bytes([dims[2], dims[3]]);
-            // Only consider small tracks as thumbnails (< 1280 in both dimensions)
-            if width > 1280 || height > 1280 {
-                return Ok(None);
-            }
+    {
+        // stsd is a FullBox: version(1) + flags(3) + entry_count(4)
+        // Then first entry: size(4) + type(4) + reserved(6) + data_ref_index(2) +
+        // pre_defined(2) + reserved(2) + pre_defined(12) + width(2) + height(2)
+        file.seek(SeekFrom::Start(
+            stsd_start + 4 + 4 + 4 + 4 + 6 + 2 + 2 + 2 + 12,
+        ))?;
+        let mut dims = [0u8; 4];
+        file.read_exact(&mut dims)?;
+        let width = u16::from_be_bytes([dims[0], dims[1]]);
+        let height = u16::from_be_bytes([dims[2], dims[3]]);
+        // Only consider small tracks as thumbnails (< 1280 in both dimensions)
+        if width > 1280 || height > 1280 {
+            return Ok(None);
         }
     }
 
@@ -179,11 +176,12 @@ fn try_extract_from_trak(
     let first_offset = read_first_chunk_offset(file, stbl_start, stbl_end)?;
     let first_size = read_first_sample_size(file, stbl_start, stbl_end)?;
 
-    if let (Some(offset), Some(size)) = (first_offset, first_size) {
-        if size > 0 && size < 10_000_000 {
-            let data = read_bytes_at(file, offset, size as usize)?;
-            return Ok(Some(data));
-        }
+    if let (Some(offset), Some(size)) = (first_offset, first_size)
+        && size > 0
+        && size < 10_000_000
+    {
+        let data = read_bytes_at(file, offset, size as usize)?;
+        return Ok(Some(data));
     }
 
     Ok(None)

@@ -56,20 +56,20 @@ jobs:
 
       - name: Build static library
         env:
+          TARGET_TRIPLE: ${{ matrix.target.triple }}
           AGNO_FEATURES: ${{ matrix.gpu.features }}
         run: |
-          if [ "${{ matrix.target.triple }}" = "aarch64-unknown-linux-gnu" ]; then
+          if [ "$TARGET_TRIPLE" = "aarch64-unknown-linux-gnu" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
           fi
-          cargo build -p agno --release --lib --target ${{ matrix.target.triple }} \
-            --no-default-features --features "$AGNO_FEATURES"
+          ./build/sh/build-agno.bash libagno.a
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: libagno-${{ matrix.target.platform }}${{ matrix.gpu.suffix }}.a
-          path: target/${{ matrix.target.triple }}/release/libagno.a
+          path: libagno.a
 
   release:
     name: Create Release

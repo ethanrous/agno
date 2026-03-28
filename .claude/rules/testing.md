@@ -4,22 +4,19 @@
 
 ```bash
 # All agno tests
-cargo test -p agno
-
-# Specific test file
-cargo test -p agno --test encoder_tests
+just test
 
 # Specific test by name
-cargo test -p agno --test encoder_tests jpeg_roundtrip
-
-# With output (for debugging)
-cargo test -p agno -- --nocapture
+just test jpeg_roundtrip
 
 # Release mode (matches production behavior, catches debug-only issues)
-cargo test -p agno --release
+just test --release
+
+# With output (for debugging — pass --nocapture)
+just test --nocapture
 ```
 
-No special test script needed (unlike the parent Go project). Standard `cargo test` works.
+Raw `cargo test -p agno` also works. See `justfile` for the exact invocations.
 
 ## Test Locations
 

@@ -8,30 +8,43 @@ Agno is a Rust image processing library with GPU acceleration. Supports JPEG, PN
 
 ## Build & Test
 
+Uses [`just`](https://github.com/casey/just) as the task runner (install: `cargo install just` or `brew install just`).
+
 ```bash
-# Build (GPU enabled by default)
-cargo build -p agno
-
-# Build without GPU (CPU-only)
-cargo build -p agno --no-default-features
-
 # Build release static library
-./build/sh/build-agno.bash /path/to/output/libagno.a
+just build                                          # default output: libagno.a
+just build libagno.a --target aarch64-apple-darwin  # cross-compile
+just build libagno.a --features gpu,jpeg,png,webp   # custom features
+
+# Build via Docker (cross-compilation)
+just docker-build arm64
+just docker-build amd64 --pdf
 
 # Run tests
-cargo test -p agno
-cargo test -p agno --test encoder_tests
-
-# Run CLI
-cargo run -p agno -- exif <file>
-cargo run -p agno -- convert <input> <output>
+just test                       # all tests
+just test jpeg_roundtrip        # specific test
+just test --release             # release mode
 
 # Lint
-cargo clippy -p agno
+just lint                       # check formatting + clippy
+just lint --fix                 # auto-fix
 
-# Format (always run after making changes)
-cargo fmt -p agno
+# Format / clippy individually
+just fmt
+just clippy
+
+# Fast compile check (no codegen)
+just check
+
+# Run CLI
+just run exif <file>
+just run convert <input> <output>
+
+# Clean
+just clean
 ```
+
+Raw cargo commands also work — see `justfile` for the exact invocations.
 
 ## Workspace Structure
 

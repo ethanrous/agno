@@ -283,6 +283,7 @@ impl<'a> CabacReader<'a> {
         decoded
     }
 
+    #[allow(clippy::let_and_return)]
     fn decode_bypass(&mut self) -> u8 {
         self.byp_count += 1;
         self.offset = (self.offset << 1) | self.read_raw(1);
@@ -309,6 +310,7 @@ impl<'a> CabacReader<'a> {
         v
     }
 
+    #[allow(clippy::let_and_return)]
     fn decode_terminate(&mut self) -> bool {
         self.trm_count += 1;
         self.range -= 2;
@@ -684,7 +686,7 @@ pub fn decode_slice(
     let first_slice = br.read_flag()?;
 
     // 2. no_output_of_prior_pics_flag (IRAP NAL types: BLA_W_LP=16..RSV_IRAP_VCL23=23)
-    if nal_type >= 16 && nal_type <= 23 {
+    if (16..=23).contains(&nal_type) {
         let _no_output_of_prior_pics_flag = br.read_flag()?;
     }
 
@@ -737,11 +739,11 @@ pub fn decode_slice(
 
         if sps._long_term_ref_pics_present_flag {
             let num_lt_sps = if sps._num_long_term_ref_pics_sps > 0 {
-                br.read_ue()? as u32
+                br.read_ue()?
             } else {
                 0
             };
-            let num_lt_pics = br.read_ue()? as u32;
+            let num_lt_pics = br.read_ue()?;
             let lt_bits = sps._log2_max_pic_order_cnt_lsb_minus4 + 4;
             for i in 0..(num_lt_sps + num_lt_pics) {
                 if i < num_lt_sps {
@@ -795,13 +797,11 @@ pub fn decode_slice(
     }
 
     // 13. Deblocking filter override
-    if pps.deblocking_filter_override_enabled_flag {
-        if br.read_flag()? {
-            let dis = br.read_flag()?;
-            if !dis {
-                let _ = br.read_se()?; // beta_offset
-                let _ = br.read_se()?; // tc_offset
-            }
+    if pps.deblocking_filter_override_enabled_flag && br.read_flag()? {
+        let dis = br.read_flag()?;
+        if !dis {
+            let _ = br.read_se()?; // beta_offset
+            let _ = br.read_se()?; // tc_offset
         }
     }
 
@@ -837,7 +837,7 @@ pub fn decode_slice(
     // 15. Byte-align for CABAC
     if br.bits_remaining() > 0 {
         let _ = br.read_bit()?; // alignment_bit_equal_to_one
-        while br.bits_remaining() % 8 != 0 {
+        while !br.bits_remaining().is_multiple_of(8) {
             let _ = br.read_bit()?;
         }
     }
@@ -904,7 +904,7 @@ pub fn decode_slice(
         if wpp_enabled && cx == 0 && cy > 0 {
             let substream_idx = cy as usize;
             if substream_idx < substreams.len() {
-                let mut new_cab = CabacReader::new(&substreams[substream_idx], 0);
+                let mut new_cab = CabacReader::new(substreams[substream_idx], 0);
                 new_cab.init_contexts(slice_qp);
                 if let Some(ref saved) = wpp_saved_ctx {
                     new_cab.restore_contexts(saved);
@@ -983,6 +983,7 @@ pub fn decode_slice(
 /// Correct ordering: for each component (Y, Cb, Cr), decode type then offsets
 /// before moving to the next component. Cr type is copied from Cb (not decoded),
 /// and Cr eo_class is copied from Cb (not decoded).
+#[allow(clippy::too_many_arguments)]
 fn decode_sao(
     cab: &mut CabacReader,
     luma: bool,
@@ -994,23 +995,19 @@ fn decode_sao(
     w_ctbs: usize,
 ) -> CtuSaoParams {
     // sao_merge flags are decoded once for the CTU, not per-component
-    if rx > 0 {
-        if cab.decode_decision(CTX_SAO_MERGE) != 0 {
-            return if addr > 0 {
-                sao_params[addr - 1].clone()
-            } else {
-                CtuSaoParams::default()
-            };
-        }
+    if rx > 0 && cab.decode_decision(CTX_SAO_MERGE) != 0 {
+        return if addr > 0 {
+            sao_params[addr - 1].clone()
+        } else {
+            CtuSaoParams::default()
+        };
     }
-    if ry > 0 {
-        if cab.decode_decision(CTX_SAO_MERGE) != 0 {
-            return if addr >= w_ctbs {
-                sao_params[addr - w_ctbs].clone()
-            } else {
-                CtuSaoParams::default()
-            };
-        }
+    if ry > 0 && cab.decode_decision(CTX_SAO_MERGE) != 0 {
+        return if addr >= w_ctbs {
+            sao_params[addr - w_ctbs].clone()
+        } else {
+            CtuSaoParams::default()
+        };
     }
 
     let mut p = CtuSaoParams::default();
@@ -1064,8 +1061,10 @@ fn decode_sao_component(
     c_idx: u8,
     cb: &SaoParams,
 ) -> SaoParams {
-    let mut s = SaoParams::default();
-    s.sao_type_idx = sao_type;
+    let mut s = SaoParams {
+        sao_type_idx: sao_type,
+        ..Default::default()
+    };
 
     // sao_offset_abs: truncated unary, max 7
     for i in 0..4 {
@@ -1237,8 +1236,8 @@ fn decode_cu(
 
         // Step 1: Decode all 4 prev_intra_luma_pred_flag bins (context-coded)
         let mut prev_flag = [false; 4];
-        for i in 0..4 {
-            prev_flag[i] = cab.decode_decision(CTX_PREV_INTRA_PRED) != 0;
+        for flag in &mut prev_flag {
+            *flag = cab.decode_decision(CTX_PREV_INTRA_PRED) != 0;
         }
 
         // Step 2: Decode all 4 rem/mpm modes (bypass-coded)
@@ -1616,8 +1615,8 @@ fn decode_tu_nxn(
     let cl = cu_log2 - 1; // log2(4) = 2
     let cx = x_base / 2;
     let cy = y_base / 2;
-    let cw = (pic.width + 1) / 2;
-    let ch = (pic.height + 1) / 2;
+    let cw = pic.width.div_ceil(2);
+    let ch = pic.height.div_ceil(2);
     let cb_qp_actual = chroma_qp(qp + cb_qp);
     let cr_qp_actual = chroma_qp(qp + cr_qp);
 
@@ -1818,8 +1817,8 @@ fn decode_tu(
     let cl = log2 - 1;
     let cx = x0 / 2;
     let cy = y0 / 2;
-    let cw = (pic.width + 1) / 2;
-    let ch = (pic.height + 1) / 2;
+    let cw = pic.width.div_ceil(2);
+    let ch = pic.height.div_ceil(2);
 
     // H.265 7.3.8.11: chroma transform_skip_flag (context +1 for chroma)
     let ts_cb = if pps.transform_skip_enabled_flag && cl <= 2 {
@@ -1921,9 +1920,9 @@ fn decode_tu(
 
 fn derive_scan_type(luma_log2_trafo: u32, intra_pred_mode: u8) -> ScanType {
     if luma_log2_trafo < 4 {
-        if intra_pred_mode >= 6 && intra_pred_mode <= 14 {
+        if (6..=14).contains(&intra_pred_mode) {
             ScanType::Vert
-        } else if intra_pred_mode >= 22 && intra_pred_mode <= 30 {
+        } else if (22..=30).contains(&intra_pred_mode) {
             ScanType::Horiz
         } else {
             ScanType::Diag
@@ -2115,12 +2114,10 @@ fn decode_residual(
                         } else {
                             scf_offset += 21;
                         }
+                    } else if log2 == 3 {
+                        scf_offset += 9;
                     } else {
-                        if log2 == 3 {
-                            scf_offset += 9;
-                        } else {
-                            scf_offset += 12;
-                        }
+                        scf_offset += 12;
                     }
                 }
                 let x_c = coeff_scan[sp][0];
@@ -2148,12 +2145,10 @@ fn decode_residual(
                             } else {
                                 scf_offset += 21;
                             }
+                        } else if log2 == 3 {
+                            scf_offset += 9;
                         } else {
-                            if log2 == 3 {
-                                scf_offset += 9;
-                            } else {
-                                scf_offset += 12;
-                            }
+                            scf_offset += 12;
                         }
                     }
                     2 + scf_offset
@@ -2207,18 +2202,18 @@ fn decode_residual(
         // Track whether this sub-block had any gt1 (for next sub-block's ctx_set)
         prev_sub_gt1 = gt1_ctx == 0;
 
-        if let Some(p) = first_gt2 {
-            if cab.decode_decision(CTX_GT2 + ctx_set + gt2_chroma) != 0 {
-                abs[p] = 3;
-            }
+        if let Some(p) = first_gt2
+            && cab.decode_decision(CTX_GT2 + ctx_set + gt2_chroma) != 0
+        {
+            abs[p] = 3;
         }
 
         // Sign data hiding (H.265 7.4.9.11): determine if sign of first
         // non-zero coefficient is inferred from parity rather than decoded.
         let mut first_nz_pos: i32 = 16;
         let mut last_nz_pos: i32 = -1;
-        for sp in 0..16 {
-            if sig[sp] {
+        for (sp, &is_sig) in sig.iter().enumerate() {
+            if is_sig {
                 if first_nz_pos == 16 {
                     first_nz_pos = sp as i32;
                 }

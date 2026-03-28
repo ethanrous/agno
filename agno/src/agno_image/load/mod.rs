@@ -1,5 +1,6 @@
 pub mod canon;
 pub mod heic;
+#[allow(clippy::module_inception)]
 pub mod load;
 pub mod mov;
 pub mod pdf;

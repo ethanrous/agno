@@ -68,10 +68,10 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
     // H.265 8.7: Deblocking and SAO are post-reconstruction filters applied
     // after all CTUs in the picture are decoded. Applying deblocking in-loop
     // (per-CTU) would corrupt intra prediction reference samples for later CTUs.
-    if !pps.pps_deblocking_filter_disabled_flag && !std::env::var("AGNO_NO_DEBLOCK").is_ok() {
+    if !pps.pps_deblocking_filter_disabled_flag && std::env::var("AGNO_NO_DEBLOCK").is_err() {
         filter::deblock(&mut pic, &sps, &pps);
     }
-    if sps.sample_adaptive_offset_enabled_flag && !std::env::var("AGNO_NO_SAO").is_ok() {
+    if sps.sample_adaptive_offset_enabled_flag && std::env::var("AGNO_NO_SAO").is_err() {
         filter::apply_sao(&mut pic, &sps);
     }
 
@@ -79,6 +79,7 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
 }
 
 /// Parse the HEVCDecoderConfigurationRecord to extract VPS, SPS, PPS NAL unit data.
+#[allow(clippy::type_complexity)]
 fn parse_hvcc_nals(hvcc: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
     if hvcc.len() < 23 {
         bail!("hvcC too short: {} bytes", hvcc.len());
@@ -166,7 +167,7 @@ fn extract_slice_nals_with_type(data: &[u8], length_size: usize) -> Result<Vec<(
             // BLA_W_LP=16, BLA_W_RADL=17, BLA_N_LP=18
             if nal_type <= 21 {
                 // Skip 2-byte NAL header, keep nal_type for downstream use
-                nals.push((nal_type as u8, data[pos + 2..pos + nal_len].to_vec()));
+                nals.push((nal_type, data[pos + 2..pos + nal_len].to_vec()));
             }
         }
 

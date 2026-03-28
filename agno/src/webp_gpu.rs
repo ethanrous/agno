@@ -82,8 +82,8 @@ pub fn encode_webp_gpu(rgb: &[u8], width: u32, height: u32, quality: u8) -> Opti
     let h = height as usize;
     let y_stride = (w + 15) & !15;
     let y_height = (h + 15) & !15;
-    let uv_stride = ((w + 1) / 2 + 7) & !7; // ceil(w/2), matching encode.rs
-    let uv_height = ((h + 1) / 2 + 7) & !7; // ceil(h/2), matching encode.rs
+    let uv_stride = (w.div_ceil(2) + 7) & !7; // ceil(w/2), matching encode.rs
+    let uv_height = (h.div_ceil(2) + 7) & !7; // ceil(h/2), matching encode.rs
 
     let mut y_plane = vec![0u8; y_stride * y_height];
     let mut u_plane = vec![128u8; uv_stride * uv_height];
@@ -128,5 +128,5 @@ pub fn encode_webp_gpu(rgb: &[u8], width: u32, height: u32, quality: u8) -> Opti
         height,
     };
 
-    Some(crate::codec::webp::encode::encode_webp_from_yuv(&yuv, quality).ok()?)
+    crate::codec::webp::encode::encode_webp_from_yuv(&yuv, quality).ok()
 }
