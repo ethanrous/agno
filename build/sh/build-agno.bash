@@ -60,6 +60,7 @@ if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
             '/repos/nicholasgasior/pdfium-binaries/releases?per_page=1' | jq -r '.[0].tag_name')
         curl -fsSL "https://github.com/nicholasgasior/pdfium-binaries/releases/download/${latest_release}/${PDFIUM_ARCHIVE}" \
             -o /tmp/pdfium.tgz
+        mkdir -p /tmp/pdfium-extract
         tar -xzf /tmp/pdfium.tgz -C /tmp/pdfium-extract
         mkdir -p "${LIB_DIR}"
         find /tmp/pdfium-extract -name "libpdfium.a" -exec mv {} "${LIB_DIR}/libpdfium.a" \;
