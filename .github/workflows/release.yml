@@ -13,20 +13,27 @@ env:
 
 jobs:
   build:
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.runner }}
+    name: Build (${{ matrix.target.platform }}${{ matrix.gpu.suffix }})
+    runs-on: ${{ matrix.target.runner }}
     strategy:
       matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
+        target:
+          - triple: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            asset: libagno-linux-x86_64.a
-          - target: aarch64-unknown-linux-gnu
+            platform: linux-x86_64
+          - triple: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
-            asset: libagno-linux-aarch64.a
-          - target: aarch64-apple-darwin
+            platform: linux-aarch64
+          - triple: aarch64-apple-darwin
             runner: macos-latest
-            asset: libagno-macos-aarch64.a
+            platform: macos-aarch64
+        gpu:
+          - enabled: true
+            features: "gpu,jpeg,png,webp,pdf"
+            suffix: "-gpu"
+          - enabled: false
+            features: "jpeg,png,webp,pdf"
+            suffix: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -35,34 +42,34 @@ jobs:
         run: rustup show
 
       - name: Add target
-        run: rustup target add ${{ matrix.target }}
+        run: rustup target add ${{ matrix.target.triple }}
 
       - name: Install cross-compilation tools (aarch64 Linux)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.target.triple == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target.triple }}${{ matrix.gpu.suffix }}
 
       - name: Build static library
         env:
-          AGNO_FEATURES: "jpeg,png,webp,pdf"
+          AGNO_FEATURES: ${{ matrix.gpu.features }}
         run: |
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          if [ "${{ matrix.target.triple }}" = "aarch64-unknown-linux-gnu" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
           fi
-          cargo build -p agno --release --lib --target ${{ matrix.target }} \
+          cargo build -p agno --release --lib --target ${{ matrix.target.triple }} \
             --no-default-features --features "$AGNO_FEATURES"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: target/${{ matrix.target }}/release/libagno.a
+          name: libagno-${{ matrix.target.platform }}${{ matrix.gpu.suffix }}.a
+          path: target/${{ matrix.target.triple }}/release/libagno.a
 
   release:
     name: Create Release
