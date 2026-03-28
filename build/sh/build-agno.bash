@@ -41,34 +41,28 @@ AGNO_FEATURES="${AGNO_FEATURES:-gpu,jpeg,png,webp,pdf}"
 LIB_DIR="${REPO_ROOT}/lib"
 
 if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
-    if [[ ! -e "${LIB_DIR}/libpdfium.a" ]]; then
-        echo "--- Downloading libpdfium.a ---"
+    # Determine the correct pdfium asset for this target (or disable the feature)
+    case "$TARGET_TRIPLE" in
+    x86_64-unknown-linux-gnu)  PDFIUM_ASSET="libpdfium-linux-x64.a" ;;
+    aarch64-apple-darwin)      PDFIUM_ASSET="libpdfium-macos-arm64.a" ;;
+    *)
+        echo "No static pdfium binary for ${TARGET_TRIPLE}, disabling pdf-pdfium" >&2
+        AGNO_FEATURES="${AGNO_FEATURES//,pdf-pdfium/}"
+        AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium,/}"
+        AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium/}"
+        ;;
+    esac
+fi
 
-        # Pick the right asset from kernoeb/pdfium-static
-        case "$TARGET_TRIPLE" in
-        x86_64-unknown-linux-gnu)  PDFIUM_ASSET="libpdfium-linux-x64.a" ;;
-        aarch64-apple-darwin)      PDFIUM_ASSET="libpdfium-macos-arm64.a" ;;
-        *)
-            echo "No static pdfium binary for ${TARGET_TRIPLE}, disabling pdf-pdfium" >&2
-            AGNO_FEATURES="${AGNO_FEATURES//,pdf-pdfium/}"
-            AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium,/}"
-            AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium/}"
-            ;;
-        esac
-    fi
-
-    # Download if we still need pdf-pdfium and don't have it yet
-    if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* && ! -e "${LIB_DIR}/libpdfium.a" ]]; then
-        latest_release=$(gh api -H "Accept: application/vnd.github+json" \
-            '/repos/kernoeb/pdfium-static/releases?per_page=1' | jq -r '.[0].tag_name')
-        mkdir -p "${LIB_DIR}"
-        curl -fsSL "https://github.com/kernoeb/pdfium-static/releases/download/${latest_release}/${PDFIUM_ASSET}" \
-            -o "${LIB_DIR}/libpdfium.a"
-    fi
-
-    if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
-        export PDFIUM_STATIC_LIB_PATH="${LIB_DIR}"
-    fi
+if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
+    # Always re-download to avoid architecture mismatches from cached builds
+    echo "--- Downloading libpdfium.a (${PDFIUM_ASSET}) ---"
+    latest_release=$(gh api -H "Accept: application/vnd.github+json" \
+        '/repos/kernoeb/pdfium-static/releases?per_page=1' | jq -r '.[0].tag_name')
+    mkdir -p "${LIB_DIR}"
+    curl -fsSL "https://github.com/kernoeb/pdfium-static/releases/download/${latest_release}/${PDFIUM_ASSET}" \
+        -o "${LIB_DIR}/libpdfium.a"
+    export PDFIUM_STATIC_LIB_PATH="${LIB_DIR}"
 fi
 
 # ---------------------------------------------------------------------------
