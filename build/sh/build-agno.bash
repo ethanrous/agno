@@ -79,8 +79,39 @@ rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
 cargo build --release --lib --no-default-features --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
 
 # ---------------------------------------------------------------------------
-# 4) Copy the static library to the output path
+# 4) Merge pdfium into libagno.a so consumers have zero extra dependencies
 # ---------------------------------------------------------------------------
-cp "${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno.a" "${OUTPUT_PATH}"
+AGNO_LIB="${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno.a"
+
+if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* && -e "${LIB_DIR}/libpdfium.a" ]]; then
+    echo "--- Merging libpdfium.a into libagno.a ---"
+    MERGED="${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno-merged.a"
+
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        libtool -static -o "${MERGED}" "${AGNO_LIB}" "${LIB_DIR}/libpdfium.a"
+    else
+        # Use ar MRI script to combine archives
+        ARBIN="ar"
+        if [[ "$TARGET_TRIPLE" == "aarch64-unknown-linux-gnu" ]]; then
+            ARBIN="aarch64-linux-gnu-ar"
+        fi
+        cat > /tmp/merge-ar.mri <<MRIEOF
+CREATE ${MERGED}
+ADDLIB ${AGNO_LIB}
+ADDLIB ${LIB_DIR}/libpdfium.a
+SAVE
+END
+MRIEOF
+        "${ARBIN}" -M < /tmp/merge-ar.mri
+        rm -f /tmp/merge-ar.mri
+    fi
+
+    mv "${MERGED}" "${AGNO_LIB}"
+fi
+
+# ---------------------------------------------------------------------------
+# 5) Copy the static library to the output path
+# ---------------------------------------------------------------------------
+cp "${AGNO_LIB}" "${OUTPUT_PATH}"
 
 echo "--- Done: ${OUTPUT_PATH} ($(du -h "${OUTPUT_PATH}" | cut -f1)) ---"
