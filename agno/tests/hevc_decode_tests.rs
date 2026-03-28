@@ -457,7 +457,12 @@ fn extract_tile0_annex_b(heic_path: &str, output_path: &str) {
 fn dogs_heic_dump_raw_rgb() {
     let img = load_agno_image_from_file(&test_data("dogs.heic")).unwrap();
     std::fs::write("/tmp/dogs_agno_raw.rgb", img.as_slice()).unwrap();
-    eprintln!("Dumped dogs.heic raw RGB: {}x{} ({} bytes)", img.width, img.height, img.as_slice().len());
+    eprintln!(
+        "Dumped dogs.heic raw RGB: {}x{} ({} bytes)",
+        img.width,
+        img.height,
+        img.as_slice().len()
+    );
 
     // Decode tiles individually and dump Y planes
     let mut file = File::open(test_data("dogs.heic")).unwrap();
@@ -472,7 +477,11 @@ fn dogs_heic_dump_raw_rgb() {
     // Tile 10
     let pic10 = decode_hevc_still(&heif.hvcc, &heif.tiles[10]).unwrap();
     // Dump Y plane as raw i16 values
-    let y_bytes: Vec<u8> = pic10.y_plane().iter().flat_map(|&v| v.to_le_bytes()).collect();
+    let y_bytes: Vec<u8> = pic10
+        .y_plane()
+        .iter()
+        .flat_map(|&v| v.to_le_bytes())
+        .collect();
     std::fs::write("/tmp/dogs_tile10_y.raw", &y_bytes).unwrap();
     eprintln!("Dumped tile 10 Y: {}x{}", pic10.width, pic10.height);
 
@@ -484,27 +493,40 @@ fn dogs_heic_dump_raw_rgb() {
     let num_arrays = hvcc[22] as usize;
     let mut pos = 23;
     for _ in 0..num_arrays {
-        if pos + 3 > hvcc.len() { break; }
+        if pos + 3 > hvcc.len() {
+            break;
+        }
         let _nt = hvcc[pos] & 0x3F;
-        let nn = u16::from_be_bytes([hvcc[pos+1], hvcc[pos+2]]) as usize;
+        let nn = u16::from_be_bytes([hvcc[pos + 1], hvcc[pos + 2]]) as usize;
         pos += 3;
         for _ in 0..nn {
-            if pos + 2 > hvcc.len() { break; }
-            let nl = u16::from_be_bytes([hvcc[pos], hvcc[pos+1]]) as usize;
+            if pos + 2 > hvcc.len() {
+                break;
+            }
+            let nl = u16::from_be_bytes([hvcc[pos], hvcc[pos + 1]]) as usize;
             pos += 2;
-            if pos + nl <= hvcc.len() { out.extend_from_slice(start_code); out.extend_from_slice(&hvcc[pos..pos+nl]); }
+            if pos + nl <= hvcc.len() {
+                out.extend_from_slice(start_code);
+                out.extend_from_slice(&hvcc[pos..pos + nl]);
+            }
             pos += nl;
         }
     }
     let nls = ((hvcc[21] & 0x03) + 1) as usize;
     let mut tp = 0;
     while tp + nls <= tile.len() {
-        let nl = match nls { 1 => tile[tp] as usize, 2 => u16::from_be_bytes([tile[tp], tile[tp+1]]) as usize,
-            4 => u32::from_be_bytes([tile[tp], tile[tp+1], tile[tp+2], tile[tp+3]]) as usize, _ => break };
+        let nl = match nls {
+            1 => tile[tp] as usize,
+            2 => u16::from_be_bytes([tile[tp], tile[tp + 1]]) as usize,
+            4 => u32::from_be_bytes([tile[tp], tile[tp + 1], tile[tp + 2], tile[tp + 3]]) as usize,
+            _ => break,
+        };
         tp += nls;
-        if tp + nl > tile.len() { break; }
+        if tp + nl > tile.len() {
+            break;
+        }
         out.extend_from_slice(start_code);
-        out.extend_from_slice(&tile[tp..tp+nl]);
+        out.extend_from_slice(&tile[tp..tp + nl]);
         tp += nl;
     }
     std::fs::write("/tmp/dogs-tile10.265", &out).unwrap();
@@ -526,29 +548,86 @@ fn dogs_heic_tile_diagnostics() {
     use agno::codec::hevc::params::{Pps, Sps};
     let mut file = File::open(test_data("dogs.heic")).unwrap();
     let heif = parse_heif(&mut file).unwrap();
-    eprintln!("dogs.heic: {}x{} grid={}x{} tiles={}", heif.width, heif.height,
-              heif.grid_cols, heif.grid_rows, heif.tiles.len());
+    eprintln!(
+        "dogs.heic: {}x{} grid={}x{} tiles={}",
+        heif.width,
+        heif.height,
+        heif.grid_cols,
+        heif.grid_rows,
+        heif.tiles.len()
+    );
     // Parse SPS/PPS
     let hvcc = &heif.hvcc;
     let num_arrays = hvcc[22] as usize;
     let mut pos = 23;
     for _ in 0..num_arrays {
-        if pos + 3 > hvcc.len() { break; }
+        if pos + 3 > hvcc.len() {
+            break;
+        }
         let nal_type = hvcc[pos] & 0x3F;
         let num_nalus = u16::from_be_bytes([hvcc[pos + 1], hvcc[pos + 2]]) as usize;
         pos += 3;
         for _ in 0..num_nalus {
-            if pos + 2 > hvcc.len() { break; }
+            if pos + 2 > hvcc.len() {
+                break;
+            }
             let nal_len = u16::from_be_bytes([hvcc[pos], hvcc[pos + 1]]) as usize;
             pos += 2;
-            if pos + nal_len > hvcc.len() { break; }
+            if pos + nal_len > hvcc.len() {
+                break;
+            }
             let payload = &hvcc[pos..pos + nal_len][2..];
-            let rbsp = { let mut o = Vec::new(); let mut i = 0; while i < payload.len() { if i+2 < payload.len() && payload[i]==0 && payload[i+1]==0 && payload[i+2]==3 { o.push(0); o.push(0); i+=3; } else { o.push(payload[i]); i+=1; } } o };
+            let rbsp = {
+                let mut o = Vec::new();
+                let mut i = 0;
+                while i < payload.len() {
+                    if i + 2 < payload.len()
+                        && payload[i] == 0
+                        && payload[i + 1] == 0
+                        && payload[i + 2] == 3
+                    {
+                        o.push(0);
+                        o.push(0);
+                        i += 3;
+                    } else {
+                        o.push(payload[i]);
+                        i += 1;
+                    }
+                }
+                o
+            };
             match nal_type {
-                33 => { let mut r = BitReader::new(&rbsp); if let Ok(s) = Sps::parse(&mut r, 0) { eprintln!("SPS: {}x{} ctb_log2={} min_cb_log2={} max_tt_intra={} scaling={} bit_depth={}",
-                    s.pic_width_in_luma_samples, s.pic_height_in_luma_samples, s.ctb_log2_size(), s.min_cb_log2_size(), s.max_transform_hierarchy_depth_intra, s.scaling_list_enabled_flag, s.bit_depth_luma); } }
-                34 => { let mut r = BitReader::new(&rbsp); if let Ok(p) = Pps::parse(&mut r) { eprintln!("PPS: init_qp={} cu_qp_delta={} diff={} tskip={} sdh={} wpp={} cb_qp={} cr_qp={}",
-                    26+p.init_qp_minus26, p._cu_qp_delta_enabled_flag, p._diff_cu_qp_delta_depth, p.transform_skip_enabled_flag, p.sign_data_hiding_enabled_flag, p._entropy_coding_sync_enabled_flag, p.pps_cb_qp_offset, p.pps_cr_qp_offset); } }
+                33 => {
+                    let mut r = BitReader::new(&rbsp);
+                    if let Ok(s) = Sps::parse(&mut r, 0) {
+                        eprintln!(
+                            "SPS: {}x{} ctb_log2={} min_cb_log2={} max_tt_intra={} scaling={} bit_depth={}",
+                            s.pic_width_in_luma_samples,
+                            s.pic_height_in_luma_samples,
+                            s.ctb_log2_size(),
+                            s.min_cb_log2_size(),
+                            s.max_transform_hierarchy_depth_intra,
+                            s.scaling_list_enabled_flag,
+                            s.bit_depth_luma
+                        );
+                    }
+                }
+                34 => {
+                    let mut r = BitReader::new(&rbsp);
+                    if let Ok(p) = Pps::parse(&mut r) {
+                        eprintln!(
+                            "PPS: init_qp={} cu_qp_delta={} diff={} tskip={} sdh={} wpp={} cb_qp={} cr_qp={}",
+                            26 + p.init_qp_minus26,
+                            p._cu_qp_delta_enabled_flag,
+                            p._diff_cu_qp_delta_depth,
+                            p.transform_skip_enabled_flag,
+                            p.sign_data_hiding_enabled_flag,
+                            p._entropy_coding_sync_enabled_flag,
+                            p.pps_cb_qp_offset,
+                            p.pps_cr_qp_offset
+                        );
+                    }
+                }
                 _ => {}
             }
             pos += nal_len;
@@ -574,22 +653,43 @@ fn dogs_heic_tile_diagnostics() {
             for col in 0..ctb_cols {
                 let mut mse = 0.0f64;
                 let mut cnt = 0u32;
-                for py in 0..32 { let y = row*32+py; if y >= pic.height { break; }
-                    for px in 0..32 { let x = col*32+px; if x >= pic.width { break; }
-                        let d = pic.y_at(x,y) as f64 - ref_y[(y*pic.width+x) as usize] as f64;
-                        mse += d*d; cnt += 1;
-                } }
+                for py in 0..32 {
+                    let y = row * 32 + py;
+                    if y >= pic.height {
+                        break;
+                    }
+                    for px in 0..32 {
+                        let x = col * 32 + px;
+                        if x >= pic.width {
+                            break;
+                        }
+                        let d = pic.y_at(x, y) as f64 - ref_y[(y * pic.width + x) as usize] as f64;
+                        mse += d * d;
+                        cnt += 1;
+                    }
+                }
                 mse /= cnt as f64;
-                let p = if mse == 0.0 { f64::INFINITY } else { 10.0*(255.0*255.0/mse).log10() };
-                if p < 55.0 { eprintln!("  CTU ({},{}): {:.1} dB", col, row, p); }
+                let p = if mse == 0.0 {
+                    f64::INFINITY
+                } else {
+                    10.0 * (255.0 * 255.0 / mse).log10()
+                };
+                if p < 55.0 {
+                    eprintln!("  CTU ({},{}): {:.1} dB", col, row, p);
+                }
             }
         }
-        if let Some((x,y,dec,exp)) = find_first_divergence(pic.y_plane(), &ref_y, pic.width) {
-            eprintln!("  First Y div at ({x},{y}): dec={dec} exp={exp} diff={}", dec-exp);
+        if let Some((x, y, dec, exp)) = find_first_divergence(pic.y_plane(), &ref_y, pic.width) {
+            eprintln!(
+                "  First Y div at ({x},{y}): dec={dec} exp={exp} diff={}",
+                dec - exp
+            );
         }
         // Dump row 32 (start of CTU row 1) first 32 pixels
         let ours_32: Vec<i16> = (0..32).map(|x| pic.y_at(x, 32)).collect();
-        let refs_32: Vec<i16> = (0..32).map(|x| ref_y[(32 * pic.width + x) as usize]).collect();
+        let refs_32: Vec<i16> = (0..32)
+            .map(|x| ref_y[(32 * pic.width + x) as usize])
+            .collect();
         eprintln!("  OUR y=32: {:?}", ours_32);
         eprintln!("  REF y=32: {:?}", refs_32);
         // Check all three planes
@@ -603,12 +703,18 @@ fn dogs_heic_tile_diagnostics() {
         let ch = (pic.height + 1) / 2;
         let mut cb_max = 0i16;
         let mut cr_max = 0i16;
-        for y in 0..ch { for x in 0..cw {
-            let d = (pic.cb_at(x,y) - ref_cb[(y*cw+x) as usize]).abs();
-            if d > cb_max { cb_max = d; }
-            let d = (pic.cr_at(x,y) - ref_cr[(y*cw+x) as usize]).abs();
-            if d > cr_max { cr_max = d; }
-        }}
+        for y in 0..ch {
+            for x in 0..cw {
+                let d = (pic.cb_at(x, y) - ref_cb[(y * cw + x) as usize]).abs();
+                if d > cb_max {
+                    cb_max = d;
+                }
+                let d = (pic.cr_at(x, y) - ref_cr[(y * cw + x) as usize]).abs();
+                if d > cr_max {
+                    cr_max = d;
+                }
+            }
+        }
         eprintln!("  Max Cb diff: {} Max Cr diff: {}", cb_max, cr_max);
     }
 
@@ -617,9 +723,21 @@ fn dogs_heic_tile_diagnostics() {
         if i < heif.tiles.len() {
             let p = decode_hevc_still(&heif.hvcc, &heif.tiles[i]).unwrap();
             // Simple quality check: compute variance of Y plane
-            let mean: f64 = p.y_plane().iter().map(|&v| v as f64).sum::<f64>() / p.y_plane().len() as f64;
-            let var: f64 = p.y_plane().iter().map(|&v| { let d = v as f64 - mean; d * d }).sum::<f64>() / p.y_plane().len() as f64;
-            eprintln!("  tile {}: {}x{} mean_y={:.1} var_y={:.1}", i, p.width, p.height, mean, var);
+            let mean: f64 =
+                p.y_plane().iter().map(|&v| v as f64).sum::<f64>() / p.y_plane().len() as f64;
+            let var: f64 = p
+                .y_plane()
+                .iter()
+                .map(|&v| {
+                    let d = v as f64 - mean;
+                    d * d
+                })
+                .sum::<f64>()
+                / p.y_plane().len() as f64;
+            eprintln!(
+                "  tile {}: {}x{} mean_y={:.1} var_y={:.1}",
+                i, p.width, p.height, mean, var
+            );
         }
     }
 }

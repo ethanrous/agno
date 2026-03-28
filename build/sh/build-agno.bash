@@ -36,7 +36,8 @@ rustup target add "${TARGET_TRIPLE}" 2>/dev/null || true
 # ---------------------------------------------------------------------------
 rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
 
-cargo build --release --lib --features "gpu" --target "${TARGET_TRIPLE}"
+AGNO_FEATURES="${AGNO_FEATURES:-gpu}"
+cargo build --release --lib --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
 
 # ---------------------------------------------------------------------------
 # 3) Copy the static library to the output path

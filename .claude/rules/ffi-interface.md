@@ -81,6 +81,7 @@ pub extern "C" fn function_name(args...) -> *mut ReturnType {
 | `get_gps_coordinates(img)` | `GpsCoordinates` | Extract GPS lat/lon from EXIF |
 | `free_agno_image(img)` | void | Free AgnoImage (libc::free) |
 | `free_agno_buffer(buf)` | void | Free AgnoBuffer (Rust allocator drop) |
+| `load_pdf_page(path, len, page_num, max_w, max_h)` | `*mut AgnoImage` | Render specific PDF page (0-based index) |
 
 ## Safety Invariants
 

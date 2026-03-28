@@ -153,4 +153,3 @@ pub fn quantize_block(coeffs: &mut [i32; 64], qtable: &[u16; 64]) {
         coeffs[i] = if i == 0 { val } else { val.clamp(-1023, 1023) };
     }
 }
-

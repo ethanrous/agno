@@ -503,3 +503,118 @@ fn compute_psnr(original: &[u8], decoded: &[u8], num_pixels: usize) -> f64 {
     }
     10.0 * (255.0_f64 * 255.0 / mse).log10()
 }
+
+// --- PDF Tests ---
+
+#[cfg(feature = "pdf")]
+mod pdf_tests {
+    use std::io::Write;
+
+    /// Generates a minimal PDF with a colored rectangle for testing.
+    fn make_test_pdf_with_color(r: f32, g: f32, b: f32) -> Vec<u8> {
+        let content = format!("{r} {g} {b} rg 0 0 200 100 re f");
+        let content_bytes = content.as_bytes();
+        let content_len = content_bytes.len();
+
+        let mut pdf = Vec::new();
+        write!(pdf, "%PDF-1.4\n").unwrap();
+
+        let obj1_offset = pdf.len();
+        write!(pdf, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n").unwrap();
+
+        let obj2_offset = pdf.len();
+        write!(
+            pdf,
+            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        )
+        .unwrap();
+
+        let obj3_offset = pdf.len();
+        write!(
+            pdf,
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R >>\nendobj\n"
+        ).unwrap();
+
+        let obj4_offset = pdf.len();
+        write!(pdf, "4 0 obj\n<< /Length {} >>\nstream\n", content_len).unwrap();
+        pdf.extend_from_slice(content_bytes);
+        write!(pdf, "\nendstream\nendobj\n").unwrap();
+
+        let xref_offset = pdf.len();
+        write!(pdf, "xref\n0 5\n").unwrap();
+        write!(pdf, "0000000000 65535 f \n").unwrap();
+        write!(pdf, "{:010} 00000 n \n", obj1_offset).unwrap();
+        write!(pdf, "{:010} 00000 n \n", obj2_offset).unwrap();
+        write!(pdf, "{:010} 00000 n \n", obj3_offset).unwrap();
+        write!(pdf, "{:010} 00000 n \n", obj4_offset).unwrap();
+
+        write!(pdf, "trailer\n<< /Size 5 /Root 1 0 R >>\n").unwrap();
+        write!(pdf, "startxref\n{}\n%%EOF\n", xref_offset).unwrap();
+
+        pdf
+    }
+
+    #[test]
+    fn pdf_load_via_auto_detect_and_encode_to_jpeg() {
+        let pdf_data = make_test_pdf_with_color(0.0, 0.0, 1.0); // Blue rect
+        let dir = std::env::temp_dir();
+        let path = dir.join("agno_pdf_jpeg_test.pdf");
+        std::fs::write(&path, &pdf_data).unwrap();
+
+        // Goes through detect_image_type() → load_pdf() → AgnoImage
+        let img =
+            agno::agno_image::load::load_agno_image_from_file(path.to_str().unwrap()).unwrap();
+        assert!(img.width > 0 && img.height > 0);
+
+        // Encode to JPEG — proves the full PDF→AgnoImage→JPEG pipeline works
+        #[cfg(feature = "jpeg")]
+        {
+            let jpeg_bytes = img.to_jpeg(90).unwrap();
+            assert!(jpeg_bytes.len() > 100, "JPEG output should be non-trivial");
+            assert_eq!(
+                &jpeg_bytes[0..2],
+                &[0xFF, 0xD8],
+                "Should start with JPEG SOI"
+            );
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pdf_pixel_color_accuracy() {
+        let pdf_data = make_test_pdf_with_color(0.0, 1.0, 0.0); // Green rect
+        let dir = std::env::temp_dir();
+        let path = dir.join("agno_pdf_color_test.pdf");
+        std::fs::write(&path, &pdf_data).unwrap();
+
+        let img =
+            agno::agno_image::load::load_agno_image_from_file(path.to_str().unwrap()).unwrap();
+
+        // Verify the AgnoImage data is valid RGB8
+        let data = img.as_slice();
+        assert_eq!(data.len(), (img.width * img.height * 3) as usize);
+
+        // Sample center pixel — should be greenish
+        let cx = img.width as usize / 2;
+        let cy = img.height as usize / 2;
+        let idx = (cy * img.width as usize + cx) * 3;
+        assert!(
+            data[idx] < 50,
+            "Red channel should be low, got {}",
+            data[idx]
+        );
+        assert!(
+            data[idx + 1] > 200,
+            "Green channel should be high, got {}",
+            data[idx + 1]
+        );
+        assert!(
+            data[idx + 2] < 50,
+            "Blue channel should be low, got {}",
+            data[idx + 2]
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+}

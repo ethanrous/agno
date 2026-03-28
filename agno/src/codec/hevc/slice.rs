@@ -946,7 +946,14 @@ pub fn decode_slice(
             cr_qp_off,
         );
 
-        cabac_trace!("CTU ({},{}) dec={} byp={} trm={}", cx, cy, cab.dec_count, cab.byp_count, cab.trm_count);
+        cabac_trace!(
+            "CTU ({},{}) dec={} byp={} trm={}",
+            cx,
+            cy,
+            cab.dec_count,
+            cab.byp_count,
+            cab.trm_count
+        );
         cab.reset_counters();
 
         // WPP: Save context state after processing CTU column 1 (H.265 9.3.2.3).
@@ -1306,7 +1313,13 @@ fn decode_cu(
 
     // Store per-CU QP for deblocking filter (H.265 8.7.2.4)
     pic.set_qp_y(x0, y0, size, qps.current_qp);
-    cabac_trace!("CU_QP xCU={} yCU={} size={} QPY={}", x0, y0, size, qps.current_qp);
+    cabac_trace!(
+        "CU_QP xCU={} yCU={} size={} QPY={}",
+        x0,
+        y0,
+        size,
+        qps.current_qp
+    );
 }
 
 /// Derive Most Probable Modes from left/above neighbors (H.265 8.4.2).

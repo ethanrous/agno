@@ -44,6 +44,11 @@ impl AgnoImage {
         }
     }
 
+    /// Set the page count (for multi-page formats like PDF).
+    pub fn set_page_count(&mut self, count: u64) {
+        self.page_count = count;
+    }
+
     #[allow(dead_code)]
     pub fn null() -> *mut AgnoImage {
         null_mut()

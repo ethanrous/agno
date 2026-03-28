@@ -454,7 +454,13 @@ fn ycbcr_to_rgb(y: i16, cb: i16, cr: i16, c: &ColorCoeffs) -> (u8, u8, u8) {
 /// Clip float to u8 with +0.5 rounding, matching libheif's clip_f_u16.
 fn clip_f32_u8(v: f32) -> u8 {
     let x = (v + 0.5f32) as i32;
-    if x < 0 { 0 } else if x > 255 { 255 } else { x as u8 }
+    if x < 0 {
+        0
+    } else if x > 255 {
+        255
+    } else {
+        x as u8
+    }
 }
 
 #[cfg(test)]

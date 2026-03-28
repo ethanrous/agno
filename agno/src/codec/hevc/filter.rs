@@ -77,7 +77,10 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
         let mut y = 0u32;
         while y < height {
             let bs = derive_bs_intra(pic, x, y, true, ctb_log2);
-            if bs == 0 { y += 4; continue; }
+            if bs == 0 {
+                y += 4;
+                continue;
+            }
 
             // H.265 8.7.2.4: QP from each side of the vertical edge
             let qp_left = pic.qp_y_at(x - 1, y);
@@ -114,7 +117,10 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
         let mut x = 0u32;
         while x < width {
             let bs = derive_bs_intra(pic, x, y, false, ctb_log2);
-            if bs == 0 { x += 4; continue; }
+            if bs == 0 {
+                x += 4;
+                continue;
+            }
 
             // H.265 8.7.2.4: QP from each side of the horizontal edge
             let qp_top = pic.qp_y_at(x, y - 1);
@@ -209,17 +215,32 @@ fn deblock_luma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, beta: i32, tc: i3
     for dy in 0..4u32 {
         let py = y + dy;
         let s = read_v_line(pic, edge_x, py);
-        let (p3, p2, p1, p0, q0, q1, q2, q3) =
-            (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+        let (p3, p2, p1, p0, q0, q1, q2, q3) = (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 
         if use_strong {
             let tc2 = 2 * tc;
-            let p0f = clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
+            let p0f = clip3(
+                p0 - tc2,
+                p0 + tc2,
+                (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3,
+            );
             let p1f = clip3(p1 - tc2, p1 + tc2, (p2 + p1 + p0 + q0 + 2) >> 2);
-            let p2f = clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
-            let q0f = clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
+            let p2f = clip3(
+                p2 - tc2,
+                p2 + tc2,
+                (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3,
+            );
+            let q0f = clip3(
+                q0 - tc2,
+                q0 + tc2,
+                (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3,
+            );
             let q1f = clip3(q1 - tc2, q1 + tc2, (q2 + q1 + q0 + p0 + 2) >> 2);
-            let q2f = clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
+            let q2f = clip3(
+                q2 - tc2,
+                q2 + tc2,
+                (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3,
+            );
             pic.set_y(edge_x - 3, py, clip3(0, max_val, p2f) as i16);
             pic.set_y(edge_x - 2, py, clip3(0, max_val, p1f) as i16);
             pic.set_y(edge_x - 1, py, clip3(0, max_val, p0f) as i16);
@@ -313,17 +334,32 @@ fn deblock_luma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, beta: i32, tc: i3
     for dx in 0..4u32 {
         let px = x + dx;
         let s = read_h_col(pic, px, edge_y);
-        let (p3, p2, p1, p0, q0, q1, q2, q3) =
-            (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+        let (p3, p2, p1, p0, q0, q1, q2, q3) = (s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 
         if use_strong {
             let tc2 = 2 * tc;
-            let p0f = clip3(p0 - tc2, p0 + tc2, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
+            let p0f = clip3(
+                p0 - tc2,
+                p0 + tc2,
+                (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3,
+            );
             let p1f = clip3(p1 - tc2, p1 + tc2, (p2 + p1 + p0 + q0 + 2) >> 2);
-            let p2f = clip3(p2 - tc2, p2 + tc2, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
-            let q0f = clip3(q0 - tc2, q0 + tc2, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
+            let p2f = clip3(
+                p2 - tc2,
+                p2 + tc2,
+                (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3,
+            );
+            let q0f = clip3(
+                q0 - tc2,
+                q0 + tc2,
+                (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3,
+            );
             let q1f = clip3(q1 - tc2, q1 + tc2, (q2 + q1 + q0 + p0 + 2) >> 2);
-            let q2f = clip3(q2 - tc2, q2 + tc2, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
+            let q2f = clip3(
+                q2 - tc2,
+                q2 + tc2,
+                (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3,
+            );
             pic.set_y(px, edge_y - 3, clip3(0, max_val, p2f) as i16);
             pic.set_y(px, edge_y - 2, clip3(0, max_val, p1f) as i16);
             pic.set_y(px, edge_y - 1, clip3(0, max_val, p0f) as i16);
