@@ -41,32 +41,27 @@ AGNO_FEATURES="${AGNO_FEATURES:-gpu,jpeg,png,webp,pdf}"
 LIB_DIR="${REPO_ROOT}/lib"
 
 if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
-    if [[ ! -e "${LIB_DIR}/libpdfium.a" ]]; then
-        echo "--- Downloading libpdfium.a ---"
+    # Determine the correct pdfium asset for this target (or disable the feature)
+    case "$TARGET_TRIPLE" in
+    x86_64-unknown-linux-gnu)  PDFIUM_ASSET="libpdfium-linux-x64.a" ;;
+    aarch64-apple-darwin)      PDFIUM_ASSET="libpdfium-macos-arm64.a" ;;
+    *)
+        echo "No static pdfium binary for ${TARGET_TRIPLE}, disabling pdf-pdfium" >&2
+        AGNO_FEATURES="${AGNO_FEATURES//,pdf-pdfium/}"
+        AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium,/}"
+        AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium/}"
+        ;;
+    esac
+fi
 
-        # Pick the right platform archive
-        case "$TARGET_TRIPLE" in
-        x86_64-unknown-linux-gnu)   PDFIUM_ARCHIVE="linux-x64.tgz" ;;
-        aarch64-unknown-linux-gnu)  PDFIUM_ARCHIVE="linux-arm64.tgz" ;;
-        aarch64-apple-darwin)       PDFIUM_ARCHIVE="mac-arm64.tgz" ;;
-        x86_64-apple-darwin)        PDFIUM_ARCHIVE="mac-x64.tgz" ;;
-        *)
-            echo "No pdfium binary available for ${TARGET_TRIPLE}" >&2
-            exit 1
-            ;;
-        esac
-
-        latest_release=$(gh api -H "Accept: application/vnd.github+json" \
-            '/repos/nicholasgasior/pdfium-binaries/releases?per_page=1' | jq -r '.[0].tag_name')
-        curl -fsSL "https://github.com/nicholasgasior/pdfium-binaries/releases/download/${latest_release}/${PDFIUM_ARCHIVE}" \
-            -o /tmp/pdfium.tgz
-        mkdir -p /tmp/pdfium-extract
-        tar -xzf /tmp/pdfium.tgz -C /tmp/pdfium-extract
-        mkdir -p "${LIB_DIR}"
-        find /tmp/pdfium-extract -name "libpdfium.a" -exec mv {} "${LIB_DIR}/libpdfium.a" \;
-        rm -rf /tmp/pdfium.tgz /tmp/pdfium-extract
-    fi
-
+if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
+    # Always re-download to avoid architecture mismatches from cached builds
+    echo "--- Downloading libpdfium.a (${PDFIUM_ASSET}) ---"
+    latest_release=$(gh api -H "Accept: application/vnd.github+json" \
+        '/repos/kernoeb/pdfium-static/releases?per_page=1' | jq -r '.[0].tag_name')
+    mkdir -p "${LIB_DIR}"
+    curl -fsSL "https://github.com/kernoeb/pdfium-static/releases/download/${latest_release}/${PDFIUM_ASSET}" \
+        -o "${LIB_DIR}/libpdfium.a"
     export PDFIUM_STATIC_LIB_PATH="${LIB_DIR}"
 fi
 
@@ -78,8 +73,39 @@ rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
 cargo build --release --lib --no-default-features --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
 
 # ---------------------------------------------------------------------------
-# 4) Copy the static library to the output path
+# 4) Merge pdfium into libagno.a so consumers have zero extra dependencies
 # ---------------------------------------------------------------------------
-cp "${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno.a" "${OUTPUT_PATH}"
+AGNO_LIB="${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno.a"
+
+if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* && -e "${LIB_DIR}/libpdfium.a" ]]; then
+    echo "--- Merging libpdfium.a into libagno.a ---"
+    MERGED="${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno-merged.a"
+
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        libtool -static -o "${MERGED}" "${AGNO_LIB}" "${LIB_DIR}/libpdfium.a"
+    else
+        # Use ar MRI script to combine archives
+        ARBIN="ar"
+        if [[ "$TARGET_TRIPLE" == "aarch64-unknown-linux-gnu" ]]; then
+            ARBIN="aarch64-linux-gnu-ar"
+        fi
+        cat > /tmp/merge-ar.mri <<MRIEOF
+CREATE ${MERGED}
+ADDLIB ${AGNO_LIB}
+ADDLIB ${LIB_DIR}/libpdfium.a
+SAVE
+END
+MRIEOF
+        "${ARBIN}" -M < /tmp/merge-ar.mri
+        rm -f /tmp/merge-ar.mri
+    fi
+
+    mv "${MERGED}" "${AGNO_LIB}"
+fi
+
+# ---------------------------------------------------------------------------
+# 5) Copy the static library to the output path
+# ---------------------------------------------------------------------------
+cp "${AGNO_LIB}" "${OUTPUT_PATH}"
 
 echo "--- Done: ${OUTPUT_PATH} ($(du -h "${OUTPUT_PATH}" | cut -f1)) ---"
