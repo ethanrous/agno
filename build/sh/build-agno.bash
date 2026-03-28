@@ -44,30 +44,31 @@ if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
     if [[ ! -e "${LIB_DIR}/libpdfium.a" ]]; then
         echo "--- Downloading libpdfium.a ---"
 
-        # Pick the right platform archive
+        # Pick the right asset from kernoeb/pdfium-static
         case "$TARGET_TRIPLE" in
-        x86_64-unknown-linux-gnu)   PDFIUM_ARCHIVE="linux-x64.tgz" ;;
-        aarch64-unknown-linux-gnu)  PDFIUM_ARCHIVE="linux-arm64.tgz" ;;
-        aarch64-apple-darwin)       PDFIUM_ARCHIVE="mac-arm64.tgz" ;;
-        x86_64-apple-darwin)        PDFIUM_ARCHIVE="mac-x64.tgz" ;;
+        x86_64-unknown-linux-gnu)  PDFIUM_ASSET="libpdfium-linux-x64.a" ;;
+        aarch64-apple-darwin)      PDFIUM_ASSET="libpdfium-macos-arm64.a" ;;
         *)
-            echo "No pdfium binary available for ${TARGET_TRIPLE}" >&2
-            exit 1
+            echo "No static pdfium binary for ${TARGET_TRIPLE}, disabling pdf-pdfium" >&2
+            AGNO_FEATURES="${AGNO_FEATURES//,pdf-pdfium/}"
+            AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium,/}"
+            AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium/}"
             ;;
         esac
-
-        latest_release=$(gh api -H "Accept: application/vnd.github+json" \
-            '/repos/nicholasgasior/pdfium-binaries/releases?per_page=1' | jq -r '.[0].tag_name')
-        curl -fsSL "https://github.com/nicholasgasior/pdfium-binaries/releases/download/${latest_release}/${PDFIUM_ARCHIVE}" \
-            -o /tmp/pdfium.tgz
-        mkdir -p /tmp/pdfium-extract
-        tar -xzf /tmp/pdfium.tgz -C /tmp/pdfium-extract
-        mkdir -p "${LIB_DIR}"
-        find /tmp/pdfium-extract -name "libpdfium.a" -exec mv {} "${LIB_DIR}/libpdfium.a" \;
-        rm -rf /tmp/pdfium.tgz /tmp/pdfium-extract
     fi
 
-    export PDFIUM_STATIC_LIB_PATH="${LIB_DIR}"
+    # Download if we still need pdf-pdfium and don't have it yet
+    if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* && ! -e "${LIB_DIR}/libpdfium.a" ]]; then
+        latest_release=$(gh api -H "Accept: application/vnd.github+json" \
+            '/repos/kernoeb/pdfium-static/releases?per_page=1' | jq -r '.[0].tag_name')
+        mkdir -p "${LIB_DIR}"
+        curl -fsSL "https://github.com/kernoeb/pdfium-static/releases/download/${latest_release}/${PDFIUM_ASSET}" \
+            -o "${LIB_DIR}/libpdfium.a"
+    fi
+
+    if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
+        export PDFIUM_STATIC_LIB_PATH="${LIB_DIR}"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
