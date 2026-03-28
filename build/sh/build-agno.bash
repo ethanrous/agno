@@ -37,7 +37,7 @@ rustup target add "${TARGET_TRIPLE}" 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # 2) Download pdfium static lib if pdf-pdfium feature is requested
 # ---------------------------------------------------------------------------
-AGNO_FEATURES="${AGNO_FEATURES:-gpu}"
+AGNO_FEATURES="${AGNO_FEATURES:-gpu,jpeg,png,webp,pdf}"
 LIB_DIR="${REPO_ROOT}/lib"
 
 if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
@@ -60,6 +60,7 @@ if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
             '/repos/nicholasgasior/pdfium-binaries/releases?per_page=1' | jq -r '.[0].tag_name')
         curl -fsSL "https://github.com/nicholasgasior/pdfium-binaries/releases/download/${latest_release}/${PDFIUM_ARCHIVE}" \
             -o /tmp/pdfium.tgz
+        mkdir -p /tmp/pdfium-extract
         tar -xzf /tmp/pdfium.tgz -C /tmp/pdfium-extract
         mkdir -p "${LIB_DIR}"
         find /tmp/pdfium-extract -name "libpdfium.a" -exec mv {} "${LIB_DIR}/libpdfium.a" \;
@@ -74,7 +75,7 @@ fi
 # ---------------------------------------------------------------------------
 rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
 
-cargo build --release --lib --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
+cargo build --release --lib --no-default-features --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
 
 # ---------------------------------------------------------------------------
 # 4) Copy the static library to the output path
