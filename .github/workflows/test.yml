@@ -60,6 +60,7 @@ jobs:
       - name: Build
         run: ./build/sh/build-agno.bash libagno.a
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AGNO_FEATURES: "jpeg,png,webp,pdf,pdf-pdfium"
 
       - name: Verify output
