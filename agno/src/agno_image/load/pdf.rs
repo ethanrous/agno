@@ -1,35 +1,11 @@
 use std::error::Error;
-#[cfg(feature = "pdf")]
-use std::sync::Arc;
 
 use crate::{agno_image::AgnoImage, exif::ExifContext};
 
-#[cfg(feature = "pdf")]
-use hayro::{RenderSettings, hayro_interpret::InterpreterSettings, hayro_syntax::Pdf};
-
-#[cfg(feature = "pdf-pdfium")]
-use pdfium_render::prelude::{PdfPageRenderRotation, PdfRenderConfig, Pdfium};
-
-/// Default scale factor for PDF rendering.
-/// PDF points are 1/72 inch; 2x gives 144 DPI which is good for thumbnails/previews.
-#[cfg(feature = "pdf")]
-const DEFAULT_SCALE: f32 = 2.0;
-
-/// Maximum scale factor to prevent excessive memory usage.
-#[cfg(feature = "pdf")]
-const MAX_SCALE: f32 = 4.0;
-
-/// Default max pixel dimension for pdfium fallback rendering.
-#[cfg(feature = "pdf-pdfium")]
-const PDFIUM_TARGET_SIZE: i32 = 2000;
-
 /// Load a specific page from PDF bytes, with optional max dimensions.
 ///
-/// Tries hayro (pure Rust) first. If hayro produces a blank page and `pdf-pdfium`
-/// is enabled, falls back to pdfium for robust rendering of complex/linearized PDFs.
-///
 /// `page_index` is 0-based. If `max_dims` is Some((w, h)), the page is scaled
-/// to fit within those dimensions (preserving aspect ratio). Otherwise `DEFAULT_SCALE` is used.
+/// to fit within those dimensions (preserving aspect ratio).
 #[cfg(feature = "pdf")]
 pub fn load_pdf_page_from_bytes(
     data: &[u8],
@@ -37,155 +13,38 @@ pub fn load_pdf_page_from_bytes(
     max_dims: Option<(u32, u32)>,
     exif: ExifContext,
 ) -> Result<AgnoImage, Box<dyn Error>> {
-    let (rgb, width, height, page_count) = match render_with_hayro(data, page_index, max_dims) {
-        Ok(result) => result,
-        Err(hayro_err) => {
-            tracing::warn!("hayro PDF render failed: {hayro_err}");
-            render_pdfium_fallback(data, page_index, max_dims, hayro_err)?
-        }
-    };
+    let (rgb, width, height, page_count) =
+        crate::codec::pdf::render_pdf_page(data, page_index, scale_for_dims(data, page_index, max_dims))?;
 
     let mut img = AgnoImage::new(rgb, width as u64, height as u64, exif);
     img.set_page_count(page_count as u64);
     Ok(img)
 }
 
-/// Render a PDF page using hayro (pure Rust).
-/// Returns (rgb8_data, width, height, page_count) on success.
+/// Compute the render scale from optional max dimensions using actual page size.
+/// Falls back to 4.0 (288 DPI) for crisp vector rendering when no constraint is given.
 #[cfg(feature = "pdf")]
-#[allow(clippy::type_complexity)]
-fn render_with_hayro(
-    data: &[u8],
-    page_index: usize,
-    max_dims: Option<(u32, u32)>,
-) -> Result<(Vec<u8>, u32, u32, usize), Box<dyn Error>> {
-    let pdf_data = Arc::new(data.to_vec());
-    let pdf = Pdf::new(pdf_data).map_err(|e| format!("Failed to parse PDF: {e:?}"))?;
-
-    let pages = pdf.pages();
-    if pages.is_empty() {
-        return Err("PDF document has no pages".into());
-    }
-    let page = pages.get(page_index).ok_or_else(|| {
-        format!(
-            "PDF page {page_index} not found (document has {} pages)",
-            pages.len()
-        )
-    })?;
-
-    let media_box = page.media_box();
-    let page_w = (media_box.x1 - media_box.x0).abs() as f32;
-    let page_h = (media_box.y1 - media_box.y0).abs() as f32;
-
-    if page_w <= 0.0 || page_h <= 0.0 {
-        return Err(format!("Invalid PDF page dimensions: {page_w}x{page_h}").into());
-    }
-
-    let scale = match max_dims {
+fn scale_for_dims(data: &[u8], page_index: usize, max_dims: Option<(u32, u32)>) -> f32 {
+    const DEFAULT_SCALE: f32 = 4.0;
+    const MAX_SCALE: f32 = 8.0;
+    match max_dims {
         Some((max_w, max_h)) => {
-            let sx = max_w as f32 / page_w;
-            let sy = max_h as f32 / page_h;
-            sx.min(sy).min(MAX_SCALE)
+            // Try to get actual page dimensions for accurate scaling
+            if let Ok(doc) = crate::codec::pdf::document::PdfDocument::open(data) {
+                if let Ok((x0, y0, x1, y1)) = doc.page_media_box(page_index) {
+                    let page_w = (x1 - x0).abs() as f32;
+                    let page_h = (y1 - y0).abs() as f32;
+                    if page_w > 0.0 && page_h > 0.0 {
+                        let sx = max_w as f32 / page_w;
+                        let sy = max_h as f32 / page_h;
+                        return sx.min(sy).min(MAX_SCALE);
+                    }
+                }
+            }
+            DEFAULT_SCALE
         }
         None => DEFAULT_SCALE,
-    };
-
-    if scale <= 0.0 {
-        return Err("Render scale is zero or negative (check max_dims)".into());
     }
-
-    let render_settings = RenderSettings {
-        x_scale: scale,
-        y_scale: scale,
-        bg_color: hayro::vello_cpu::color::palette::css::WHITE,
-        ..Default::default()
-    };
-
-    let interpreter_settings = InterpreterSettings::default();
-    let pixmap = hayro::render(page, &interpreter_settings, &render_settings);
-
-    let width = u32::from(pixmap.width());
-    let height = u32::from(pixmap.height());
-
-    if width == 0 || height == 0 {
-        return Err("PDF render produced a zero-dimension image".into());
-    }
-
-    // Detect blank renders — hayro silently fails on some PDFs (e.g. linearized)
-    // by rendering only the white background with no page content.
-    let rgba = pixmap.data_as_u8_slice();
-    let all_white = rgba.chunks_exact(4).all(|c| c == [255, 255, 255, 255]);
-    if all_white {
-        return Err(
-            "PDF page rendered as blank (hayro could not parse page content — \
-             this may be a linearized PDF or use unsupported features)"
-                .into(),
-        );
-    }
-
-    // Convert premultiplied RGBA8 → RGB8, composited over white background.
-    // For premultiplied src over white: out = premul + (255 - alpha)
-    let pixel_count = width as usize * height as usize;
-    let mut rgb = Vec::with_capacity(pixel_count * 3);
-
-    for chunk in rgba.chunks_exact(4) {
-        let a = chunk[3];
-        let inv_a = 255 - a;
-        rgb.push(chunk[0].saturating_add(inv_a));
-        rgb.push(chunk[1].saturating_add(inv_a));
-        rgb.push(chunk[2].saturating_add(inv_a));
-    }
-
-    Ok((rgb, width, height, pages.len()))
-}
-
-/// Pdfium fallback: renders a PDF page using Google's pdfium (C++, statically linked).
-/// Only compiled when the `pdf-pdfium` feature is enabled.
-#[cfg(feature = "pdf-pdfium")]
-fn render_pdfium_fallback(
-    data: &[u8],
-    page_index: usize,
-    max_dims: Option<(u32, u32)>,
-    _hayro_err: Box<dyn Error>,
-) -> Result<(Vec<u8>, u32, u32, usize), Box<dyn Error>> {
-    tracing::info!("Falling back to pdfium for PDF rendering");
-
-    let pdfium = Pdfium::new(Pdfium::bind_to_statically_linked_library()?);
-    let document = pdfium.load_pdf_from_byte_slice(data, None)?;
-    let page_count = document.pages().len() as usize;
-    let page = document.pages().get(
-        u16::try_from(page_index)
-            .map_err(|_| format!("PDF page index {page_index} exceeds u16 range"))?,
-    )?;
-
-    let (target_w, target_h) = max_dims
-        .map(|(w, h)| (w as i32, h as i32))
-        .unwrap_or((PDFIUM_TARGET_SIZE, PDFIUM_TARGET_SIZE));
-
-    let render_config = PdfRenderConfig::new()
-        .set_target_width(target_w)
-        .set_maximum_height(target_h)
-        .rotate_if_landscape(PdfPageRenderRotation::Degrees90, true);
-
-    let img = page
-        .render_with_config(&render_config)?
-        .as_image()
-        .to_rgb8();
-    let (width, height) = img.dimensions();
-
-    Ok((img.into_raw(), width, height, page_count))
-}
-
-/// When pdfium is not available, just propagate the original hayro error.
-#[cfg(all(feature = "pdf", not(feature = "pdf-pdfium")))]
-#[allow(clippy::type_complexity)]
-fn render_pdfium_fallback(
-    _data: &[u8],
-    _page_index: usize,
-    _max_dims: Option<(u32, u32)>,
-    hayro_err: Box<dyn Error>,
-) -> Result<(Vec<u8>, u32, u32, usize), Box<dyn Error>> {
-    Err(hayro_err)
 }
 
 #[cfg(not(feature = "pdf"))]

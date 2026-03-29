@@ -12,9 +12,9 @@ anyhow = { version = "1.0.99", features = ["backtrace"] }
 libc = "0.2.175"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-hayro = { version = "0.5", optional = true }
-pdfium-render = { version = "0.8.35", features = ["static"], optional = true }
 rayon = "1.11.0"
+tiny-skia = { version = "0.11", optional = true }
+ttf-parser = { version = "0.25", optional = true }
 miniz_oxide = { version = "0.8", optional = true }
 # GPU dependencies (optional)
 agno-gpu-shared = { path = "../agno-gpu-shared", features = ["std"], optional = true }
@@ -35,8 +35,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 jpeg = []
 png = ["dep:miniz_oxide"]
 webp = []
-pdf = ["dep:hayro"]
-pdf-pdfium = ["pdf", "dep:pdfium-render"]  # Adds pdfium (C++) fallback for PDFs hayro can't render
+pdf = ["dep:tiny-skia", "dep:ttf-parser", "dep:miniz_oxide"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:agno-gpu-shared", "dep:spirv-builder"]
 cabac-trace = []  # Debug: log every CABAC decision for comparison with libde265
 default = ["gpu", "jpeg", "png", "webp", "pdf"]

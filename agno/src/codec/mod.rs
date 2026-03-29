@@ -7,3 +7,5 @@ pub mod jpeg;
 pub mod png;
 #[cfg(feature = "webp")]
 pub mod webp;
+#[cfg(feature = "pdf")]
+pub mod pdf;

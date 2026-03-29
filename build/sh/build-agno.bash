@@ -35,85 +35,18 @@ OUTPUT_PATH="$1"
 rustup target add "${TARGET_TRIPLE}" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 2) Download pdfium static lib if pdf-pdfium feature is requested
+# 2) Build the static lib
 # ---------------------------------------------------------------------------
 AGNO_FEATURES="${AGNO_FEATURES:-gpu,jpeg,png,webp,pdf}"
-LIB_DIR="${REPO_ROOT}/lib"
 
-if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
-    # Determine the correct pdfium asset for this target (or disable the feature)
-    case "$TARGET_TRIPLE" in
-    x86_64-unknown-linux-gnu)  PDFIUM_ASSET="libpdfium-linux-x64.a" ;;
-    aarch64-apple-darwin)      PDFIUM_ASSET="libpdfium-macos-arm64.a" ;;
-    *)
-        echo "No static pdfium binary for ${TARGET_TRIPLE}, disabling pdf-pdfium" >&2
-        AGNO_FEATURES="${AGNO_FEATURES//,pdf-pdfium/}"
-        AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium,/}"
-        AGNO_FEATURES="${AGNO_FEATURES//pdf-pdfium/}"
-        ;;
-    esac
-fi
-
-if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* ]]; then
-    # Always re-download to avoid architecture mismatches from cached builds
-    echo "--- Downloading libpdfium.a (${PDFIUM_ASSET}) ---"
-    latest_release=$(gh api -H "Accept: application/vnd.github+json" \
-        '/repos/kernoeb/pdfium-static/releases?per_page=1' | jq -r '.[0].tag_name')
-    mkdir -p "${LIB_DIR}"
-    curl -fsSL "https://github.com/kernoeb/pdfium-static/releases/download/${latest_release}/${PDFIUM_ASSET}" \
-        -o "${LIB_DIR}/libpdfium.a"
-    export PDFIUM_STATIC_LIB_PATH="${LIB_DIR}"
-fi
-
-# ---------------------------------------------------------------------------
-# 3) Build the static lib
-# ---------------------------------------------------------------------------
 rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
 
 cargo build --release --lib --no-default-features --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
 
 # ---------------------------------------------------------------------------
-# 4) Merge pdfium into libagno.a so consumers have zero extra dependencies
+# 3) Copy the static library to the output path
 # ---------------------------------------------------------------------------
 AGNO_LIB="${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno.a"
-
-if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* && -e "${LIB_DIR}/libpdfium.a" ]]; then
-    echo "--- Merging libpdfium.a into libagno.a ---"
-    MERGED="${REPO_ROOT}/target/${TARGET_TRIPLE}/release/libagno-merged.a"
-
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        libtool -static -o "${MERGED}" "${AGNO_LIB}" "${LIB_DIR}/libpdfium.a"
-    else
-        # Use llvm-ar for merging: the pre-built pdfium contains LLVM-compiled
-        # objects whose .eh_frame format is incompatible with GNU ar/ld.
-        # Rust ships llvm-ar via cargo, so it's always available.
-        LLVM_AR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | awk '/^host:/{print $2}')/bin/llvm-ar"
-        if [[ ! -x "$LLVM_AR" ]]; then
-            # Fallback: check PATH
-            LLVM_AR="$(command -v llvm-ar 2>/dev/null || true)"
-        fi
-        if [[ -z "$LLVM_AR" ]]; then
-            echo "ERROR: llvm-ar not found. Install llvm or use a Rust toolchain that ships it." >&2
-            exit 1
-        fi
-
-        cat > /tmp/merge-ar.mri <<MRIEOF
-CREATE ${MERGED}
-ADDLIB ${AGNO_LIB}
-ADDLIB ${LIB_DIR}/libpdfium.a
-SAVE
-END
-MRIEOF
-        "${LLVM_AR}" -M < /tmp/merge-ar.mri
-        rm -f /tmp/merge-ar.mri
-    fi
-
-    mv "${MERGED}" "${AGNO_LIB}"
-fi
-
-# ---------------------------------------------------------------------------
-# 5) Copy the static library to the output path
-# ---------------------------------------------------------------------------
 cp "${AGNO_LIB}" "${OUTPUT_PATH}"
 
 echo "--- Done: ${OUTPUT_PATH} ($(du -h "${OUTPUT_PATH}" | cut -f1)) ---"

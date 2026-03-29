@@ -128,9 +128,8 @@ fn cmd_convert(args: &[String]) -> Result<(), Box<dyn Error>> {
     let input_path = &args[0];
     let output_path = &args[1];
 
-    // Load image (auto-detects format)
     let img = load_agno_image_from_file(input_path)?;
-    img.to_jpeg_file(100, output_path)?;
+    img.write_to_file(output_path, 100)?;
 
     println!("Converted {} -> {}", input_path, output_path);
     Ok(())

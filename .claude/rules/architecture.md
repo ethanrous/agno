@@ -29,7 +29,7 @@ agno/src/
 │       ├── canon.rs         Canon CR2 RAW (thin wrapper, calls canon_decoder.rs)
 │       ├── heic.rs          HEIC/HEIF (parses container, decodes HEVC)
 │       ├── mov.rs           MOV/MP4 thumbnail extraction (4 strategies)
-│       └── pdf.rs           PDF (optional, incomplete)
+│       └── pdf.rs           PDF loading integration (calls codec::pdf)
 │
 ├── codec/                  Native format implementations (no external C deps)
 │   ├── heif.rs             HEIF container parser (single-tile and grid)
@@ -37,7 +37,21 @@ agno/src/
 │   ├── hevc/               Full HEVC/H.265 still-image decoder
 │   ├── jpeg/               JPEG encoder + decoder (DCT, Huffman, quantization)
 │   ├── webp/               WebP encoder + decoder (VP8, arithmetic coding)
-│   └── png/                PNG decoder
+│   ├── png/                PNG decoder
+│   └── pdf/                Native PDF rasterizer (tiny-skia + ttf-parser)
+│       ├── mod.rs           Public API: render_pdf_page(), pdf_page_count()
+│       ├── objects.rs       PDF object types (Dict, Array, Stream, Name, etc.)
+│       ├── lexer.rs         Tokenizer for PDF byte syntax
+│       ├── xref.rs          Cross-reference table/stream parsing (linearized support)
+│       ├── document.rs      Document open, object resolution, page tree navigation
+│       ├── stream.rs        Stream filter decompression (Flate, ASCII85, ASCIIHex)
+│       ├── content.rs       Content stream operator parser
+│       ├── graphics.rs      Graphics state machine (CTM, color, line style, clipping)
+│       ├── color.rs         Color space handling (DeviceRGB, DeviceGray, DeviceCMYK)
+│       ├── render.rs        Rasterization via tiny-skia (paths, shapes, text rectangles)
+│       ├── font.rs          Font metrics (Standard 14), embedded font extraction
+│       ├── text.rs          Text operator handling, glyph positioning
+│       └── image.rs         Embedded image extraction (DCTDecode, FlateDecode)
 │
 ├── exif/                   EXIF metadata
 │   ├── mod.rs              ExifContext (HashMap<u16, ExifValue>), parse/cache/query
@@ -68,6 +82,7 @@ File → detect_image_type() [magic bytes]
         Standard: codec decode → RGB8 Vec<u8>
         RAW:      TIFF parse → extract sensor data → demosaic → color correct → RGB8
         HEIC:     HEIF container parse → HEVC decode → YUV→RGB → RGB8
+        PDF:      parse xref/objects → content stream → tiny-skia rasterize → RGB8
         MOV:      try 4 strategies (HEIF items, thumbnail track, UDTA JPEG, HEVC keyframe)
      → AgnoImage::new(rgb_data, width, height, exif)
         [copies data into libc::malloc'd buffer for FFI safety]

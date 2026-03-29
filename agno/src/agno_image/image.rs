@@ -126,9 +126,42 @@ impl AgnoImage {
     #[allow(dead_code)]
     pub fn to_jpeg_file(&self, quality: u8, path: &str) -> Result<(), Box<dyn Error>> {
         let buf = self.to_jpeg(quality)?;
-
         std::fs::write(path, buf)?;
-
         Ok(())
+    }
+
+    /// Encode to WebP bytes at the given quality (0-100).
+    #[cfg(feature = "webp")]
+    #[allow(dead_code)]
+    pub fn to_webp(&self, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
+        crate::codec::webp::encode_webp(
+            self.as_slice(),
+            self.width as u32,
+            self.height as u32,
+            quality,
+        )
+    }
+
+    /// Write the image to a file, detecting format from the file extension.
+    /// Supports: .jpeg/.jpg (JPEG), .webp (WebP). Falls back to JPEG for unknown extensions.
+    #[allow(dead_code)]
+    pub fn write_to_file(&self, path: &str, quality: u8) -> Result<(), Box<dyn Error>> {
+        let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let data = self.encode_for_ext(&ext, quality)?;
+        std::fs::write(path, data)?;
+        Ok(())
+    }
+
+    fn encode_for_ext(&self, ext: &str, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
+        match ext {
+            #[cfg(feature = "webp")]
+            "webp" => self.to_webp(quality),
+            #[cfg(feature = "jpeg")]
+            "jpeg" | "jpg" => self.to_jpeg(quality),
+            #[cfg(feature = "jpeg")]
+            _ => self.to_jpeg(quality),
+            #[cfg(not(feature = "jpeg"))]
+            _ => Err(format!("No encoder available for .{ext}").into()),
+        }
     }
 }

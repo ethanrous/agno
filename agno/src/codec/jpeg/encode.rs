@@ -78,17 +78,118 @@ pub fn encode_jpeg_from_ycbcr(
     let h = height as usize;
     let quality = quality.clamp(1, 100);
 
+    // Use 4:4:4 (no chroma subsampling) at quality >= 90 for sharper edges.
+    // Use 4:2:0 otherwise for smaller files.
+    if quality >= 90 {
+        encode_444(y_plane, cb_plane, cr_plane, w, h, quality)
+    } else {
+        encode_420(y_plane, cb_plane, cr_plane, w, h, quality)
+    }
+}
+
+/// Encode with 4:4:4 chroma (no subsampling) — full chroma resolution for sharp edges.
+fn encode_444(
+    y_plane: &[u8],
+    cb_plane: &[u8],
+    cr_plane: &[u8],
+    w: usize,
+    h: usize,
+    quality: u8,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let luma_qt = scale_quant_table(&JPEG_LUMA_QUANT, quality);
     let chroma_qt = scale_quant_table(&JPEG_CHROMA_QUANT, quality);
 
-    // MCU dimensions for 4:2:0 (16x16 pixel blocks)
+    // 4:4:4 MCUs are 8x8 pixels, 3 blocks each (Y + Cb + Cr)
+    let mcu_cols = w.div_ceil(8);
+    let mcu_rows = h.div_ceil(8);
+    let total_mcus = mcu_cols * mcu_rows;
+
+    let mcu_blocks: Vec<[[i16; 64]; 3]> = (0..total_mcus)
+        .into_par_iter()
+        .map(|mcu_idx| {
+            let mcu_row = mcu_idx / mcu_cols;
+            let mcu_col = mcu_idx % mcu_cols;
+            let px = mcu_col * 8;
+            let py = mcu_row * 8;
+
+            let mut blocks = [[0i16; 64]; 3];
+
+            // Extract 8x8 blocks for Y, Cb, Cr (no subsampling)
+            for (plane_idx, plane) in [y_plane, cb_plane, cr_plane].iter().enumerate() {
+                let qt = if plane_idx == 0 { &luma_qt } else { &chroma_qt };
+                let mut dct_block = [0i32; 64];
+                for row in 0..8 {
+                    for col in 0..8 {
+                        let sx = (px + col).min(w - 1);
+                        let sy = (py + row).min(h - 1);
+                        dct_block[row * 8 + col] = plane[sy * w + sx] as i32;
+                    }
+                }
+                fdct8x8(&mut dct_block);
+                quantize_block(&mut dct_block, qt);
+                blocks[plane_idx] = zigzag_reorder(&dct_block);
+            }
+            blocks
+        })
+        .collect();
+
+    let mut out = Vec::with_capacity(w * h);
+    out.write_all(&[0xFF, 0xD8])?;
+    write_app0(&mut out)?;
+    write_dqt(&mut out, 0, &luma_qt)?;
+    write_dqt(&mut out, 1, &chroma_qt)?;
+    write_sof0_444(&mut out, w as u32, h as u32)?;
+    write_dht(&mut out, 0x00, &DC_LUMA_BITS, &DC_LUMA_VALUES)?;
+    write_dht(&mut out, 0x10, &AC_LUMA_BITS, &AC_LUMA_VALUES)?;
+    write_dht(&mut out, 0x01, &DC_CHROMA_BITS, &DC_CHROMA_VALUES)?;
+    write_dht(&mut out, 0x11, &AC_CHROMA_BITS, &AC_CHROMA_VALUES)?;
+    write_sos(&mut out)?;
+
+    {
+        let mut bit_writer = JpegBitWriter::new(&mut out);
+        let mut prev_dc = [0i16; 3];
+        let dc_luma = &*DC_LUMA_LUT;
+        let ac_luma = &*AC_LUMA_LUT;
+        let dc_chroma = &*DC_CHROMA_LUT;
+        let ac_chroma = &*AC_CHROMA_LUT;
+
+        for blocks in &mcu_blocks {
+            for (i, block) in blocks.iter().enumerate() {
+                let (dc_lut, ac_lut) = if i == 0 {
+                    (dc_luma, ac_luma)
+                } else {
+                    (dc_chroma, ac_chroma)
+                };
+                let dc = block[0];
+                let diff = dc - prev_dc[i];
+                prev_dc[i] = dc;
+                bit_writer.write_dc(diff, dc_lut)?;
+                let ac: [i16; 63] = block[1..64].try_into().unwrap();
+                bit_writer.write_ac_block(&ac, ac_lut)?;
+            }
+        }
+        bit_writer.flush()?;
+    }
+
+    out.write_all(&[0xFF, 0xD9])?;
+    Ok(out)
+}
+
+/// Encode with 4:2:0 chroma subsampling — smaller files, standard quality.
+fn encode_420(
+    y_plane: &[u8],
+    cb_plane: &[u8],
+    cr_plane: &[u8],
+    w: usize,
+    h: usize,
+    quality: u8,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let luma_qt = scale_quant_table(&JPEG_LUMA_QUANT, quality);
+    let chroma_qt = scale_quant_table(&JPEG_CHROMA_QUANT, quality);
+
     let mcu_cols = w.div_ceil(16);
     let mcu_rows = h.div_ceil(16);
     let total_mcus = mcu_cols * mcu_rows;
-
-    // For each MCU: 4 Y blocks + 1 Cb block + 1 Cr block = 6 blocks
-    // Each block is [i16; 64] in zigzag order after DCT + quantize
-    // Parallelize DCT+quantize per MCU, collect results sequentially.
 
     let mcu_blocks: Vec<[[i16; 64]; 6]> = (0..total_mcus)
         .into_par_iter()
@@ -100,7 +201,6 @@ pub fn encode_jpeg_from_ycbcr(
 
             let mut blocks = [[0i16; 64]; 6];
 
-            // Extract and process 4 Y blocks
             for blk in 0..4 {
                 let bx = px + (blk % 2) * 8;
                 let by = py + (blk / 2) * 8;
@@ -117,7 +217,6 @@ pub fn encode_jpeg_from_ycbcr(
                 blocks[blk] = zigzag_reorder(&dct_block);
             }
 
-            // Subsample Cb and Cr: average 2x2 groups from the 16x16 MCU region
             let mut cb_block = [0i32; 64];
             let mut cr_block = [0i32; 64];
             for row in 0..8 {
@@ -153,46 +252,29 @@ pub fn encode_jpeg_from_ycbcr(
         })
         .collect();
 
-    // Assemble the JPEG bitstream
-    let mut out = Vec::with_capacity(w * h); // rough estimate
-
-    // SOI
+    let mut out = Vec::with_capacity(w * h);
     out.write_all(&[0xFF, 0xD8])?;
-
-    // APP0 (JFIF)
     write_app0(&mut out)?;
-
-    // DQT markers
     write_dqt(&mut out, 0, &luma_qt)?;
     write_dqt(&mut out, 1, &chroma_qt)?;
-
-    // SOF0
-    write_sof0(&mut out, width, height)?;
-
-    // DHT markers (4 tables)
+    write_sof0_420(&mut out, w as u32, h as u32)?;
     write_dht(&mut out, 0x00, &DC_LUMA_BITS, &DC_LUMA_VALUES)?;
     write_dht(&mut out, 0x10, &AC_LUMA_BITS, &AC_LUMA_VALUES)?;
     write_dht(&mut out, 0x01, &DC_CHROMA_BITS, &DC_CHROMA_VALUES)?;
     write_dht(&mut out, 0x11, &AC_CHROMA_BITS, &AC_CHROMA_VALUES)?;
-
-    // SOS
     write_sos(&mut out)?;
 
-    // Entropy-coded data
     {
         let mut bit_writer = JpegBitWriter::new(&mut out);
-
         let mut prev_dc_y: i16 = 0;
         let mut prev_dc_cb: i16 = 0;
         let mut prev_dc_cr: i16 = 0;
-
         let dc_luma = &*DC_LUMA_LUT;
         let ac_luma = &*AC_LUMA_LUT;
         let dc_chroma = &*DC_CHROMA_LUT;
         let ac_chroma = &*AC_CHROMA_LUT;
 
         for blocks in &mcu_blocks {
-            // 4 Y blocks
             for block in &blocks[..4] {
                 let dc = block[0];
                 let diff = dc - prev_dc_y;
@@ -201,8 +283,6 @@ pub fn encode_jpeg_from_ycbcr(
                 let ac: [i16; 63] = block[1..64].try_into().unwrap();
                 bit_writer.write_ac_block(&ac, ac_luma)?;
             }
-
-            // Cb block
             {
                 let dc = blocks[4][0];
                 let diff = dc - prev_dc_cb;
@@ -211,8 +291,6 @@ pub fn encode_jpeg_from_ycbcr(
                 let ac: [i16; 63] = blocks[4][1..64].try_into().unwrap();
                 bit_writer.write_ac_block(&ac, ac_chroma)?;
             }
-
-            // Cr block
             {
                 let dc = blocks[5][0];
                 let diff = dc - prev_dc_cr;
@@ -222,13 +300,10 @@ pub fn encode_jpeg_from_ycbcr(
                 bit_writer.write_ac_block(&ac, ac_chroma)?;
             }
         }
-
         bit_writer.flush()?;
     }
 
-    // EOI
     out.write_all(&[0xFF, 0xD9])?;
-
     Ok(out)
 }
 
@@ -272,21 +347,33 @@ fn write_dqt(out: &mut Vec<u8>, table_id: u8, qtable: &[u16; 64]) -> Result<(), 
     Ok(())
 }
 
-fn write_sof0(out: &mut Vec<u8>, width: u32, height: u32) -> Result<(), Box<dyn Error>> {
+/// SOF0 for 4:2:0 subsampling (Y=2x2, Cb=1x1, Cr=1x1).
+fn write_sof0_420(out: &mut Vec<u8>, width: u32, height: u32) -> Result<(), Box<dyn Error>> {
     out.write_all(&[0xFF, 0xC0])?;
     let length: u16 = 17;
     out.write_all(&length.to_be_bytes())?;
-    out.write_all(&[8])?; // 8-bit precision
+    out.write_all(&[8])?;
     out.write_all(&(height as u16).to_be_bytes())?;
     out.write_all(&(width as u16).to_be_bytes())?;
-    out.write_all(&[3])?; // 3 components
+    out.write_all(&[3])?;
+    out.write_all(&[1, 0x22, 0])?; // Y: H=2 V=2
+    out.write_all(&[2, 0x11, 1])?; // Cb: H=1 V=1
+    out.write_all(&[3, 0x11, 1])?; // Cr: H=1 V=1
+    Ok(())
+}
 
-    // Component 1 (Y): id=1, H=2 V=2, Tq=0
-    out.write_all(&[1, 0x22, 0])?;
-    // Component 2 (Cb): id=2, H=1 V=1, Tq=1
-    out.write_all(&[2, 0x11, 1])?;
-    // Component 3 (Cr): id=3, H=1 V=1, Tq=1
-    out.write_all(&[3, 0x11, 1])?;
+/// SOF0 for 4:4:4 (no subsampling — all components 1x1).
+fn write_sof0_444(out: &mut Vec<u8>, width: u32, height: u32) -> Result<(), Box<dyn Error>> {
+    out.write_all(&[0xFF, 0xC0])?;
+    let length: u16 = 17;
+    out.write_all(&length.to_be_bytes())?;
+    out.write_all(&[8])?;
+    out.write_all(&(height as u16).to_be_bytes())?;
+    out.write_all(&(width as u16).to_be_bytes())?;
+    out.write_all(&[3])?;
+    out.write_all(&[1, 0x11, 0])?; // Y: H=1 V=1
+    out.write_all(&[2, 0x11, 1])?; // Cb: H=1 V=1
+    out.write_all(&[3, 0x11, 1])?; // Cr: H=1 V=1
     Ok(())
 }
 
