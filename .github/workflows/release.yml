@@ -30,10 +30,10 @@ jobs:
             platform: macos-aarch64
         gpu:
           - enabled: true
-            features: "gpu,jpeg,png,webp,pdf,pdf-pdfium"
+            features: "gpu,jpeg,png,webp,pdf"
             suffix: "-gpu"
           - enabled: false
-            features: "jpeg,png,webp,pdf,pdf-pdfium"
+            features: "jpeg,png,webp,pdf"
             suffix: ""
 
     steps:
