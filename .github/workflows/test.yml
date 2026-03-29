@@ -60,7 +60,7 @@ jobs:
       - name: Build
         run: ./build/sh/build-agno.bash libagno.a
         env:
-          AGNO_FEATURES: "jpeg,png,webp,pdf"
+          AGNO_FEATURES: "jpeg,png,webp,pdf,pdf-pdfium"
 
       - name: Verify output
         run: file libagno.a
