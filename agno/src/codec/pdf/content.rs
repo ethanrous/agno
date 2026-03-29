@@ -47,11 +47,12 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>, Box<dyn Error>
                 operand_stack.push(PdfObject::Null);
             } else if keyword == b"BI" {
                 // Inline image: BI <dict pairs> ID <data> EI
-                // Skip for now — consume until EI.
-                skip_inline_image(&mut lex);
+                let (dict, data) = parse_inline_image(&mut lex);
+                let mut operands = vec![dict, PdfObject::String(data)];
+                operands.extend(std::mem::take(&mut operand_stack));
                 ops.push(Operator {
                     name: b"BI".to_vec(),
-                    operands: std::mem::take(&mut operand_stack),
+                    operands,
                 });
             } else {
                 ops.push(Operator {
@@ -71,51 +72,171 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>, Box<dyn Error>
     Ok(ops)
 }
 
-/// Skip an inline image block starting just after `BI` has been consumed.
-///
-/// Scans forward for the `EI` marker, which must be preceded by whitespace and
-/// followed by whitespace, a delimiter, or EOF (per PDF spec section 8.9.7).
-fn skip_inline_image(lex: &mut super::lexer::Lexer<'_>) {
-    // Read until we encounter EI preceded by whitespace.
-    // Strategy: scan byte-by-byte looking for \nEI, \rEI, or ' EI' followed
-    // by whitespace/delimiter/EOF.
+/// Parse an inline image: reads dict pairs until ID, then captures raw data until EI.
+/// Returns (dict as PdfObject::Dictionary, raw image bytes).
+fn parse_inline_image(lex: &mut super::lexer::Lexer<'_>) -> (PdfObject, Vec<u8>) {
+    use std::collections::HashMap;
+
+    // Parse dict key/value pairs until "ID" keyword.
+    let mut dict = HashMap::new();
     loop {
-        if lex.at_end() {
-            break;
-        }
+        if lex.at_end() { break; }
+        lex.skip_whitespace();
+        let saved = lex.position();
 
-        // Look for 'E' that could start 'EI'.
-        let b = match lex.peek_byte() {
-            Some(b) => b,
-            None => break,
-        };
-
-        if b == b'E' {
-            let pos = lex.position();
-            // Check that this 'E' is preceded by whitespace — we already
-            // consumed some bytes, so check what's at pos-1 if pos > 0.
-            // Then check the two bytes E and I.
-            if lex.remaining().starts_with(b"EI") {
-                let after_ei = pos + 2;
-                // EI must be followed by whitespace, delimiter, or EOF.
-                // We need to look at the byte at after_ei position in the
-                // original data — use remaining() offset.
-                let remaining = lex.remaining();
-                let ei_followed_by_boundary = remaining.len() == 2
-                    || is_content_stream_delimiter(remaining[2]);
-
-                if ei_followed_by_boundary {
-                    // Advance past EI.
-                    lex.set_position(after_ei);
+        // Keys can be either /Name or bare keyword (both forms appear in PDFs).
+        // Try reading the next object — if it's a Name, use it as key.
+        // If it's a keyword like "ID", we're done with the dict.
+        match lex.next_object() {
+            Ok(Some(PdfObject::Name(name_bytes))) => {
+                let key = expand_inline_key(&name_bytes);
+                match lex.next_object() {
+                    Ok(Some(val)) => {
+                        let val = expand_inline_value(&key, val);
+                        dict.insert(key, val);
+                    }
+                    _ => break,
+                }
+            }
+            Ok(None) => break,
+            _ => {
+                // Might be a keyword like "ID" — check.
+                lex.set_position(saved);
+                if let Ok(kw) = lex.read_keyword() {
+                    if kw == b"ID" { break; }
+                    // Bare keyword as key
+                    let key = expand_inline_key(&kw);
+                    match lex.next_object() {
+                        Ok(Some(val)) => {
+                            let val = expand_inline_value(&key, val);
+                            dict.insert(key, val);
+                        }
+                        _ => break,
+                    }
+                } else {
+                    lex.set_position(saved);
                     break;
                 }
             }
         }
-
-        // Advance one byte and continue scanning.
-        let pos = lex.position();
-        lex.set_position(pos + 1);
     }
+
+    // After ID, there's exactly one whitespace byte, then image data until EI.
+    let remaining = lex.remaining();
+    let data_start = if !remaining.is_empty() && remaining[0].is_ascii_whitespace() { 1 } else { 0 };
+
+    // If we know the image dimensions and BPC, calculate exact data length.
+    let expected_len = compute_inline_data_length(&dict);
+
+    if let Some(len) = expected_len {
+        // Use exact length: data is len bytes starting at data_start.
+        let end = data_start + len;
+        if end <= remaining.len() {
+            let image_data = remaining[data_start..end].to_vec();
+            // Skip past data + whitespace + EI
+            let mut pos = end;
+            // Skip whitespace before EI
+            while pos < remaining.len() && remaining[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            // Skip EI
+            if pos + 1 < remaining.len() && remaining[pos] == b'E' && remaining[pos + 1] == b'I' {
+                pos += 2;
+            }
+            lex.set_position(lex.position() + pos);
+            return (PdfObject::Dictionary(dict), image_data);
+        }
+    }
+
+    // Fallback: scan for EI preceded by whitespace and followed by delimiter/EOF.
+    let bytes = &remaining[data_start..];
+    let mut i = 1;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'E' && bytes[i + 1] == b'I' {
+            let preceded_by_ws = bytes[i - 1].is_ascii_whitespace();
+            let followed_by_boundary = i + 2 >= bytes.len()
+                || is_content_stream_delimiter(bytes[i + 2]);
+            if preceded_by_ws && followed_by_boundary {
+                let image_data = remaining[data_start..data_start + i - 1].to_vec();
+                lex.set_position(lex.position() + data_start + i + 2);
+                return (PdfObject::Dictionary(dict), image_data);
+            }
+        }
+        i += 1;
+    }
+
+    // Last resort: consume everything
+    lex.set_position(lex.position() + remaining.len());
+    (PdfObject::Dictionary(dict), remaining[data_start..].to_vec())
+}
+
+/// Compute expected inline image data length from dict dimensions.
+/// Returns None if dimensions are unknown or a filter is applied.
+fn compute_inline_data_length(dict: &std::collections::HashMap<Vec<u8>, PdfObject>) -> Option<usize> {
+    if dict.contains_key(b"Filter".as_slice()) {
+        return None;
+    }
+
+    let w = dict.get(b"Width".as_slice()).and_then(|v| v.as_i64())? as usize;
+    let h = dict.get(b"Height".as_slice()).and_then(|v| v.as_i64())? as usize;
+    let bpc = dict.get(b"BitsPerComponent".as_slice())
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1) as usize;
+    let is_mask = dict.get(b"ImageMask".as_slice())
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let components: usize = if is_mask { 1 } else {
+        let cs = dict.get(b"ColorSpace".as_slice());
+        match cs.and_then(|v| v.as_name_str()) {
+            Some("DeviceGray") | Some("G") => 1,
+            Some("DeviceRGB") | Some("RGB") => 3,
+            Some("DeviceCMYK") | Some("CMYK") => 4,
+            _ => 1,
+        }
+    };
+
+    let row_bits = w * components * bpc;
+    let row_bytes = (row_bits + 7) / 8;
+    Some(row_bytes * h)
+}
+
+/// Expand abbreviated inline image dictionary keys to full names.
+fn expand_inline_key(key: &[u8]) -> Vec<u8> {
+    match key {
+        b"W" => b"Width".to_vec(),
+        b"H" => b"Height".to_vec(),
+        b"BPC" => b"BitsPerComponent".to_vec(),
+        b"CS" => b"ColorSpace".to_vec(),
+        b"F" => b"Filter".to_vec(),
+        b"DP" => b"DecodeParms".to_vec(),
+        b"IM" => b"ImageMask".to_vec(),
+        b"I" => b"Interpolate".to_vec(),
+        _ => key.to_vec(),
+    }
+}
+
+/// Expand abbreviated inline image values (color space names, filter names).
+fn expand_inline_value(key: &[u8], val: PdfObject) -> PdfObject {
+    if key == b"ColorSpace" || key == b"Filter" {
+        if let Some(name) = val.as_name_str() {
+            let expanded = match name {
+                "G" => "DeviceGray",
+                "RGB" => "DeviceRGB",
+                "CMYK" => "DeviceCMYK",
+                "AHx" => "ASCIIHexDecode",
+                "A85" => "ASCII85Decode",
+                "LZW" => "LZWDecode",
+                "Fl" => "FlateDecode",
+                "RL" => "RunLengthDecode",
+                "CCF" => "CCITTFaxDecode",
+                "DCT" => "DCTDecode",
+                _ => return val,
+            };
+            return PdfObject::Name(expanded.as_bytes().to_vec());
+        }
+    }
+    val
 }
 
 /// Returns true if the byte is a whitespace or delimiter that can follow `EI`.

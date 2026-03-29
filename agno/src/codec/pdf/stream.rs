@@ -41,6 +41,9 @@ fn apply_filter(
         }
         b"ASCIIHexDecode" | b"AHx" => decode_ascii_hex(data),
         b"ASCII85Decode" | b"A85" => decode_ascii85(data),
+        // DCTDecode (JPEG) and JPXDecode (JPEG2000) are image-specific filters.
+        // Pass raw bytes through; image.rs handles decoding.
+        b"DCTDecode" | b"DCT" | b"JPXDecode" => Ok(data.to_vec()),
         other => Err(format!(
             "Unsupported PDF stream filter: {}",
             std::str::from_utf8(other).unwrap_or("<non-utf8>")

@@ -521,7 +521,10 @@ fn execute_operator(
         // --- Extended graphics state ---
         b"gs" => {}
 
-        // --- Inline image (already consumed by parser) ---
+        // --- Inline image ---
+        b"BI" if op.operands.len() >= 2 => {
+            render_inline_image(&op.operands[0], &op.operands[1], state, pixmap, ctx);
+        }
         b"BI" => {}
 
         // --- Marked content ---
@@ -536,6 +539,242 @@ fn execute_operator(
 }
 
 /// Render a Form XObject by recursively executing its content stream.
+fn render_inline_image(
+    dict: &PdfObject,
+    data_obj: &PdfObject,
+    state: &GraphicsStateStack,
+    pixmap: &mut Pixmap,
+    ctx: &RenderContext,
+) {
+    let raw_data = match data_obj.as_string_bytes() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let img_w = dict.get_i64(b"Width").unwrap_or(0) as u32;
+    let img_h = dict.get_i64(b"Height").unwrap_or(0) as u32;
+    if img_w == 0 || img_h == 0 { return; }
+
+    let bpc = dict.get_i64(b"BitsPerComponent").unwrap_or(1) as u8;
+    let is_mask = dict.get(b"ImageMask")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let cs = if is_mask {
+        super::color::ColorSpace::DeviceGray
+    } else {
+        dict.get(b"ColorSpace")
+            .and_then(|cs| parse_image_colorspace(cs, ctx.doc))
+            .unwrap_or(super::color::ColorSpace::DeviceGray)
+    };
+
+    let filter = dict.get(b"Filter").and_then(|f| f.as_name()).map(|n| n.to_vec());
+    let filter_ref = filter.as_deref();
+
+    // For image masks, render as 1-bit black/white using current fill color.
+    if is_mask && bpc == 1 {
+        render_inline_mask(raw_data, img_w, img_h, state, pixmap, ctx);
+        return;
+    }
+
+    let image = match super::image::decode_image_xobject(
+        raw_data, img_w, img_h, bpc, &cs, filter_ref,
+    ) {
+        Ok(img) => img,
+        Err(_) => return,
+    };
+
+    let mut rgba = Vec::with_capacity(image.width as usize * image.height as usize * 4);
+    for pixel in image.rgb_data.chunks(3) {
+        if pixel.len() < 3 { break; }
+        rgba.push(pixel[0]);
+        rgba.push(pixel[1]);
+        rgba.push(pixel[2]);
+        rgba.push(255);
+    }
+
+    let src_pixmap = match tiny_skia::PixmapRef::from_bytes(&rgba, image.width, image.height) {
+        Some(p) => p,
+        None => return,
+    };
+
+    let transform = image_transform(state, ctx, image.width, image.height);
+    let paint = tiny_skia::PixmapPaint {
+        opacity: 1.0,
+        blend_mode: tiny_skia::BlendMode::SourceOver,
+        quality: tiny_skia::FilterQuality::Bilinear,
+    };
+    pixmap.draw_pixmap(0, 0, src_pixmap, &paint, transform, None);
+}
+
+/// Render a 1-bit image mask: bit=0 paints fill color, bit=1 is transparent.
+fn render_inline_mask(
+    data: &[u8],
+    img_w: u32,
+    img_h: u32,
+    state: &GraphicsStateStack,
+    pixmap: &mut Pixmap,
+    ctx: &RenderContext,
+) {
+    let color = &state.current().fill_color;
+    let r = (color.r.clamp(0.0, 1.0) * 255.0) as u8;
+    let g = (color.g.clamp(0.0, 1.0) * 255.0) as u8;
+    let b = (color.b.clamp(0.0, 1.0) * 255.0) as u8;
+
+    let mut rgba = vec![0u8; img_w as usize * img_h as usize * 4];
+    let row_bytes = (img_w as usize + 7) / 8;
+
+    for y in 0..img_h as usize {
+        for x in 0..img_w as usize {
+            let byte_idx = y * row_bytes + x / 8;
+            let bit_idx = 7 - (x % 8);
+            let bit = if byte_idx < data.len() {
+                (data[byte_idx] >> bit_idx) & 1
+            } else { 1 };
+
+            let px = (y * img_w as usize + x) * 4;
+            if bit == 0 {
+                // Bit 0 = paint with fill color
+                rgba[px] = r;
+                rgba[px + 1] = g;
+                rgba[px + 2] = b;
+                rgba[px + 3] = 255;
+            }
+            // Bit 1 = transparent (already 0,0,0,0)
+        }
+    }
+
+    let src_pixmap = match tiny_skia::PixmapRef::from_bytes(&rgba, img_w, img_h) {
+        Some(p) => p,
+        None => return,
+    };
+
+    let transform = image_transform(state, ctx, img_w, img_h);
+    let paint = tiny_skia::PixmapPaint {
+        opacity: 1.0,
+        blend_mode: tiny_skia::BlendMode::SourceOver,
+        quality: tiny_skia::FilterQuality::Nearest,
+    };
+    pixmap.draw_pixmap(0, 0, src_pixmap, &paint, transform, None);
+}
+
+/// Build the transform for rendering an image into the PDF coordinate system.
+/// PDF images occupy a 1x1 unit square with origin at bottom-left, but pixel
+/// data has row 0 at top. Flip Y to compensate.
+fn image_transform(
+    state: &GraphicsStateStack,
+    ctx: &RenderContext,
+    img_w: u32,
+    img_h: u32,
+) -> Transform {
+    let ctm = &state.current().ctm;
+    let w = img_w as f32;
+    let h = img_h as f32;
+    // Scale pixel coords to 1x1, then flip Y (negate c,d and offset by c,d).
+    let t = Transform::from_row(
+        ctm.a as f32 / w,
+        ctm.b as f32 / w,
+        -(ctm.c as f32) / h,
+        -(ctm.d as f32) / h,
+        (ctm.e + ctm.c) as f32,
+        (ctm.f + ctm.d) as f32,
+    );
+    ctx.base.pre_concat(t)
+}
+
+fn render_image_xobject(
+    xobj: &PdfObject,
+    state: &GraphicsStateStack,
+    pixmap: &mut Pixmap,
+    ctx: &RenderContext,
+) {
+    let (_, stream_data) = match xobj.as_stream() {
+        Some(sd) => sd,
+        None => return,
+    };
+
+    let img_w = xobj.get_i64(b"Width").unwrap_or(0) as u32;
+    let img_h = xobj.get_i64(b"Height").unwrap_or(0) as u32;
+    if img_w == 0 || img_h == 0 { return; }
+
+    let bpc = xobj.get_i64(b"BitsPerComponent").unwrap_or(8) as u8;
+
+    // Determine color space.
+    let cs = xobj.get(b"ColorSpace")
+        .and_then(|cs| parse_image_colorspace(cs, ctx.doc))
+        .unwrap_or(super::color::ColorSpace::DeviceRGB);
+
+    // Determine if the raw data is JPEG (DCTDecode passes through stream.rs).
+    let filter = xobj.get(b"Filter")
+        .and_then(|f| f.as_name())
+        .map(|n| n.to_vec());
+    let filter_ref = filter.as_deref();
+
+    let image = match super::image::decode_image_xobject(
+        stream_data, img_w, img_h, bpc, &cs, filter_ref,
+    ) {
+        Ok(img) => img,
+        Err(_) => return,
+    };
+
+    // Convert RGB8 to RGBA8 for tiny-skia PixmapRef.
+    let mut rgba = Vec::with_capacity(image.width as usize * image.height as usize * 4);
+    for pixel in image.rgb_data.chunks(3) {
+        if pixel.len() < 3 { break; }
+        rgba.push(pixel[0]);
+        rgba.push(pixel[1]);
+        rgba.push(pixel[2]);
+        rgba.push(255);
+    }
+
+    let src_pixmap = match tiny_skia::PixmapRef::from_bytes(&rgba, image.width, image.height) {
+        Some(p) => p,
+        None => return,
+    };
+
+    let transform = image_transform(state, ctx, image.width, image.height);
+    let paint = tiny_skia::PixmapPaint {
+        opacity: state.current().fill_alpha as f32,
+        blend_mode: tiny_skia::BlendMode::SourceOver,
+        quality: tiny_skia::FilterQuality::Bilinear,
+    };
+    pixmap.draw_pixmap(0, 0, src_pixmap, &paint, transform, None);
+}
+
+fn parse_image_colorspace(
+    cs_obj: &PdfObject,
+    doc: &PdfDocument,
+) -> Option<super::color::ColorSpace> {
+    if let Some(name) = cs_obj.as_name_str() {
+        return match name {
+            "DeviceRGB" | "RGB" => Some(super::color::ColorSpace::DeviceRGB),
+            "DeviceGray" | "G" => Some(super::color::ColorSpace::DeviceGray),
+            "DeviceCMYK" | "CMYK" => Some(super::color::ColorSpace::DeviceCMYK),
+            _ => None,
+        };
+    }
+    if let Some(arr) = cs_obj.as_array() {
+        if let Some(name) = arr.first().and_then(|v| v.as_name_str()) {
+            return match name {
+                "ICCBased" => {
+                    let n = arr.get(1)
+                        .and_then(|r| doc.resolve_value(r).ok())
+                        .and_then(|o| o.get_i64(b"N"))
+                        .unwrap_or(3) as u8;
+                    Some(super::color::ColorSpace::ICCBased { num_components: n })
+                }
+                "CalRGB" => Some(super::color::ColorSpace::CalRGB),
+                "CalGray" => Some(super::color::ColorSpace::CalGray),
+                "DeviceRGB" => Some(super::color::ColorSpace::DeviceRGB),
+                "DeviceGray" => Some(super::color::ColorSpace::DeviceGray),
+                "DeviceCMYK" => Some(super::color::ColorSpace::DeviceCMYK),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
 fn render_xobject(
     name: &[u8],
     state: &mut GraphicsStateStack,
@@ -555,6 +794,11 @@ fn render_xobject(
     };
 
     let subtype = xobj.get_name_str(b"Subtype").unwrap_or("");
+    if subtype == "Image" {
+        render_image_xobject(&xobj, state, pixmap, ctx);
+        return;
+    }
+
     if subtype != "Form" {
         return;
     }
