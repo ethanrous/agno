@@ -84,11 +84,19 @@ if [[ "$AGNO_FEATURES" == *"pdf-pdfium"* && -e "${LIB_DIR}/libpdfium.a" ]]; then
     if [[ "$(uname -s)" == "Darwin" ]]; then
         libtool -static -o "${MERGED}" "${AGNO_LIB}" "${LIB_DIR}/libpdfium.a"
     else
-        # Use ar MRI script to combine archives
-        ARBIN="ar"
-        if [[ "$TARGET_TRIPLE" == "aarch64-unknown-linux-gnu" ]]; then
-            ARBIN="aarch64-linux-gnu-ar"
+        # Use llvm-ar for merging: the pre-built pdfium contains LLVM-compiled
+        # objects whose .eh_frame format is incompatible with GNU ar/ld.
+        # Rust ships llvm-ar via cargo, so it's always available.
+        LLVM_AR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | awk '/^host:/{print $2}')/bin/llvm-ar"
+        if [[ ! -x "$LLVM_AR" ]]; then
+            # Fallback: check PATH
+            LLVM_AR="$(command -v llvm-ar 2>/dev/null || true)"
         fi
+        if [[ -z "$LLVM_AR" ]]; then
+            echo "ERROR: llvm-ar not found. Install llvm or use a Rust toolchain that ships it." >&2
+            exit 1
+        fi
+
         cat > /tmp/merge-ar.mri <<MRIEOF
 CREATE ${MERGED}
 ADDLIB ${AGNO_LIB}
@@ -96,7 +104,7 @@ ADDLIB ${LIB_DIR}/libpdfium.a
 SAVE
 END
 MRIEOF
-        "${ARBIN}" -M < /tmp/merge-ar.mri
+        "${LLVM_AR}" -M < /tmp/merge-ar.mri
         rm -f /tmp/merge-ar.mri
     fi
 
