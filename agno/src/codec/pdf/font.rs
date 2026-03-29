@@ -136,7 +136,7 @@ pub fn resolve_font(
         .unwrap_or("Helvetica")
         .to_string();
 
-    let encoding = parse_encoding(font_dict);
+    let encoding = parse_encoding(font_dict, doc);
     let to_unicode = parse_to_unicode_map(font_dict, doc);
 
     let subtype = font_dict.get_name_str(b"Subtype").unwrap_or("");
@@ -290,23 +290,36 @@ fn parse_cid_widths(
     cw
 }
 
-fn parse_encoding(font_dict: &super::objects::PdfObject) -> Encoding {
-    match font_dict.get(b"Encoding") {
-        Some(enc) => {
-            if let Some(name) = enc.as_name_str() {
-                Encoding::Named(name.to_string())
-            } else if enc.as_dict().is_some() {
-                let base = enc
-                    .get_name_str(b"BaseEncoding")
-                    .unwrap_or("WinAnsiEncoding")
-                    .to_string();
-                let diffs = parse_differences(enc);
-                Encoding::Differences { base, diffs }
-            } else {
-                Encoding::Named("WinAnsiEncoding".to_string())
-            }
+fn parse_encoding(
+    font_dict: &super::objects::PdfObject,
+    doc: &super::document::PdfDocument,
+) -> Encoding {
+    let enc = match font_dict.get(b"Encoding") {
+        Some(e) => e.clone(),
+        None => return Encoding::Named("WinAnsiEncoding".to_string()),
+    };
+
+    // Resolve indirect reference if needed.
+    let enc = if enc.as_name_str().is_some() || enc.as_dict().is_some() {
+        enc
+    } else {
+        match doc.resolve_value(&enc) {
+            Ok(resolved) => resolved,
+            Err(_) => return Encoding::Named("WinAnsiEncoding".to_string()),
         }
-        None => Encoding::Named("WinAnsiEncoding".to_string()),
+    };
+
+    if let Some(name) = enc.as_name_str() {
+        Encoding::Named(name.to_string())
+    } else if enc.as_dict().is_some() {
+        let base = enc
+            .get_name_str(b"BaseEncoding")
+            .unwrap_or("WinAnsiEncoding")
+            .to_string();
+        let diffs = parse_differences(&enc);
+        Encoding::Differences { base, diffs }
+    } else {
+        Encoding::Named("WinAnsiEncoding".to_string())
     }
 }
 
