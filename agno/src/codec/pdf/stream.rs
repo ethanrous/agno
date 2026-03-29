@@ -112,7 +112,11 @@ fn apply_png_predictor(
             1 => {
                 // Sub: add the byte to the left
                 for i in 0..row_bytes {
-                    let left = if i >= bytes_per_pixel { dst[i - bytes_per_pixel] } else { 0 };
+                    let left = if i >= bytes_per_pixel {
+                        dst[i - bytes_per_pixel]
+                    } else {
+                        0
+                    };
                     dst[i] = src[i].wrapping_add(left);
                 }
             }
@@ -125,7 +129,11 @@ fn apply_png_predictor(
             3 => {
                 // Average: add floor((left + above) / 2)
                 for i in 0..row_bytes {
-                    let left = if i >= bytes_per_pixel { dst[i - bytes_per_pixel] as u16 } else { 0 };
+                    let left = if i >= bytes_per_pixel {
+                        dst[i - bytes_per_pixel] as u16
+                    } else {
+                        0
+                    };
                     let above = prev_row[i] as u16;
                     dst[i] = src[i].wrapping_add(((left + above) / 2) as u8);
                 }
@@ -133,9 +141,17 @@ fn apply_png_predictor(
             4 => {
                 // Paeth
                 for i in 0..row_bytes {
-                    let a = if i >= bytes_per_pixel { dst[i - bytes_per_pixel] } else { 0 };
+                    let a = if i >= bytes_per_pixel {
+                        dst[i - bytes_per_pixel]
+                    } else {
+                        0
+                    };
                     let b = prev_row[i];
-                    let c = if i >= bytes_per_pixel { prev_row[i - bytes_per_pixel] } else { 0 };
+                    let c = if i >= bytes_per_pixel {
+                        prev_row[i - bytes_per_pixel]
+                    } else {
+                        0
+                    };
                     dst[i] = src[i].wrapping_add(paeth(a, b, c));
                 }
             }
@@ -252,10 +268,7 @@ fn decode_ascii85(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         }
 
         if !(b'!'..=b'u').contains(&byte) {
-            return Err(format!(
-                "ASCII85Decode: byte 0x{byte:02X} out of range"
-            )
-            .into());
+            return Err(format!("ASCII85Decode: byte 0x{byte:02X} out of range").into());
         }
 
         group[group_len] = byte - b'!';
@@ -373,10 +386,7 @@ mod tests {
 
         let params = PdfObject::Dictionary({
             let mut d = HashMap::new();
-            d.insert(
-                b"Predictor".to_vec(),
-                PdfObject::Integer(12),
-            );
+            d.insert(b"Predictor".to_vec(), PdfObject::Integer(12));
             d.insert(b"Columns".to_vec(), PdfObject::Integer(3));
             d
         });

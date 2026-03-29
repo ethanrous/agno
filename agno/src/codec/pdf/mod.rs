@@ -34,10 +34,9 @@ pub fn render_pdf_page(
     let page_count = doc.page_count();
 
     if page_index >= page_count {
-        return Err(format!(
-            "PDF page {page_index} not found (document has {page_count} pages)"
-        )
-        .into());
+        return Err(
+            format!("PDF page {page_index} not found (document has {page_count} pages)").into(),
+        );
     }
 
     let pixmap = render::render_page(&doc, page_index, scale)?;
@@ -85,24 +84,38 @@ mod tests {
 
         let mut kids = String::from("[");
         for i in 0..page_count {
-            if i > 0 { kids.push(' '); }
+            if i > 0 {
+                kids.push(' ');
+            }
             kids.push_str(&format!("{} 0 R", 3 + i * 2));
         }
         kids.push(']');
 
         let obj2_off = pdf.len();
-        write!(pdf, "2 0 obj\n<< /Type /Pages /Kids {kids} /Count {page_count} >>\nendobj\n").unwrap();
+        write!(
+            pdf,
+            "2 0 obj\n<< /Type /Pages /Kids {kids} /Count {page_count} >>\nendobj\n"
+        )
+        .unwrap();
 
         let mut offsets = Vec::new();
         for i in 0..page_count {
             let page_num = 3 + i * 2;
             let content_num = 4 + i * 2;
-            let content = format!("{} 0 0 rg 0 0 100 100 re f", if i % 2 == 0 { "1 0 0" } else { "0 0 1" });
+            let content = format!(
+                "{} 0 0 rg 0 0 100 100 re f",
+                if i % 2 == 0 { "1 0 0" } else { "0 0 1" }
+            );
 
             offsets.push(pdf.len());
             write!(pdf, "{page_num} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents {content_num} 0 R >>\nendobj\n").unwrap();
             offsets.push(pdf.len());
-            write!(pdf, "{content_num} 0 obj\n<< /Length {} >>\nstream\n", content.len()).unwrap();
+            write!(
+                pdf,
+                "{content_num} 0 obj\n<< /Length {} >>\nstream\n",
+                content.len()
+            )
+            .unwrap();
             pdf.extend_from_slice(content.as_bytes());
             write!(pdf, "\nendstream\nendobj\n").unwrap();
         }
@@ -155,7 +168,11 @@ mod tests {
         // Center pixel should be red (first page uses "1 0 0 rg")
         let idx = (50 * 100 + 50) * 3;
         assert!(rgb[idx] > 200, "Red should be high, got {}", rgb[idx]);
-        assert!(rgb[idx + 1] < 50, "Green should be low, got {}", rgb[idx + 1]);
+        assert!(
+            rgb[idx + 1] < 50,
+            "Green should be low, got {}",
+            rgb[idx + 1]
+        );
     }
 
     #[test]

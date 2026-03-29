@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use tiny_skia::{
-    FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, Stroke,
-    StrokeDash, Transform,
+    FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, Stroke, StrokeDash,
+    Transform,
 };
 
-use super::content::{parse_content_stream, Operator};
+use super::content::{Operator, parse_content_stream};
 use super::document::PdfDocument;
 use super::font::ResolvedFont;
 use super::glyph::{build_font_data_cache, render_glyph};
@@ -68,16 +68,16 @@ pub fn render_page(
         .into());
     }
 
-    let mut pixmap = Pixmap::new(render_w, render_h)
-        .ok_or("Failed to create pixmap (dimensions too large)")?;
+    let mut pixmap =
+        Pixmap::new(render_w, render_h).ok_or("Failed to create pixmap (dimensions too large)")?;
     pixmap.fill(tiny_skia::Color::WHITE);
 
     let content = doc.page_content_stream(page_index)?;
     let operators = parse_content_stream(&content)?;
 
-    let resources = doc.page_resources(page_index).unwrap_or_else(|_| {
-        PdfObject::Dictionary(HashMap::new())
-    });
+    let resources = doc
+        .page_resources(page_index)
+        .unwrap_or_else(|_| PdfObject::Dictionary(HashMap::new()));
     let fonts = resolve_fonts_from_resources(&resources, doc);
     let font_data_cache = build_font_data_cache(&fonts);
 
@@ -100,7 +100,15 @@ pub fn render_page(
     let mut state = GraphicsStateStack::new();
     let clip_mask: Option<Mask> = None;
 
-    execute_content_stream(&operators, &mut state, &mut pixmap, &ctx, &fonts, &font_data_cache, clip_mask.as_ref());
+    execute_content_stream(
+        &operators,
+        &mut state,
+        &mut pixmap,
+        &ctx,
+        &fonts,
+        &font_data_cache,
+        clip_mask.as_ref(),
+    );
 
     // Downscale from render resolution to target resolution.
     if render_w != target_w || render_h != target_h {
@@ -113,8 +121,7 @@ pub fn render_page(
 /// Downscale a pixmap using box-filter averaging (equivalent to area-based downsampling).
 /// This produces high-quality anti-aliased output from a supersampled source.
 fn downscale_pixmap(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pixmap, Box<dyn Error>> {
-    let mut dst = Pixmap::new(dst_w, dst_h)
-        .ok_or("Failed to allocate downscale pixmap")?;
+    let mut dst = Pixmap::new(dst_w, dst_h).ok_or("Failed to allocate downscale pixmap")?;
     let src_data = src.data();
     let dst_data = dst.data_mut();
     let sw = src.width() as f64;
@@ -190,9 +197,8 @@ fn execute_content_stream(
                 // that appear inside BT/ET blocks.
                 let name = operators[i].name.as_slice();
                 match name {
-                    b"rg" | b"RG" | b"g" | b"G" | b"k" | b"K"
-                    | b"cs" | b"CS" | b"sc" | b"SC" | b"scn" | b"SCN"
-                    | b"q" | b"Q" | b"gs" => {
+                    b"rg" | b"RG" | b"g" | b"G" | b"k" | b"K" | b"cs" | b"CS" | b"sc" | b"SC"
+                    | b"scn" | b"SCN" | b"q" | b"Q" | b"gs" => {
                         execute_operator(
                             &operators[i],
                             state,
@@ -212,13 +218,26 @@ fn execute_content_stream(
             // Collect just the text operators for layout.
             let text_ops: Vec<&Operator> = operators[bt_start..i]
                 .iter()
-                .filter(|op| matches!(
-                    op.name.as_slice(),
-                    b"Tf" | b"Td" | b"TD" | b"Tm" | b"T*"
-                    | b"Tj" | b"TJ" | b"Tc" | b"Tw" | b"TL"
-                    | b"Tz" | b"Ts" | b"Tr"
-                    | b"'" | b"\""
-                ))
+                .filter(|op| {
+                    matches!(
+                        op.name.as_slice(),
+                        b"Tf"
+                            | b"Td"
+                            | b"TD"
+                            | b"Tm"
+                            | b"T*"
+                            | b"Tj"
+                            | b"TJ"
+                            | b"Tc"
+                            | b"Tw"
+                            | b"TL"
+                            | b"Tz"
+                            | b"Ts"
+                            | b"Tr"
+                            | b"'"
+                            | b"\""
+                    )
+                })
                 .collect();
 
             if !text_ops.is_empty() {
@@ -447,17 +466,23 @@ fn execute_operator(
         b"v" if args.len() >= 4 => {
             let (cpx, cpy) = current_point.unwrap_or((0.0, 0.0));
             path_builder.cubic_to(
-                cpx, cpy,
-                arg_f32(args, 0), arg_f32(args, 1),
-                arg_f32(args, 2), arg_f32(args, 3),
+                cpx,
+                cpy,
+                arg_f32(args, 0),
+                arg_f32(args, 1),
+                arg_f32(args, 2),
+                arg_f32(args, 3),
             );
             *current_point = Some((arg_f32(args, 2), arg_f32(args, 3)));
         }
         b"y" if args.len() >= 4 => {
             path_builder.cubic_to(
-                arg_f32(args, 0), arg_f32(args, 1),
-                arg_f32(args, 2), arg_f32(args, 3),
-                arg_f32(args, 2), arg_f32(args, 3),
+                arg_f32(args, 0),
+                arg_f32(args, 1),
+                arg_f32(args, 2),
+                arg_f32(args, 3),
+                arg_f32(args, 2),
+                arg_f32(args, 3),
             );
             *current_point = Some((arg_f32(args, 2), arg_f32(args, 3)));
         }
@@ -483,50 +508,137 @@ fn execute_operator(
 
         // --- Path painting ---
         b"S" => {
-            paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, false, true, FillRule::Winding);
+            paint_path(
+                state,
+                pixmap,
+                ctx.base,
+                path_builder,
+                clip_pending,
+                clip_mask,
+                false,
+                true,
+                FillRule::Winding,
+            );
             *current_point = None;
             *subpath_start = None;
         }
         b"s" => {
             path_builder.close();
-            paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, false, true, FillRule::Winding);
+            paint_path(
+                state,
+                pixmap,
+                ctx.base,
+                path_builder,
+                clip_pending,
+                clip_mask,
+                false,
+                true,
+                FillRule::Winding,
+            );
             *current_point = None;
             *subpath_start = None;
         }
         b"f" | b"F" => {
-            paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, false, FillRule::Winding);
+            paint_path(
+                state,
+                pixmap,
+                ctx.base,
+                path_builder,
+                clip_pending,
+                clip_mask,
+                true,
+                false,
+                FillRule::Winding,
+            );
             *current_point = None;
             *subpath_start = None;
         }
         b"f*" => {
-            paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, false, FillRule::EvenOdd);
+            paint_path(
+                state,
+                pixmap,
+                ctx.base,
+                path_builder,
+                clip_pending,
+                clip_mask,
+                true,
+                false,
+                FillRule::EvenOdd,
+            );
             *current_point = None;
             *subpath_start = None;
         }
         b"B" => {
-            paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, true, FillRule::Winding);
+            paint_path(
+                state,
+                pixmap,
+                ctx.base,
+                path_builder,
+                clip_pending,
+                clip_mask,
+                true,
+                true,
+                FillRule::Winding,
+            );
             *current_point = None;
             *subpath_start = None;
         }
         b"B*" => {
-            paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, true, FillRule::EvenOdd);
+            paint_path(
+                state,
+                pixmap,
+                ctx.base,
+                path_builder,
+                clip_pending,
+                clip_mask,
+                true,
+                true,
+                FillRule::EvenOdd,
+            );
             *current_point = None;
             *subpath_start = None;
         }
         b"b" => {
             path_builder.close();
-            paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, true, FillRule::Winding);
+            paint_path(
+                state,
+                pixmap,
+                ctx.base,
+                path_builder,
+                clip_pending,
+                clip_mask,
+                true,
+                true,
+                FillRule::Winding,
+            );
             *current_point = None;
             *subpath_start = None;
         }
         b"b*" => {
             path_builder.close();
-            paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, true, FillRule::EvenOdd);
+            paint_path(
+                state,
+                pixmap,
+                ctx.base,
+                path_builder,
+                clip_pending,
+                clip_mask,
+                true,
+                true,
+                FillRule::EvenOdd,
+            );
             *current_point = None;
             *subpath_start = None;
         }
         b"n" => {
-            apply_pending_clip(path_builder, clip_pending, clip_mask, pixmap, state, ctx.base);
+            apply_pending_clip(
+                path_builder,
+                clip_pending,
+                clip_mask,
+                pixmap,
+                state,
+                ctx.base,
+            );
             *path_builder = PathBuilder::new();
             *current_point = None;
             *subpath_start = None;
@@ -541,8 +653,8 @@ fn execute_operator(
         }
 
         // --- Text (handled in execute_content_stream BT/ET loop) ---
-        b"BT" | b"ET" | b"Tf" | b"Td" | b"TD" | b"Tm" | b"T*" | b"Tj" | b"TJ"
-        | b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Tr" | b"Ts" | b"'" | b"\"" => {}
+        b"BT" | b"ET" | b"Tf" | b"Td" | b"TD" | b"Tm" | b"T*" | b"Tj" | b"TJ" | b"Tc" | b"Tw"
+        | b"Tz" | b"TL" | b"Tr" | b"Ts" | b"'" | b"\"" => {}
 
         // --- XObject ---
         b"Do" if !args.is_empty() => {
@@ -606,10 +718,13 @@ fn render_inline_image(
 
     let img_w = dict.get_i64(b"Width").unwrap_or(0) as u32;
     let img_h = dict.get_i64(b"Height").unwrap_or(0) as u32;
-    if img_w == 0 || img_h == 0 { return; }
+    if img_w == 0 || img_h == 0 {
+        return;
+    }
 
     let bpc = dict.get_i64(b"BitsPerComponent").unwrap_or(1) as u8;
-    let is_mask = dict.get(b"ImageMask")
+    let is_mask = dict
+        .get(b"ImageMask")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
@@ -621,25 +736,53 @@ fn render_inline_image(
             .unwrap_or(super::color::ColorSpace::DeviceGray)
     };
 
-    let filter = dict.get(b"Filter").and_then(|f| f.as_name()).map(|n| n.to_vec());
-    let filter_ref = filter.as_deref();
+    let filter_names: Vec<Vec<u8>> = match dict.get(b"Filter") {
+        Some(f) => {
+            if let Some(name) = f.as_name() {
+                vec![name.to_vec()]
+            } else if let Some(arr) = f.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_name().map(|n| n.to_vec()))
+                    .collect()
+            } else {
+                vec![]
+            }
+        }
+        None => vec![],
+    };
+
+    let decoded_data = if filter_names.is_empty() {
+        raw_data.to_vec()
+    } else {
+        let filter_refs: Vec<&[u8]> = filter_names.iter().map(|f| f.as_slice()).collect();
+        let dp = match dict.get(b"DecodeParms") {
+            Some(p @ super::objects::PdfObject::Dictionary(_)) => vec![Some(p)],
+            Some(super::objects::PdfObject::Array(arr)) => arr.iter().map(Some).collect(),
+            _ => filter_refs.iter().map(|_| None).collect(),
+        };
+        match super::stream::decode_stream(raw_data, &filter_refs, &dp) {
+            Ok(d) => d,
+            Err(_) => raw_data.to_vec(),
+        }
+    };
 
     // For image masks, render as 1-bit black/white using current fill color.
     if is_mask && bpc == 1 {
-        render_inline_mask(raw_data, img_w, img_h, state, pixmap, ctx);
+        render_inline_mask(&decoded_data, img_w, img_h, state, pixmap, ctx);
         return;
     }
 
-    let image = match super::image::decode_image_xobject(
-        raw_data, img_w, img_h, bpc, &cs, filter_ref,
-    ) {
-        Ok(img) => img,
-        Err(_) => return,
-    };
+    let image =
+        match super::image::decode_image_xobject(&decoded_data, img_w, img_h, bpc, &cs, None) {
+            Ok(img) => img,
+            Err(_) => return,
+        };
 
     let mut rgba = Vec::with_capacity(image.width as usize * image.height as usize * 4);
     for pixel in image.rgb_data.chunks(3) {
-        if pixel.len() < 3 { break; }
+        if pixel.len() < 3 {
+            break;
+        }
         rgba.push(pixel[0]);
         rgba.push(pixel[1]);
         rgba.push(pixel[2]);
@@ -683,7 +826,9 @@ fn render_inline_mask(
             let bit_idx = 7 - (x % 8);
             let bit = if byte_idx < data.len() {
                 (data[byte_idx] >> bit_idx) & 1
-            } else { 1 };
+            } else {
+                1
+            };
 
             let px = (y * img_w as usize + x) * 4;
             if bit == 0 {
@@ -748,32 +893,37 @@ fn render_image_xobject(
 
     let img_w = xobj.get_i64(b"Width").unwrap_or(0) as u32;
     let img_h = xobj.get_i64(b"Height").unwrap_or(0) as u32;
-    if img_w == 0 || img_h == 0 { return; }
+    if img_w == 0 || img_h == 0 {
+        return;
+    }
 
     let bpc = xobj.get_i64(b"BitsPerComponent").unwrap_or(8) as u8;
 
     // Determine color space.
-    let cs = xobj.get(b"ColorSpace")
+    let cs = xobj
+        .get(b"ColorSpace")
         .and_then(|cs| parse_image_colorspace(cs, ctx.doc))
         .unwrap_or(super::color::ColorSpace::DeviceRGB);
 
     // Determine if the raw data is JPEG (DCTDecode passes through stream.rs).
-    let filter = xobj.get(b"Filter")
+    let filter = xobj
+        .get(b"Filter")
         .and_then(|f| f.as_name())
         .map(|n| n.to_vec());
     let filter_ref = filter.as_deref();
 
-    let image = match super::image::decode_image_xobject(
-        stream_data, img_w, img_h, bpc, &cs, filter_ref,
-    ) {
-        Ok(img) => img,
-        Err(_) => return,
-    };
+    let image =
+        match super::image::decode_image_xobject(stream_data, img_w, img_h, bpc, &cs, filter_ref) {
+            Ok(img) => img,
+            Err(_) => return,
+        };
 
     // Convert RGB8 to RGBA8 for tiny-skia PixmapRef.
     let mut rgba = Vec::with_capacity(image.width as usize * image.height as usize * 4);
     for pixel in image.rgb_data.chunks(3) {
-        if pixel.len() < 3 { break; }
+        if pixel.len() < 3 {
+            break;
+        }
         rgba.push(pixel[0]);
         rgba.push(pixel[1]);
         rgba.push(pixel[2]);
@@ -810,7 +960,8 @@ fn parse_image_colorspace(
         if let Some(name) = arr.first().and_then(|v| v.as_name_str()) {
             return match name {
                 "ICCBased" => {
-                    let n = arr.get(1)
+                    let n = arr
+                        .get(1)
                         .and_then(|r| doc.resolve_value(r).ok())
                         .and_then(|o| o.get_i64(b"N"))
                         .unwrap_or(3) as u8;
@@ -836,11 +987,11 @@ fn render_xobject(
     clip: Option<&Mask>,
 ) {
     // 1. Look up /XObject/<name> in resources
-    let xobj_dict = ctx.resources.get(b"XObject")
+    let xobj_dict = ctx
+        .resources
+        .get(b"XObject")
         .and_then(|x| ctx.doc.resolve_value(x).ok());
-    let xobj_ref = xobj_dict.as_ref()
-        .and_then(|d| d.get(name))
-        .cloned();
+    let xobj_ref = xobj_dict.as_ref().and_then(|d| d.get(name)).cloned();
     let xobj = match xobj_ref.and_then(|r| ctx.doc.resolve_value(&r).ok()) {
         Some(o) => o,
         None => return,
@@ -885,7 +1036,8 @@ fn render_xobject(
     }
 
     // 5. Get Form resources (or inherit from parent)
-    let form_resources = xobj.get(b"Resources")
+    let form_resources = xobj
+        .get(b"Resources")
         .and_then(|r| ctx.doc.resolve_value(r).ok())
         .unwrap_or_else(|| ctx.resources.clone());
 
@@ -902,7 +1054,15 @@ fn render_xobject(
     };
 
     // 8. Execute the form's content stream
-    execute_content_stream(&content_ops, state, pixmap, &child_ctx, &form_fonts, &form_font_cache, clip);
+    execute_content_stream(
+        &content_ops,
+        state,
+        pixmap,
+        &child_ctx,
+        &form_fonts,
+        &form_font_cache,
+        clip,
+    );
 
     // 9. Restore state
     let _ = state.restore();
@@ -936,7 +1096,11 @@ fn color_from_operand_refs_tint(args: &[&PdfObject]) -> Color {
         1 => {
             let v = args[0].as_f64().unwrap_or(0.0);
             // Separation tint: 1.0 = full ink = dark
-            Color { r: 1.0 - v, g: 1.0 - v, b: 1.0 - v }
+            Color {
+                r: 1.0 - v,
+                g: 1.0 - v,
+                b: 1.0 - v,
+            }
         }
         3 => Color {
             r: args[0].as_f64().unwrap_or(0.0),
@@ -988,7 +1152,15 @@ fn paint_path(
     let mask_ref = clip_mask.as_ref();
 
     if do_fill {
-        fill_path(&path, fill_rule, &state.current().fill_color, state.current().fill_alpha, transform, pixmap, mask_ref);
+        fill_path(
+            &path,
+            fill_rule,
+            &state.current().fill_color,
+            state.current().fill_alpha,
+            transform,
+            pixmap,
+            mask_ref,
+        );
     }
     if do_stroke {
         stroke_path(&path, state.current(), transform, pixmap, mask_ref);
@@ -1119,8 +1291,8 @@ fn arg_f32(args: &[PdfObject], idx: usize) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::document::PdfDocument;
+    use super::*;
     use std::io::Write;
 
     fn make_red_rect_pdf() -> Vec<u8> {
@@ -1130,7 +1302,11 @@ mod tests {
         let obj1 = pdf.len();
         write!(pdf, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n").unwrap();
         let obj2 = pdf.len();
-        write!(pdf, "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n").unwrap();
+        write!(
+            pdf,
+            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        )
+        .unwrap();
         let obj3 = pdf.len();
         write!(pdf, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R >>\nendobj\n").unwrap();
         let obj4 = pdf.len();
@@ -1162,8 +1338,16 @@ mod tests {
         let cy = 50;
         let idx = (cy * 200 + cx) * 3;
         assert!(rgb[idx] > 200, "Red should be high, got {}", rgb[idx]);
-        assert!(rgb[idx + 1] < 50, "Green should be low, got {}", rgb[idx + 1]);
-        assert!(rgb[idx + 2] < 50, "Blue should be low, got {}", rgb[idx + 2]);
+        assert!(
+            rgb[idx + 1] < 50,
+            "Green should be low, got {}",
+            rgb[idx + 1]
+        );
+        assert!(
+            rgb[idx + 2] < 50,
+            "Blue should be low, got {}",
+            rgb[idx + 2]
+        );
     }
 
     #[test]
@@ -1201,7 +1385,11 @@ mod tests {
         let obj1 = pdf.len();
         write!(pdf, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n").unwrap();
         let obj2 = pdf.len();
-        write!(pdf, "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n").unwrap();
+        write!(
+            pdf,
+            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        )
+        .unwrap();
         let obj3 = pdf.len();
         write!(pdf, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>\nendobj\n").unwrap();
         let obj4 = pdf.len();

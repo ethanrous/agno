@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use super::content::Operator;
-use super::font::{char_width_u32, ResolvedFont};
+use super::font::{ResolvedFont, char_width_u32};
 use super::graphics::{GraphicsState, Matrix};
 
 /// Positioned glyph for rendering.
@@ -60,13 +60,18 @@ pub fn layout_text<'a>(
                 text_leading = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
             }
             b"Tz" => {
-                horizontal_scaling = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(100.0);
+                horizontal_scaling = op
+                    .operands
+                    .first()
+                    .and_then(|o| o.as_f64())
+                    .unwrap_or(100.0);
             }
             b"Ts" => {
                 text_rise = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
             }
             b"Tr" => {
-                text_rendering_mode = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0) as u8;
+                text_rendering_mode =
+                    op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0) as u8;
             }
             b"Td" => {
                 if op.operands.len() >= 2 {
@@ -257,7 +262,13 @@ fn show_string<'a>(
     let effective_font_size = font_size * tm_y_scale;
     let th = horizontal_scaling / 100.0;
 
-    let is_two_byte = matches!(font, Some(ResolvedFont::CIDFont { is_two_byte: true, .. }));
+    let is_two_byte = matches!(
+        font,
+        Some(ResolvedFont::CIDFont {
+            is_two_byte: true,
+            ..
+        })
+    );
 
     let mut i = 0;
     while i < text.len() {
@@ -305,10 +316,10 @@ fn show_string<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::content::parse_content_stream;
-    use super::super::font::{standard14_widths, Encoding, ResolvedFont};
+    use super::super::font::{Encoding, ResolvedFont, standard14_widths};
     use super::super::graphics::GraphicsStateStack;
+    use super::*;
 
     fn make_fonts() -> HashMap<Vec<u8>, ResolvedFont> {
         let mut fonts = HashMap::new();
@@ -390,10 +401,7 @@ mod tests {
             .position(|g| g.char_code == b'L' as u32 && (g.y - line1_y).abs() > 0.01);
         assert!(line2_start.is_some());
         let line2_y = glyphs[line2_start.unwrap()].y;
-        assert!(
-            (line2_y - 86.0).abs() < 0.01,
-            "Expected 86, got {line2_y}"
-        );
+        assert!((line2_y - 86.0).abs() < 0.01, "Expected 86, got {line2_y}");
     }
 
     #[test]

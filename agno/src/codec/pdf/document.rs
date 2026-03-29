@@ -7,7 +7,7 @@ use std::error::Error;
 
 use super::lexer::Lexer;
 use super::objects::{ObjRef, PdfObject};
-use super::xref::{parse_xref, Xref, XrefEntry};
+use super::xref::{Xref, XrefEntry, parse_xref};
 
 /// Maximum recursion depth for resolving indirect references (prevents loops).
 const MAX_RESOLVE_DEPTH: usize = 32;
@@ -114,16 +114,11 @@ impl<'a> PdfDocument<'a> {
             .ok_or_else(|| format!("Object {} not found in xref", obj_ref.num))?;
 
         let result = match *entry {
-            XrefEntry::InUse { offset, .. } => {
-                self.parse_indirect_object(offset as usize, depth)
+            XrefEntry::InUse { offset, .. } => self.parse_indirect_object(offset as usize, depth),
+            XrefEntry::Free => Err(format!("Object {} is a free entry", obj_ref.num).into()),
+            XrefEntry::Compressed { stream_obj, index } => {
+                self.resolve_compressed_object(stream_obj, index, depth)
             }
-            XrefEntry::Free => {
-                Err(format!("Object {} is a free entry", obj_ref.num).into())
-            }
-            XrefEntry::Compressed {
-                stream_obj,
-                index,
-            } => self.resolve_compressed_object(stream_obj, index, depth),
         }?;
 
         self.cache.borrow_mut().insert(obj_ref.num, result.clone());
@@ -144,12 +139,8 @@ impl<'a> PdfDocument<'a> {
         lexer.set_position(offset);
 
         // Read: N G obj
-        let _obj_num = lexer
-            .next_object()?
-            .ok_or("Expected object number")?;
-        let _gen = lexer
-            .next_object()?
-            .ok_or("Expected generation number")?;
+        let _obj_num = lexer.next_object()?.ok_or("Expected object number")?;
+        let _gen = lexer.next_object()?.ok_or("Expected generation number")?;
         lexer.expect_keyword(b"obj")?;
 
         // Read the object value.
@@ -279,7 +270,7 @@ impl<'a> PdfDocument<'a> {
                         None => {
                             return Err(
                                 format!("Filter array element is not a Name: {resolved}").into()
-                            )
+                            );
                         }
                     }
                 }
@@ -331,9 +322,7 @@ impl<'a> PdfDocument<'a> {
             depth + 1,
         )?;
 
-        let (dict, data) = stream
-            .as_stream()
-            .ok_or("Object stream is not a Stream")?;
+        let (dict, data) = stream.as_stream().ok_or("Object stream is not a Stream")?;
 
         let n = safe_usize(
             dict.get(b"N".as_slice())
@@ -392,11 +381,7 @@ impl<'a> PdfDocument<'a> {
     }
 
     /// Resolve a reference stored under `key` in a dictionary.
-    fn resolve_dict_ref(
-        &self,
-        dict: &PdfObject,
-        key: &[u8],
-    ) -> Result<PdfObject, Box<dyn Error>> {
+    fn resolve_dict_ref(&self, dict: &PdfObject, key: &[u8]) -> Result<PdfObject, Box<dyn Error>> {
         let val = dict
             .get(key)
             .ok_or_else(|| format!("Dictionary missing /{}", String::from_utf8_lossy(key)))?;
@@ -485,9 +470,7 @@ impl<'a> PdfDocument<'a> {
                             }
                             combined.extend_from_slice(&data);
                         }
-                        _ => {
-                            return Err("Content array element did not resolve to a stream".into())
-                        }
+                        _ => return Err("Content array element did not resolve to a stream".into()),
                     }
                 }
                 Ok(combined)
@@ -497,10 +480,7 @@ impl<'a> PdfDocument<'a> {
     }
 
     /// Find /Resources walking up /Parent if not directly on the page.
-    fn find_resources_in_hierarchy(
-        &self,
-        page: &PdfObject,
-    ) -> Result<PdfObject, Box<dyn Error>> {
+    fn find_resources_in_hierarchy(&self, page: &PdfObject) -> Result<PdfObject, Box<dyn Error>> {
         let mut node = page.clone();
         for _ in 0..MAX_RESOLVE_DEPTH {
             if let Some(res) = node.get(b"Resources") {
@@ -538,9 +518,7 @@ fn skip_stream_eol(data: &[u8], pos: usize) -> usize {
 
 /// Parse a 4-element array [x0, y0, x1, y1] as f64 values.
 fn parse_rect_array(obj: &PdfObject) -> Result<(f64, f64, f64, f64), Box<dyn Error>> {
-    let arr = obj
-        .as_array()
-        .ok_or("MediaBox/CropBox is not an array")?;
+    let arr = obj.as_array().ok_or("MediaBox/CropBox is not an array")?;
     if arr.len() < 4 {
         return Err(format!("MediaBox/CropBox has {} elements, need 4", arr.len()).into());
     }

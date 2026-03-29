@@ -88,7 +88,9 @@ fn parse_inline_image(lex: &mut super::lexer::Lexer<'_>) -> (PdfObject, Vec<u8>)
     // Parse dict key/value pairs until "ID" keyword.
     let mut dict = HashMap::new();
     loop {
-        if lex.at_end() { break; }
+        if lex.at_end() {
+            break;
+        }
         lex.skip_whitespace();
         let saved = lex.position();
 
@@ -111,7 +113,9 @@ fn parse_inline_image(lex: &mut super::lexer::Lexer<'_>) -> (PdfObject, Vec<u8>)
                 // Might be a keyword like "ID" — check.
                 lex.set_position(saved);
                 if let Ok(kw) = lex.read_keyword() {
-                    if kw == b"ID" { break; }
+                    if kw == b"ID" {
+                        break;
+                    }
                     // Bare keyword as key
                     let key = expand_inline_key(&kw);
                     match lex.next_object() {
@@ -131,7 +135,11 @@ fn parse_inline_image(lex: &mut super::lexer::Lexer<'_>) -> (PdfObject, Vec<u8>)
 
     // After ID, there's exactly one whitespace byte, then image data until EI.
     let remaining = lex.remaining();
-    let data_start = if !remaining.is_empty() && remaining[0].is_ascii_whitespace() { 1 } else { 0 };
+    let data_start = if !remaining.is_empty() && remaining[0].is_ascii_whitespace() {
+        1
+    } else {
+        0
+    };
 
     // If we know the image dimensions and BPC, calculate exact data length.
     let expected_len = compute_inline_data_length(&dict);
@@ -162,8 +170,8 @@ fn parse_inline_image(lex: &mut super::lexer::Lexer<'_>) -> (PdfObject, Vec<u8>)
     while i + 1 < bytes.len() {
         if bytes[i] == b'E' && bytes[i + 1] == b'I' {
             let preceded_by_ws = bytes[i - 1].is_ascii_whitespace();
-            let followed_by_boundary = i + 2 >= bytes.len()
-                || is_content_stream_delimiter(bytes[i + 2]);
+            let followed_by_boundary =
+                i + 2 >= bytes.len() || is_content_stream_delimiter(bytes[i + 2]);
             if preceded_by_ws && followed_by_boundary {
                 let image_data = remaining[data_start..data_start + i - 1].to_vec();
                 lex.set_position(lex.position() + data_start + i + 2);
@@ -175,26 +183,35 @@ fn parse_inline_image(lex: &mut super::lexer::Lexer<'_>) -> (PdfObject, Vec<u8>)
 
     // Last resort: consume everything
     lex.set_position(lex.position() + remaining.len());
-    (PdfObject::Dictionary(dict), remaining[data_start..].to_vec())
+    (
+        PdfObject::Dictionary(dict),
+        remaining[data_start..].to_vec(),
+    )
 }
 
 /// Compute expected inline image data length from dict dimensions.
 /// Returns None if dimensions are unknown or a filter is applied.
-fn compute_inline_data_length(dict: &std::collections::HashMap<Vec<u8>, PdfObject>) -> Option<usize> {
+fn compute_inline_data_length(
+    dict: &std::collections::HashMap<Vec<u8>, PdfObject>,
+) -> Option<usize> {
     if dict.contains_key(b"Filter".as_slice()) {
         return None;
     }
 
     let w = dict.get(b"Width".as_slice()).and_then(|v| v.as_i64())? as usize;
     let h = dict.get(b"Height".as_slice()).and_then(|v| v.as_i64())? as usize;
-    let bpc = dict.get(b"BitsPerComponent".as_slice())
+    let bpc = dict
+        .get(b"BitsPerComponent".as_slice())
         .and_then(|v| v.as_i64())
         .unwrap_or(1) as usize;
-    let is_mask = dict.get(b"ImageMask".as_slice())
+    let is_mask = dict
+        .get(b"ImageMask".as_slice())
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let components: usize = if is_mask { 1 } else {
+    let components: usize = if is_mask {
+        1
+    } else {
         let cs = dict.get(b"ColorSpace".as_slice());
         match cs.and_then(|v| v.as_name_str()) {
             Some("DeviceGray") | Some("G") => 1,
@@ -252,7 +269,11 @@ fn expand_inline_value(key: &[u8], val: PdfObject) -> PdfObject {
 fn is_content_stream_delimiter(b: u8) -> bool {
     matches!(
         b,
-        0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20
+        0x00 | 0x09
+            | 0x0A
+            | 0x0C
+            | 0x0D
+            | 0x20
             | b'('
             | b')'
             | b'<'

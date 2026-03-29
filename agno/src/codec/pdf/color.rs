@@ -28,9 +28,7 @@ impl ColorSpace {
 pub fn to_rgb(space: &ColorSpace, components: &[f64]) -> (f64, f64, f64) {
     let get = |i: usize| components.get(i).copied().unwrap_or(0.0);
     match space {
-        ColorSpace::DeviceRGB
-        | ColorSpace::CalRGB
-        | ColorSpace::ICCBased { num_components: 3 } => {
+        ColorSpace::DeviceRGB | ColorSpace::CalRGB | ColorSpace::ICCBased { num_components: 3 } => {
             (get(0), get(1), get(2))
         }
         ColorSpace::DeviceGray
@@ -92,12 +90,18 @@ mod tests {
         assert_eq!(ColorSpace::DeviceGray.num_components(), 1);
         assert_eq!(ColorSpace::DeviceRGB.num_components(), 3);
         assert_eq!(ColorSpace::DeviceCMYK.num_components(), 4);
-        assert_eq!((ColorSpace::ICCBased { num_components: 3 }).num_components(), 3);
+        assert_eq!(
+            (ColorSpace::ICCBased { num_components: 3 }).num_components(),
+            3
+        );
     }
 
     #[test]
     fn icc_3_component_as_rgb() {
-        let (r, g, b) = to_rgb(&ColorSpace::ICCBased { num_components: 3 }, &[0.1, 0.2, 0.3]);
+        let (r, g, b) = to_rgb(
+            &ColorSpace::ICCBased { num_components: 3 },
+            &[0.1, 0.2, 0.3],
+        );
         assert!((r - 0.1).abs() < 1e-9);
         assert!((g - 0.2).abs() < 1e-9);
         assert!((b - 0.3).abs() < 1e-9);

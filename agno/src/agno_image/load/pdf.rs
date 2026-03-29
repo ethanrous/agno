@@ -16,10 +16,9 @@ pub fn load_pdf_page_from_bytes(
     let doc = crate::codec::pdf::document::PdfDocument::open(data)?;
     let page_count = doc.page_count();
     if page_index >= page_count {
-        return Err(format!(
-            "PDF page {page_index} not found (document has {page_count} pages)"
-        )
-        .into());
+        return Err(
+            format!("PDF page {page_index} not found (document has {page_count} pages)").into(),
+        );
     }
     let scale = scale_for_dims_from_doc(&doc, page_index, max_dims);
     let (rgb, width, height) =

@@ -98,7 +98,9 @@ pub fn char_width_u32(font: &ResolvedFont, code: u32) -> f64 {
             }
         }
         ResolvedFont::CIDFont {
-            default_width, widths, ..
+            default_width,
+            widths,
+            ..
         } => widths.get(code).unwrap_or(*default_width),
     }
 }
@@ -147,7 +149,11 @@ pub fn resolve_font(
     // Check for embedded font via FontDescriptor
     if let Some(descriptor_ref) = font_dict.get(b"FontDescriptor") {
         let descriptor = doc.resolve_value(descriptor_ref)?;
-        for key in &[b"FontFile2".as_slice(), b"FontFile3".as_slice(), b"FontFile".as_slice()] {
+        for key in &[
+            b"FontFile2".as_slice(),
+            b"FontFile3".as_slice(),
+            b"FontFile".as_slice(),
+        ] {
             if let Some(font_file_ref) = descriptor.get(key) {
                 let font_obj = doc.resolve_value(font_file_ref)?;
                 if let Some((_, data)) = font_obj.as_stream() {
@@ -268,10 +274,15 @@ fn parse_cid_widths(
     while i < w_arr.len() {
         let start = match w_arr[i].as_i64() {
             Some(n) => n as u32,
-            None => { i += 1; continue; }
+            None => {
+                i += 1;
+                continue;
+            }
         };
         i += 1;
-        if i >= w_arr.len() { break; }
+        if i >= w_arr.len() {
+            break;
+        }
         if let Some(arr) = w_arr[i].as_array() {
             let widths: Vec<f64> = arr.iter().filter_map(|v| v.as_f64()).collect();
             cw.individual.push((start, widths));
@@ -360,10 +371,7 @@ fn extract_widths(font_dict: &super::objects::PdfObject) -> Vec<f64> {
         .unwrap_or_default()
 }
 
-fn extract_widths_as_256(
-    font_dict: &super::objects::PdfObject,
-    fallback_name: &str,
-) -> Vec<f64> {
+fn extract_widths_as_256(font_dict: &super::objects::PdfObject, fallback_name: &str) -> Vec<f64> {
     let first_char = font_dict.get_i64(b"FirstChar").unwrap_or(0) as usize;
     let explicit = extract_widths(font_dict);
     let mut widths = standard14_widths(fallback_name);
@@ -378,32 +386,101 @@ fn extract_widths_as_256(
 
 fn helvetica_widths() -> Vec<f64> {
     let mut w = vec![0.0; 256];
-    w[32] = 278.0; w[33] = 278.0; w[34] = 355.0; w[35] = 556.0;
-    w[36] = 556.0; w[37] = 889.0; w[38] = 667.0; w[39] = 191.0;
-    w[40] = 333.0; w[41] = 333.0; w[42] = 389.0; w[43] = 584.0;
-    w[44] = 278.0; w[45] = 333.0; w[46] = 278.0; w[47] = 278.0;
-    w[48] = 556.0; w[49] = 556.0; w[50] = 556.0; w[51] = 556.0;
-    w[52] = 556.0; w[53] = 556.0; w[54] = 556.0; w[55] = 556.0;
-    w[56] = 556.0; w[57] = 556.0; w[58] = 278.0; w[59] = 278.0;
-    w[60] = 584.0; w[61] = 584.0; w[62] = 584.0; w[63] = 556.0;
+    w[32] = 278.0;
+    w[33] = 278.0;
+    w[34] = 355.0;
+    w[35] = 556.0;
+    w[36] = 556.0;
+    w[37] = 889.0;
+    w[38] = 667.0;
+    w[39] = 191.0;
+    w[40] = 333.0;
+    w[41] = 333.0;
+    w[42] = 389.0;
+    w[43] = 584.0;
+    w[44] = 278.0;
+    w[45] = 333.0;
+    w[46] = 278.0;
+    w[47] = 278.0;
+    w[48] = 556.0;
+    w[49] = 556.0;
+    w[50] = 556.0;
+    w[51] = 556.0;
+    w[52] = 556.0;
+    w[53] = 556.0;
+    w[54] = 556.0;
+    w[55] = 556.0;
+    w[56] = 556.0;
+    w[57] = 556.0;
+    w[58] = 278.0;
+    w[59] = 278.0;
+    w[60] = 584.0;
+    w[61] = 584.0;
+    w[62] = 584.0;
+    w[63] = 556.0;
     w[64] = 1015.0;
-    w[65] = 667.0; w[66] = 667.0; w[67] = 722.0; w[68] = 722.0;
-    w[69] = 667.0; w[70] = 611.0; w[71] = 778.0; w[72] = 722.0;
-    w[73] = 278.0; w[74] = 500.0; w[75] = 667.0; w[76] = 556.0;
-    w[77] = 833.0; w[78] = 722.0; w[79] = 778.0; w[80] = 667.0;
-    w[81] = 778.0; w[82] = 722.0; w[83] = 667.0; w[84] = 611.0;
-    w[85] = 722.0; w[86] = 667.0; w[87] = 944.0; w[88] = 667.0;
-    w[89] = 667.0; w[90] = 611.0;
-    w[91] = 278.0; w[92] = 278.0; w[93] = 278.0; w[94] = 469.0;
-    w[95] = 556.0; w[96] = 333.0;
-    w[97] = 556.0; w[98] = 556.0; w[99] = 500.0; w[100] = 556.0;
-    w[101] = 556.0; w[102] = 278.0; w[103] = 556.0; w[104] = 556.0;
-    w[105] = 222.0; w[106] = 222.0; w[107] = 500.0; w[108] = 222.0;
-    w[109] = 833.0; w[110] = 556.0; w[111] = 556.0; w[112] = 556.0;
-    w[113] = 556.0; w[114] = 333.0; w[115] = 500.0; w[116] = 278.0;
-    w[117] = 556.0; w[118] = 500.0; w[119] = 722.0; w[120] = 500.0;
-    w[121] = 500.0; w[122] = 500.0;
-    w[123] = 334.0; w[124] = 260.0; w[125] = 334.0; w[126] = 584.0;
+    w[65] = 667.0;
+    w[66] = 667.0;
+    w[67] = 722.0;
+    w[68] = 722.0;
+    w[69] = 667.0;
+    w[70] = 611.0;
+    w[71] = 778.0;
+    w[72] = 722.0;
+    w[73] = 278.0;
+    w[74] = 500.0;
+    w[75] = 667.0;
+    w[76] = 556.0;
+    w[77] = 833.0;
+    w[78] = 722.0;
+    w[79] = 778.0;
+    w[80] = 667.0;
+    w[81] = 778.0;
+    w[82] = 722.0;
+    w[83] = 667.0;
+    w[84] = 611.0;
+    w[85] = 722.0;
+    w[86] = 667.0;
+    w[87] = 944.0;
+    w[88] = 667.0;
+    w[89] = 667.0;
+    w[90] = 611.0;
+    w[91] = 278.0;
+    w[92] = 278.0;
+    w[93] = 278.0;
+    w[94] = 469.0;
+    w[95] = 556.0;
+    w[96] = 333.0;
+    w[97] = 556.0;
+    w[98] = 556.0;
+    w[99] = 500.0;
+    w[100] = 556.0;
+    w[101] = 556.0;
+    w[102] = 278.0;
+    w[103] = 556.0;
+    w[104] = 556.0;
+    w[105] = 222.0;
+    w[106] = 222.0;
+    w[107] = 500.0;
+    w[108] = 222.0;
+    w[109] = 833.0;
+    w[110] = 556.0;
+    w[111] = 556.0;
+    w[112] = 556.0;
+    w[113] = 556.0;
+    w[114] = 333.0;
+    w[115] = 500.0;
+    w[116] = 278.0;
+    w[117] = 556.0;
+    w[118] = 500.0;
+    w[119] = 722.0;
+    w[120] = 500.0;
+    w[121] = 500.0;
+    w[122] = 500.0;
+    w[123] = 334.0;
+    w[124] = 260.0;
+    w[125] = 334.0;
+    w[126] = 584.0;
     w
 }
 

@@ -12,7 +12,11 @@ use super::util::{hex_nibble, is_pdf_whitespace};
 /// PDF delimiter bytes: `( ) < > [ ] { } / %` plus whitespace.
 #[inline]
 fn is_delimiter(b: u8) -> bool {
-    is_pdf_whitespace(b) || matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
+    is_pdf_whitespace(b)
+        || matches!(
+            b,
+            b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+        )
 }
 
 const MAX_NESTING_DEPTH: u32 = 128;
@@ -26,7 +30,11 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        Lexer { data, pos: 0, depth: 0 }
+        Lexer {
+            data,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     pub fn position(&self) -> usize {
@@ -66,7 +74,10 @@ impl<'a> Lexer<'a> {
             // Skip comment: % to end of line.
             if self.pos < self.data.len() && self.data[self.pos] == b'%' {
                 self.pos += 1;
-                while self.pos < self.data.len() && self.data[self.pos] != b'\n' && self.data[self.pos] != b'\r' {
+                while self.pos < self.data.len()
+                    && self.data[self.pos] != b'\n'
+                    && self.data[self.pos] != b'\r'
+                {
                     self.pos += 1;
                 }
                 // Continue outer loop to skip any whitespace/comments that follow.
@@ -87,7 +98,11 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
         if self.pos == start {
-            return Err(format!("Expected keyword, found delimiter byte 0x{:02X}", self.data[self.pos]).into());
+            return Err(format!(
+                "Expected keyword, found delimiter byte 0x{:02X}",
+                self.data[self.pos]
+            )
+            .into());
         }
         Ok(self.data[start..self.pos].to_vec())
     }
@@ -180,7 +195,11 @@ impl<'a> Lexer<'a> {
             // Number (integer or real), possibly followed by `N G R` indirect reference.
             b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(Some(self.read_number_or_reference()?)),
 
-            other => Err(format!("Unexpected byte 0x{other:02X} ('{}') at position {}", other as char, self.pos).into()),
+            other => Err(format!(
+                "Unexpected byte 0x{other:02X} ('{}') at position {}",
+                other as char, self.pos
+            )
+            .into()),
         }
     }
 
@@ -244,14 +263,38 @@ impl<'a> Lexer<'a> {
                 b'\\' => {
                     self.pos += 1; // consume '\'
                     match self.data.get(self.pos).copied() {
-                        Some(b'n') => { buf.push(b'\n'); self.pos += 1; }
-                        Some(b'r') => { buf.push(b'\r'); self.pos += 1; }
-                        Some(b't') => { buf.push(b'\t'); self.pos += 1; }
-                        Some(b'b') => { buf.push(0x08); self.pos += 1; }
-                        Some(b'f') => { buf.push(0x0C); self.pos += 1; }
-                        Some(b'(') => { buf.push(b'('); self.pos += 1; }
-                        Some(b')') => { buf.push(b')'); self.pos += 1; }
-                        Some(b'\\') => { buf.push(b'\\'); self.pos += 1; }
+                        Some(b'n') => {
+                            buf.push(b'\n');
+                            self.pos += 1;
+                        }
+                        Some(b'r') => {
+                            buf.push(b'\r');
+                            self.pos += 1;
+                        }
+                        Some(b't') => {
+                            buf.push(b'\t');
+                            self.pos += 1;
+                        }
+                        Some(b'b') => {
+                            buf.push(0x08);
+                            self.pos += 1;
+                        }
+                        Some(b'f') => {
+                            buf.push(0x0C);
+                            self.pos += 1;
+                        }
+                        Some(b'(') => {
+                            buf.push(b'(');
+                            self.pos += 1;
+                        }
+                        Some(b')') => {
+                            buf.push(b')');
+                            self.pos += 1;
+                        }
+                        Some(b'\\') => {
+                            buf.push(b'\\');
+                            self.pos += 1;
+                        }
                         // Line continuation: backslash followed by newline — skip both.
                         Some(b'\r') => {
                             self.pos += 1;
@@ -259,7 +302,9 @@ impl<'a> Lexer<'a> {
                                 self.pos += 1;
                             }
                         }
-                        Some(b'\n') => { self.pos += 1; }
+                        Some(b'\n') => {
+                            self.pos += 1;
+                        }
                         // Octal escape: \NNN (1-3 octal digits).
                         Some(d) if d.is_ascii_digit() && d <= b'7' => {
                             let mut val: u8 = d - b'0';
@@ -276,7 +321,10 @@ impl<'a> Lexer<'a> {
                             buf.push(val);
                         }
                         // Unknown escape: treat as literal next byte.
-                        Some(other) => { buf.push(other); self.pos += 1; }
+                        Some(other) => {
+                            buf.push(other);
+                            self.pos += 1;
+                        }
                         None => return Err("Truncated escape sequence in literal string".into()),
                     }
                 }
@@ -367,7 +415,8 @@ impl<'a> Lexer<'a> {
                 return Err("Unterminated dictionary".into());
             }
             // Check for end-of-dictionary `>>`
-            if self.data.get(self.pos) == Some(&b'>') && self.data.get(self.pos + 1) == Some(&b'>') {
+            if self.data.get(self.pos) == Some(&b'>') && self.data.get(self.pos + 1) == Some(&b'>')
+            {
                 self.pos += 2;
                 self.depth -= 1;
                 return Ok(PdfObject::Dictionary(dict));
@@ -377,11 +426,11 @@ impl<'a> Lexer<'a> {
                 Some(PdfObject::Name(n)) => n,
                 Some(other) => {
                     self.depth -= 1;
-                    return Err(format!("Dictionary key must be a Name, got: {other}").into())
+                    return Err(format!("Dictionary key must be a Name, got: {other}").into());
                 }
                 None => {
                     self.depth -= 1;
-                    return Err("Unexpected end in dictionary (expected key)".into())
+                    return Err("Unexpected end in dictionary (expected key)".into());
                 }
             };
             // Value.
@@ -411,7 +460,8 @@ impl<'a> Lexer<'a> {
                     let saved2 = self.pos;
                     self.skip_whitespace();
                     if self.data.get(self.pos) == Some(&b'R')
-                        && (self.pos + 1 >= self.data.len() || is_delimiter(self.data[self.pos + 1]))
+                        && (self.pos + 1 >= self.data.len()
+                            || is_delimiter(self.data[self.pos + 1]))
                     {
                         self.pos += 1; // consume 'R'
                         return Ok(PdfObject::Reference(ObjRef {
@@ -619,7 +669,13 @@ mod tests {
     fn parse_indirect_reference() {
         let mut lex = Lexer::new(b"10 0 R");
         let obj = lex.next_object().unwrap().unwrap();
-        assert_eq!(obj.as_reference(), Some(ObjRef { num: 10, gen_num: 0 }));
+        assert_eq!(
+            obj.as_reference(),
+            Some(ObjRef {
+                num: 10,
+                gen_num: 0
+            })
+        );
     }
 
     #[test]

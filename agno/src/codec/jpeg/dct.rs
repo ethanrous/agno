@@ -129,8 +129,10 @@ fn fdct_col(block: &mut [i32; 64], col: usize) {
     block[col + 32] = (tmp10 - tmp11 + (1 << (descale - 1))) >> descale;
 
     let z1 = (tmp12 + tmp13) * FIX_0_541196100;
-    block[col + 16] = (z1 + tmp13 * FIX_0_765366865 + (1 << (CONST_BITS + descale - 1))) >> (CONST_BITS + descale);
-    block[col + 48] = (z1 - tmp12 * FIX_1_847759065 + (1 << (CONST_BITS + descale - 1))) >> (CONST_BITS + descale);
+    block[col + 16] = (z1 + tmp13 * FIX_0_765366865 + (1 << (CONST_BITS + descale - 1)))
+        >> (CONST_BITS + descale);
+    block[col + 48] = (z1 - tmp12 * FIX_1_847759065 + (1 << (CONST_BITS + descale - 1)))
+        >> (CONST_BITS + descale);
 
     // Odd part — same IJG formulation as row pass
     let z1 = tmp4 + tmp7;

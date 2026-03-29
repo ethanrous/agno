@@ -11,7 +11,14 @@ pub struct Matrix {
 
 impl Matrix {
     pub fn identity() -> Self {
-        Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 }
+        Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        }
     }
 
     /// Matrix multiplication: self * other (pre-multiply)
@@ -45,11 +52,19 @@ pub struct Color {
 
 impl Color {
     pub fn black() -> Self {
-        Color { r: 0.0, g: 0.0, b: 0.0 }
+        Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+        }
     }
 
     pub fn white() -> Self {
-        Color { r: 1.0, g: 1.0, b: 1.0 }
+        Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+        }
     }
 }
 
@@ -155,7 +170,14 @@ mod tests {
 
     #[test]
     fn translation_matrix() {
-        let m = Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 50.0, f: 100.0 };
+        let m = Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 50.0,
+            f: 100.0,
+        };
         let (x, y) = m.transform_point(10.0, 20.0);
         assert!((x - 60.0).abs() < 1e-9);
         assert!((y - 120.0).abs() < 1e-9);
@@ -163,7 +185,14 @@ mod tests {
 
     #[test]
     fn scale_matrix() {
-        let m = Matrix { a: 2.0, b: 0.0, c: 0.0, d: 3.0, e: 0.0, f: 0.0 };
+        let m = Matrix {
+            a: 2.0,
+            b: 0.0,
+            c: 0.0,
+            d: 3.0,
+            e: 0.0,
+            f: 0.0,
+        };
         let (x, y) = m.transform_point(10.0, 20.0);
         assert!((x - 20.0).abs() < 1e-9);
         assert!((y - 60.0).abs() < 1e-9);
@@ -171,8 +200,22 @@ mod tests {
 
     #[test]
     fn concat_translation_scale() {
-        let translate = Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 10.0, f: 20.0 };
-        let scale = Matrix { a: 2.0, b: 0.0, c: 0.0, d: 2.0, e: 0.0, f: 0.0 };
+        let translate = Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 10.0,
+            f: 20.0,
+        };
+        let scale = Matrix {
+            a: 2.0,
+            b: 0.0,
+            c: 0.0,
+            d: 2.0,
+            e: 0.0,
+            f: 0.0,
+        };
         let combined = translate.concat(&scale);
         let (x, y) = combined.transform_point(5.0, 5.0);
         assert!((x - 30.0).abs() < 1e-9);
@@ -182,9 +225,17 @@ mod tests {
     #[test]
     fn state_save_restore() {
         let mut gss = GraphicsStateStack::new();
-        gss.current_mut().fill_color = Color { r: 1.0, g: 0.0, b: 0.0 };
+        gss.current_mut().fill_color = Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        };
         gss.save();
-        gss.current_mut().fill_color = Color { r: 0.0, g: 1.0, b: 0.0 };
+        gss.current_mut().fill_color = Color {
+            r: 0.0,
+            g: 1.0,
+            b: 0.0,
+        };
         assert!((gss.current().fill_color.g - 1.0).abs() < 1e-9);
         gss.restore().unwrap();
         assert!((gss.current().fill_color.r - 1.0).abs() < 1e-9);

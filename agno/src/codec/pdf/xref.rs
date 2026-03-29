@@ -55,7 +55,11 @@ fn parse_xref_chain(
 
     let pos = offset as usize;
     if pos >= data.len() {
-        return Err(format!("xref offset {offset} is beyond end of file ({} bytes)", data.len()).into());
+        return Err(format!(
+            "xref offset {offset} is beyond end of file ({} bytes)",
+            data.len()
+        )
+        .into());
     }
 
     // Determine whether this is a traditional table or a compressed stream.
@@ -184,7 +188,10 @@ fn parse_xref_entry(data: &[u8], cur: &mut usize) -> Result<XrefEntry, Box<dyn E
         *cur += 1;
     }
 
-    let kind = data.get(*cur).copied().ok_or("Truncated xref entry: missing type byte")?;
+    let kind = data
+        .get(*cur)
+        .copied()
+        .ok_or("Truncated xref entry: missing type byte")?;
     *cur += 1;
 
     // Always advance to entry_start + 20 to maintain alignment.
@@ -193,7 +200,10 @@ fn parse_xref_entry(data: &[u8], cur: &mut usize) -> Result<XrefEntry, Box<dyn E
 
     match kind {
         b'f' => Ok(XrefEntry::Free),
-        b'n' => Ok(XrefEntry::InUse { offset: offset_or_next, generation }),
+        b'n' => Ok(XrefEntry::InUse {
+            offset: offset_or_next,
+            generation,
+        }),
         other => Err(format!("Invalid xref entry type byte: 0x{other:02X}").into()),
     }
 }
@@ -229,32 +239,52 @@ fn parse_xref_stream(
         .next_object()?
         .ok_or("xref stream: expected dictionary")?;
     if dict_obj.as_dict().is_none() {
-        return Err(format!("xref stream object {obj_num}: expected dictionary, got {dict_obj}").into());
+        return Err(
+            format!("xref stream object {obj_num}: expected dictionary, got {dict_obj}").into(),
+        );
     }
 
     // Find `stream` keyword, then read raw stream bytes.
     lexer.skip_whitespace();
     let kw = lexer.read_keyword()?;
     if kw != b"stream" {
-        return Err(format!("xref stream: expected 'stream', got {:?}", std::str::from_utf8(&kw)).into());
+        return Err(format!(
+            "xref stream: expected 'stream', got {:?}",
+            std::str::from_utf8(&kw)
+        )
+        .into());
     }
 
     // After `stream` the spec requires a single newline (LF or CR LF).
     let stream_start = skip_stream_newline(data, lexer.position());
 
     // Get /Length from dictionary to know how many bytes to read.
-    let length = dict_obj
-        .get_i64(b"Length")
-        .ok_or("xref stream dictionary missing /Length")? as usize;
-
-    if stream_start + length > data.len() {
-        return Err(format!(
-            "xref stream /Length {length} exceeds file bounds (stream starts at {stream_start}, file len {})",
-            data.len()
-        )
-        .into());
-    }
-    let raw_stream = &data[stream_start..stream_start + length];
+    // Fall back to scanning for `endstream` when /Length is missing, indirect, or out of bounds.
+    let raw_stream = match dict_obj.get_i64(b"Length") {
+        Some(length) if length >= 0 && stream_start + length as usize <= data.len() => {
+            &data[stream_start..stream_start + length as usize]
+        }
+        _ => {
+            let marker = b"endstream";
+            let search_end = data.len().saturating_sub(marker.len());
+            let mut end_pos = None;
+            let mut pos = stream_start;
+            while pos <= search_end {
+                if &data[pos..pos + marker.len()] == marker {
+                    end_pos = Some(pos);
+                    break;
+                }
+                pos += 1;
+            }
+            let end =
+                end_pos.ok_or("xref stream: /Length invalid and could not locate 'endstream'")?;
+            let mut trimmed = end;
+            while trimmed > stream_start && data[trimmed - 1].is_ascii_whitespace() {
+                trimmed -= 1;
+            }
+            &data[stream_start..trimmed]
+        }
+    };
 
     // Decompress using the full stream filter pipeline (handles FlateDecode + predictor).
     let filters: Vec<&[u8]> = match dict_obj.get(b"Filter") {
@@ -263,7 +293,7 @@ fn parse_xref_stream(
         _ => vec![],
     };
     let params: Vec<Option<&PdfObject>> = match dict_obj.get(b"DecodeParms") {
-        Some(p @ PdfObject::Dictionary(_)) => vec![Some(p)],
+        Some(p) if matches!(p, PdfObject::Dictionary(_)) => vec![Some(p)],
         Some(PdfObject::Array(arr)) => arr.iter().map(|o| Some(o)).collect(),
         _ => filters.iter().map(|_| None).collect(),
     };
@@ -289,20 +319,23 @@ fn parse_xref_stream(
 
     // /Index defines the (first, count) subsection pairs; default is [0 /Size].
     let size = dict_obj.get_i64(b"Size").unwrap_or(0) as u32;
-    let index_pairs: Vec<(u32, u32)> = if let Some(idx) = dict_obj.get(b"Index").and_then(|o| o.as_array()) {
-        if idx.len() % 2 != 0 {
-            return Err(format!("xref stream /Index must have even count, got {}", idx.len()).into());
-        }
-        idx.chunks(2)
-            .map(|chunk| {
-                let first = chunk[0].as_i64().unwrap_or(0) as u32;
-                let count = chunk[1].as_i64().unwrap_or(0) as u32;
-                (first, count)
-            })
-            .collect()
-    } else {
-        vec![(0, size)]
-    };
+    let index_pairs: Vec<(u32, u32)> =
+        if let Some(idx) = dict_obj.get(b"Index").and_then(|o| o.as_array()) {
+            if idx.len() % 2 != 0 {
+                return Err(
+                    format!("xref stream /Index must have even count, got {}", idx.len()).into(),
+                );
+            }
+            idx.chunks(2)
+                .map(|chunk| {
+                    let first = chunk[0].as_i64().unwrap_or(0) as u32;
+                    let count = chunk[1].as_i64().unwrap_or(0) as u32;
+                    (first, count)
+                })
+                .collect()
+        } else {
+            vec![(0, size)]
+        };
 
     // Decode all entries.
     let mut stream_pos = 0usize;
@@ -332,11 +365,19 @@ fn parse_xref_stream(
 
             let entry = match type_val {
                 0 => XrefEntry::Free,
-                1 => XrefEntry::InUse { offset: field2, generation: field3 as u16 },
-                2 => XrefEntry::Compressed { stream_obj: field2 as u32, index: field3 as u16 },
+                1 => XrefEntry::InUse {
+                    offset: field2,
+                    generation: field3 as u16,
+                },
+                2 => XrefEntry::Compressed {
+                    stream_obj: field2 as u32,
+                    index: field3 as u16,
+                },
                 other => {
                     // Unknown types are skipped per spec.
-                    tracing::debug!("Unknown xref stream entry type {other} for obj {obj_num}, skipping");
+                    tracing::debug!(
+                        "Unknown xref stream entry type {other} for obj {obj_num}, skipping"
+                    );
                     continue;
                 }
             };
@@ -433,7 +474,6 @@ fn skip_whitespace_bytes(data: &[u8], cur: &mut usize) {
     }
 }
 
-
 #[inline]
 fn is_ascii_whitespace(b: u8) -> bool {
     matches!(b, 0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
@@ -441,7 +481,11 @@ fn is_ascii_whitespace(b: u8) -> bool {
 
 #[inline]
 fn is_delimiter_or_ws(b: u8) -> bool {
-    is_ascii_whitespace(b) || matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
+    is_ascii_whitespace(b)
+        || matches!(
+            b,
+            b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+        )
 }
 
 /// Parse an ASCII decimal unsigned 32-bit integer at `*cur`, advancing past it.
@@ -454,7 +498,8 @@ fn parse_ascii_u32(data: &[u8], cur: &mut usize) -> Result<u32, Box<dyn Error>> 
         return Err(format!("Expected decimal integer at offset {start}").into());
     }
     let s = std::str::from_utf8(&data[start..*cur])?;
-    Ok(s.parse().map_err(|e| format!("Bad u32 at offset {start}: {e}"))?)
+    Ok(s.parse()
+        .map_err(|e| format!("Bad u32 at offset {start}: {e}"))?)
 }
 
 /// Parse an ASCII decimal unsigned 64-bit integer at `*cur`, advancing past it.
@@ -467,27 +512,42 @@ fn parse_ascii_u64(data: &[u8], cur: &mut usize) -> Result<u64, Box<dyn Error>> 
         return Err(format!("Expected decimal integer at offset {start}").into());
     }
     let s = std::str::from_utf8(&data[start..*cur])?;
-    Ok(s.parse().map_err(|e| format!("Bad u64 at offset {start}: {e}"))?)
+    Ok(s.parse()
+        .map_err(|e| format!("Bad u64 at offset {start}: {e}"))?)
 }
 
 /// Parse exactly `width` ASCII decimal digits as a u64 (for fixed-width xref fields).
-fn parse_ascii_u64_fixed(data: &[u8], cur: &mut usize, width: usize) -> Result<u64, Box<dyn Error>> {
+fn parse_ascii_u64_fixed(
+    data: &[u8],
+    cur: &mut usize,
+    width: usize,
+) -> Result<u64, Box<dyn Error>> {
     if *cur + width > data.len() {
         return Err(format!("Truncated fixed-width integer field at offset {cur}").into());
     }
     let s = std::str::from_utf8(&data[*cur..*cur + width])?;
-    let val: u64 = s.trim().parse().map_err(|e| format!("Bad fixed u64 '{s}': {e}"))?;
+    let val: u64 = s
+        .trim()
+        .parse()
+        .map_err(|e| format!("Bad fixed u64 '{s}': {e}"))?;
     *cur += width;
     Ok(val)
 }
 
 /// Parse exactly `width` ASCII decimal digits as a u32 (for fixed-width xref fields).
-fn parse_ascii_u32_fixed(data: &[u8], cur: &mut usize, width: usize) -> Result<u32, Box<dyn Error>> {
+fn parse_ascii_u32_fixed(
+    data: &[u8],
+    cur: &mut usize,
+    width: usize,
+) -> Result<u32, Box<dyn Error>> {
     if *cur + width > data.len() {
         return Err(format!("Truncated fixed-width integer field at offset {cur}").into());
     }
     let s = std::str::from_utf8(&data[*cur..*cur + width])?;
-    let val: u32 = s.trim().parse().map_err(|e| format!("Bad fixed u32 '{s}': {e}"))?;
+    let val: u32 = s
+        .trim()
+        .parse()
+        .map_err(|e| format!("Bad fixed u32 '{s}': {e}"))?;
     *cur += width;
     Ok(val)
 }
@@ -512,7 +572,11 @@ mod tests {
         let obj1_off = pdf.len();
         write!(pdf, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n").unwrap();
         let obj2_off = pdf.len();
-        write!(pdf, "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n").unwrap();
+        write!(
+            pdf,
+            "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
+        )
+        .unwrap();
         let xref_off = pdf.len();
         write!(pdf, "xref\n0 3\n").unwrap();
         write!(pdf, "0000000000 65535 f \n").unwrap();
@@ -546,7 +610,11 @@ mod tests {
         let obj1_off = pdf.len();
         write!(pdf, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n").unwrap();
         let obj2_off = pdf.len();
-        write!(pdf, "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n").unwrap();
+        write!(
+            pdf,
+            "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
+        )
+        .unwrap();
         let obj5_off = pdf.len();
         write!(pdf, "5 0 obj\n<< /Type /Page >>\nendobj\n").unwrap();
         let xref_off = pdf.len();
@@ -575,7 +643,11 @@ mod tests {
         let obj1_off = pdf.len();
         write!(pdf, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n").unwrap();
         let obj2_off = pdf.len();
-        write!(pdf, "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n").unwrap();
+        write!(
+            pdf,
+            "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
+        )
+        .unwrap();
         // First xref section (older)
         let xref1_off = pdf.len();
         write!(pdf, "xref\n0 3\n").unwrap();
@@ -589,7 +661,11 @@ mod tests {
         let xref2_off = pdf.len();
         write!(pdf, "xref\n3 1\n").unwrap();
         write!(pdf, "{:010} 00000 n \n", obj3_off).unwrap();
-        write!(pdf, "trailer\n<< /Size 4 /Root 1 0 R /Prev {xref1_off} >>\n").unwrap();
+        write!(
+            pdf,
+            "trailer\n<< /Size 4 /Root 1 0 R /Prev {xref1_off} >>\n"
+        )
+        .unwrap();
         write!(pdf, "startxref\n{xref2_off}\n%%EOF\n").unwrap();
 
         let xref = parse_xref(&pdf).unwrap();

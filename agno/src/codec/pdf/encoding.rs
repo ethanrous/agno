@@ -394,10 +394,7 @@ static AGL_TABLE: &[(&str, u32)] = &[
 /// 1. Search the font's `post` table for a glyph with the matching name.
 /// 2. If not found, look up the name in the AGL to get Unicode, then use the font's cmap.
 /// 3. Return None if no match found.
-pub fn resolve_glyph_by_name(
-    face: &ttf_parser::Face,
-    name: &str,
-) -> Option<ttf_parser::GlyphId> {
+pub fn resolve_glyph_by_name(face: &ttf_parser::Face, name: &str) -> Option<ttf_parser::GlyphId> {
     // Strategy 1: Search the post table for a matching glyph name.
     // Most PDF-embedded fonts are subsets with few glyphs, so this is fast.
     let num_glyphs = face.number_of_glyphs();

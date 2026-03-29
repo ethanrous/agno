@@ -8,15 +8,17 @@ use std::collections::HashMap;
 
 use tiny_skia::{FillRule, Mask, Paint, Path, PathBuilder, Pixmap, Transform};
 
+use super::cmap::ToUnicodeMap;
 use super::font::{Encoding, ResolvedFont};
+use super::graphics::Color;
 use super::system_fonts::system_font_for_standard14;
 use super::text::PositionedGlyph;
-use super::graphics::Color;
-use super::cmap::ToUnicodeMap;
 
 /// Build a cache of pre-prepared font data (with CFF wrapping done once per font).
 /// Eliminates per-glyph `wrap_cff_in_otf` calls.
-pub(super) fn build_font_data_cache(fonts: &HashMap<Vec<u8>, ResolvedFont>) -> HashMap<Vec<u8>, Vec<u8>> {
+pub(super) fn build_font_data_cache(
+    fonts: &HashMap<Vec<u8>, ResolvedFont>,
+) -> HashMap<Vec<u8>, Vec<u8>> {
     let mut cache = HashMap::new();
     for (name, font) in fonts {
         match font {
@@ -29,7 +31,9 @@ pub(super) fn build_font_data_cache(fonts: &HashMap<Vec<u8>, ResolvedFont>) -> H
                     cache.insert(name.clone(), prepared);
                 }
             }
-            ResolvedFont::Standard14 { name: font_name, .. } => {
+            ResolvedFont::Standard14 {
+                name: font_name, ..
+            } => {
                 if let Some(sys_data) = system_font_for_standard14(font_name) {
                     cache.insert(name.clone(), sys_data.clone());
                 }
@@ -71,31 +75,70 @@ pub(super) fn render_glyph(
 
     // Try font outline rendering with encoding-aware mapping.
     match fonts.get(glyph.font_name) {
-        Some(ResolvedFont::Embedded { data, first_char, encoding, to_unicode, .. }) => {
+        Some(ResolvedFont::Embedded {
+            data,
+            first_char,
+            encoding,
+            to_unicode,
+            ..
+        }) => {
             let font_bytes = cached_data.map(|v| v.as_slice()).unwrap_or(data);
-            if let Some(path) = glyph_outline_path_cached(font_bytes, glyph, *first_char, encoding, to_unicode.as_ref(), 0) {
+            if let Some(path) = glyph_outline_path_cached(
+                font_bytes,
+                glyph,
+                *first_char,
+                encoding,
+                to_unicode.as_ref(),
+                0,
+            ) {
                 pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
                 return;
             }
         }
-        Some(ResolvedFont::Standard14 { name, encoding, to_unicode, .. }) => {
+        Some(ResolvedFont::Standard14 {
+            name,
+            encoding,
+            to_unicode,
+            ..
+        }) => {
             let face_idx = super::font::ttc_face_index(name);
             if let Some(font_bytes) = cached_data {
-                if let Some(path) = glyph_outline_path_cached(font_bytes, glyph, 0, encoding, to_unicode.as_ref(), face_idx) {
+                if let Some(path) = glyph_outline_path_cached(
+                    font_bytes,
+                    glyph,
+                    0,
+                    encoding,
+                    to_unicode.as_ref(),
+                    face_idx,
+                ) {
                     pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
                     return;
                 }
             } else if let Some(sys_data) = system_font_for_standard14(name) {
-                if let Some(path) = glyph_outline_path_cached(sys_data, glyph, 0, encoding, to_unicode.as_ref(), face_idx) {
+                if let Some(path) = glyph_outline_path_cached(
+                    sys_data,
+                    glyph,
+                    0,
+                    encoding,
+                    to_unicode.as_ref(),
+                    face_idx,
+                ) {
                     pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
                     return;
                 }
             }
         }
-        Some(ResolvedFont::CIDFont { data, cid_to_gid, to_unicode, .. }) => {
+        Some(ResolvedFont::CIDFont {
+            data,
+            cid_to_gid,
+            to_unicode,
+            ..
+        }) => {
             let font_bytes = cached_data.map(|v| v.as_slice()).unwrap_or(data);
             let encoding = Encoding::Identity;
-            if let Some(path) = glyph_outline_path_cached(font_bytes, glyph, 0, &encoding, to_unicode.as_ref(), 0) {
+            if let Some(path) =
+                glyph_outline_path_cached(font_bytes, glyph, 0, &encoding, to_unicode.as_ref(), 0)
+            {
                 pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
                 return;
             }
@@ -123,7 +166,13 @@ pub(super) fn render_glyph(
                             };
                             if face.outline_glyph(gid, &mut builder).is_some() {
                                 if let Some(path) = builder.pb.finish() {
-                                    pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+                                    pixmap.fill_path(
+                                        &path,
+                                        &paint,
+                                        FillRule::Winding,
+                                        transform,
+                                        mask,
+                                    );
                                     return;
                                 }
                             }
@@ -136,8 +185,7 @@ pub(super) fn render_glyph(
     }
 
     // Don't draw fallback rectangles for space/whitespace characters.
-    if glyph.char_code == 0x20 || glyph.width_user_space < 0.5
-        || is_space_glyph(glyph, fonts) {
+    if glyph.char_code == 0x20 || glyph.width_user_space < 0.5 || is_space_glyph(glyph, fonts) {
         return;
     }
 
@@ -267,7 +315,9 @@ fn resolve_glyph_id(
             }
             if let Some(unicode_char) = agl_name_to_unicode(glyph_name) {
                 if let Some(gid) = face.glyph_index(unicode_char) {
-                    if gid.0 != 0 { return Some(gid); }
+                    if gid.0 != 0 {
+                        return Some(gid);
+                    }
                 }
             }
         }
@@ -307,14 +357,20 @@ fn resolve_glyph_id(
 
     // Strategy 4: Direct glyph index.
     let direct_id = ttf_parser::GlyphId(code as u16);
-    if face.outline_glyph(direct_id, &mut NullOutlineBuilder).is_some() {
+    if face
+        .outline_glyph(direct_id, &mut NullOutlineBuilder)
+        .is_some()
+    {
         return Some(direct_id);
     }
 
     // Strategy 5: Offset by first_char.
     if code >= first_char {
         let offset_id = ttf_parser::GlyphId((code - first_char) as u16);
-        if face.outline_glyph(offset_id, &mut NullOutlineBuilder).is_some() {
+        if face
+            .outline_glyph(offset_id, &mut NullOutlineBuilder)
+            .is_some()
+        {
             return Some(offset_id);
         }
     }
@@ -379,7 +435,9 @@ pub(super) fn wrap_cff_in_otf(cff_data: &[u8]) -> Vec<u8> {
     let records_end = header_size + num_tables as u32 * record_size; // 12 + 64 = 76
 
     // Pad each table to 4-byte boundary
-    fn pad4(n: usize) -> usize { (n + 3) & !3 }
+    fn pad4(n: usize) -> usize {
+        (n + 3) & !3
+    }
 
     let head_offset = records_end;
     let hhea_offset = head_offset + pad4(head.len()) as u32;
@@ -391,12 +449,19 @@ pub(super) fn wrap_cff_in_otf(cff_data: &[u8]) -> Vec<u8> {
         let mut sum = 0u32;
         let mut i = 0;
         while i + 4 <= data.len() {
-            sum = sum.wrapping_add(u32::from_be_bytes([data[i], data[i+1], data[i+2], data[i+3]]));
+            sum = sum.wrapping_add(u32::from_be_bytes([
+                data[i],
+                data[i + 1],
+                data[i + 2],
+                data[i + 3],
+            ]));
             i += 4;
         }
         if i < data.len() {
             let mut tail = [0u8; 4];
-            for (j, &b) in data[i..].iter().enumerate() { tail[j] = b; }
+            for (j, &b) in data[i..].iter().enumerate() {
+                tail[j] = b;
+            }
             sum = sum.wrapping_add(u32::from_be_bytes(tail));
         }
         sum
@@ -408,7 +473,7 @@ pub(super) fn wrap_cff_in_otf(cff_data: &[u8]) -> Vec<u8> {
     otf.extend_from_slice(b"OTTO");
     otf.extend_from_slice(&num_tables.to_be_bytes());
     otf.extend_from_slice(&32u16.to_be_bytes()); // searchRange
-    otf.extend_from_slice(&1u16.to_be_bytes());  // entrySelector
+    otf.extend_from_slice(&1u16.to_be_bytes()); // entrySelector
     otf.extend_from_slice(&32u16.to_be_bytes()); // rangeShift
 
     // Table records (must be sorted by tag)
@@ -438,11 +503,17 @@ pub(super) fn wrap_cff_in_otf(cff_data: &[u8]) -> Vec<u8> {
 
     // Table data
     otf.extend_from_slice(&head);
-    while otf.len() % 4 != 0 { otf.push(0); }
+    while otf.len() % 4 != 0 {
+        otf.push(0);
+    }
     otf.extend_from_slice(&hhea);
-    while otf.len() % 4 != 0 { otf.push(0); }
+    while otf.len() % 4 != 0 {
+        otf.push(0);
+    }
     otf.extend_from_slice(&maxp);
-    while otf.len() % 4 != 0 { otf.push(0); }
+    while otf.len() % 4 != 0 {
+        otf.push(0);
+    }
     otf.extend_from_slice(cff_data);
 
     otf
