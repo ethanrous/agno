@@ -1,6 +1,8 @@
+pub mod cmap;
 pub mod color;
 pub mod content;
 pub mod document;
+pub mod encoding;
 pub mod font;
 pub mod graphics;
 pub mod image;

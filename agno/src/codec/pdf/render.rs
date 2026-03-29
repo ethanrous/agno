@@ -834,20 +834,67 @@ fn render_glyph(
     );
     paint.anti_alias = true;
 
-    // Try embedded font outline rendering.
+    // Try font outline rendering with encoding-aware mapping.
     match fonts.get(&glyph.font_name) {
-        Some(ResolvedFont::Embedded { data, first_char, .. }) => {
-            if let Some(path) = glyph_outline_path(data, glyph, *first_char) {
+        Some(ResolvedFont::Embedded { data, first_char, encoding, to_unicode, .. }) => {
+            if let Some(path) = glyph_outline_path(data, glyph, *first_char, encoding, to_unicode.as_ref(), 0) {
                 pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
                 return;
             }
         }
-        Some(ResolvedFont::Standard14 { name, .. }) => {
-            // Try system font as fallback for Standard 14 fonts.
+        Some(ResolvedFont::Standard14 { name, encoding, to_unicode, .. }) => {
             if let Some(font_data) = system_font_for_standard14(name) {
-                if let Some(path) = glyph_outline_path(&font_data, glyph, 0) {
+                let face_idx = super::font::ttc_face_index(name);
+                if let Some(path) = glyph_outline_path(font_data, glyph, 0, encoding, to_unicode.as_ref(), face_idx) {
                     pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
                     return;
+                }
+            }
+        }
+        Some(ResolvedFont::CIDFont { data, cid_to_gid, to_unicode, .. }) => {
+            let encoding = super::font::Encoding::Identity;
+            if let Some(path) = glyph_outline_path(data, glyph, 0, &encoding, to_unicode.as_ref(), 0) {
+                pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+                return;
+            }
+            // Try CIDToGIDMap-aware resolution.
+            if !data.is_empty() {
+                let otf_wrapped;
+                let face = match ttf_parser::Face::parse(data, 0) {
+                    Ok(f) => Some(f),
+                    Err(_) => {
+                        otf_wrapped = wrap_cff_in_otf(data);
+                        ttf_parser::Face::parse(&otf_wrapped, 0).ok()
+                    }
+                };
+                if let Some(face) = face {
+                    let gid = match cid_to_gid {
+                        super::font::CIDToGIDMap::Identity => {
+                            ttf_parser::GlyphId(glyph.char_code as u16)
+                        }
+                        super::font::CIDToGIDMap::Explicit(map) => {
+                            let cid = glyph.char_code as usize;
+                            ttf_parser::GlyphId(map.get(cid).copied().unwrap_or(0))
+                        }
+                    };
+                    if gid.0 != 0 {
+                        let units_per_em = face.units_per_em() as f64;
+                        if units_per_em > 0.0 {
+                            let scale = glyph.font_size_user_space / units_per_em;
+                            let mut builder = GlyphPathBuilder {
+                                pb: PathBuilder::new(),
+                                x_off: glyph.x as f32,
+                                y_off: glyph.y as f32,
+                                scale: scale as f32,
+                            };
+                            if face.outline_glyph(gid, &mut builder).is_some() {
+                                if let Some(path) = builder.pb.finish() {
+                                    pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+                                    return;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -871,16 +918,25 @@ fn render_glyph(
     }
 }
 
-/// Try to build a tiny-skia Path from an embedded font's glyph outline.
+/// Try to build a tiny-skia Path from a font's glyph outline.
+///
+/// Glyph mapping priority:
+/// 0. ToUnicode CMap: char_code → Unicode → face.glyph_index()
+/// 1. Encoding Differences: char_code → glyph_name → resolve_glyph_by_name
+/// 2. Named encoding (WinAnsi/MacRoman/Standard): char_code → glyph_name → resolve_glyph_by_name
+/// 3. cmap: char_code as Unicode → face.glyph_index()
+/// 4. Direct glyph index: GlyphId(char_code)
+/// 5. FirstChar offset: GlyphId(char_code - first_char)
 fn glyph_outline_path(
     font_data: &[u8],
     glyph: &PositionedGlyph,
     first_char: u32,
+    encoding: &super::font::Encoding,
+    to_unicode: Option<&super::cmap::ToUnicodeMap>,
+    face_index: u32,
 ) -> Option<Path> {
-    // Try parsing directly first (works for TrueType and OpenType fonts).
-    // If that fails, try wrapping as OpenType/CFF (for raw Type1C/CFF data).
     let otf_wrapped;
-    let face = match ttf_parser::Face::parse(font_data, 0) {
+    let face = match ttf_parser::Face::parse(font_data, face_index) {
         Ok(f) => f,
         Err(_) => {
             otf_wrapped = wrap_cff_in_otf(font_data);
@@ -897,37 +953,12 @@ fn glyph_outline_path(
     }
 
     let code = glyph.char_code;
-
-    // Map char_code → glyph_id. Try several strategies:
-    // 1. Character mapping via cmap table (works for standard encodings)
-    let mut glyph_id = face.glyph_index(char::from(code));
-
-    // 2. If cmap returns .notdef (0), try using char_code as a direct glyph index.
-    //    Many PDFs with custom encodings use glyph indices directly.
-    if glyph_id.is_none() || glyph_id == Some(ttf_parser::GlyphId(0)) {
-        let direct_id = ttf_parser::GlyphId(code as u16);
-        if face.outline_glyph(direct_id, &mut NullOutlineBuilder).is_some() {
-            glyph_id = Some(direct_id);
-        }
-    }
-
-    // 3. Try offset by first_char (PDF glyph index mapping).
-    if glyph_id.is_none() || glyph_id == Some(ttf_parser::GlyphId(0)) {
-        if code as u32 >= first_char {
-            let direct_id = ttf_parser::GlyphId((code as u32 - first_char) as u16);
-            if face.outline_glyph(direct_id, &mut NullOutlineBuilder).is_some() {
-                glyph_id = Some(direct_id);
-            }
-        }
-    }
-
-    let glyph_id = glyph_id?;
+    let glyph_id = resolve_glyph_id(&face, code, first_char, encoding, to_unicode)?;
     if glyph_id.0 == 0 {
-        return None; // .notdef
+        return None;
     }
 
     let scale = glyph.font_size_user_space / units_per_em;
-
     let mut builder = GlyphPathBuilder {
         pb: PathBuilder::new(),
         x_off: glyph.x as f32,
@@ -937,6 +968,92 @@ fn glyph_outline_path(
 
     face.outline_glyph(glyph_id, &mut builder)?;
     builder.pb.finish()
+}
+
+/// Resolve a character code to a GlyphId using the encoding-aware pipeline.
+fn resolve_glyph_id(
+    face: &ttf_parser::Face,
+    code: u32,
+    first_char: u32,
+    encoding: &super::font::Encoding,
+    to_unicode: Option<&super::cmap::ToUnicodeMap>,
+) -> Option<ttf_parser::GlyphId> {
+    use super::encoding::{
+        agl_name_to_unicode, macroman_name, resolve_glyph_by_name, standard_name, winansi_name,
+    };
+    use super::font::Encoding;
+
+    // Strategy 0: ToUnicode CMap (highest priority).
+    if let Some(tu) = to_unicode {
+        if let Some(unicode_char) = tu.get(code) {
+            let gid = face.glyph_index(unicode_char);
+            if gid.is_some() && gid != Some(ttf_parser::GlyphId(0)) {
+                return gid;
+            }
+        }
+    }
+
+    // Strategy 1: Encoding Differences.
+    if let Encoding::Differences { diffs, base, .. } = encoding {
+        if let Some(glyph_name) = diffs.get(&(code as u8)) {
+            if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
+                return Some(gid);
+            }
+            if let Some(unicode_char) = agl_name_to_unicode(glyph_name) {
+                if let Some(gid) = face.glyph_index(unicode_char) {
+                    if gid.0 != 0 { return Some(gid); }
+                }
+            }
+        }
+        let name = match base.as_str() {
+            "MacRomanEncoding" => macroman_name(code as u8),
+            "StandardEncoding" => standard_name(code as u8),
+            _ => winansi_name(code as u8),
+        };
+        if let Some(glyph_name) = name {
+            if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
+                return Some(gid);
+            }
+        }
+    }
+
+    // Strategy 2: Named encoding table.
+    if let Encoding::Named(enc_name) = encoding {
+        let name = match enc_name.as_str() {
+            "MacRomanEncoding" => macroman_name(code as u8),
+            "StandardEncoding" => standard_name(code as u8),
+            _ => winansi_name(code as u8),
+        };
+        if let Some(glyph_name) = name {
+            if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
+                return Some(gid);
+            }
+        }
+    }
+
+    // Strategy 3: cmap lookup using char_code as Unicode.
+    if let Some(ch) = char::from_u32(code) {
+        let gid = face.glyph_index(ch);
+        if gid.is_some() && gid != Some(ttf_parser::GlyphId(0)) {
+            return gid;
+        }
+    }
+
+    // Strategy 4: Direct glyph index.
+    let direct_id = ttf_parser::GlyphId(code as u16);
+    if face.outline_glyph(direct_id, &mut NullOutlineBuilder).is_some() {
+        return Some(direct_id);
+    }
+
+    // Strategy 5: Offset by first_char.
+    if code >= first_char {
+        let offset_id = ttf_parser::GlyphId((code - first_char) as u16);
+        if face.outline_glyph(offset_id, &mut NullOutlineBuilder).is_some() {
+            return Some(offset_id);
+        }
+    }
+
+    None
 }
 
 /// Wrap raw CFF (Type1C) data in a minimal OpenType container so ttf-parser can parse it.

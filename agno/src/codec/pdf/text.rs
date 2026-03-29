@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use super::content::Operator;
-use super::font::{char_width, ResolvedFont};
+use super::font::{char_width_u32, ResolvedFont};
 use super::graphics::{GraphicsState, Matrix};
 
 /// Positioned glyph for rendering.
@@ -15,7 +15,7 @@ use super::graphics::{GraphicsState, Matrix};
 pub struct PositionedGlyph {
     pub x: f64,
     pub y: f64,
-    pub char_code: u8,
+    pub char_code: u32,
     /// Advance width in user space (already scaled by text matrix).
     pub width_user_space: f64,
     /// Effective font size in user space (Tf size * text matrix scale).
@@ -226,27 +226,36 @@ fn show_string(
     glyphs: &mut Vec<PositionedGlyph>,
 ) {
     let font = fonts.get(font_name);
-    // Compute the effective font size in user space by measuring how the text
-    // matrix scales a unit vector. The y-scale of Tm * font_size gives the
-    // visual font size.
     let tm_y_scale = (tm.b * tm.b + tm.d * tm.d).sqrt();
     let effective_font_size = font_size * tm_y_scale;
 
-    for &byte in text {
+    let is_two_byte = matches!(font, Some(ResolvedFont::CIDFont { is_two_byte: true, .. }));
+
+    let mut i = 0;
+    while i < text.len() {
+        let code: u32 = if is_two_byte && i + 1 < text.len() {
+            let c = ((text[i] as u32) << 8) | (text[i + 1] as u32);
+            i += 2;
+            c
+        } else {
+            let c = text[i] as u32;
+            i += 1;
+            c
+        };
+
         let (tx, ty) = tm.transform_point(0.0, 0.0);
-        let w = font.map(|f| char_width(f, byte)).unwrap_or(500.0);
+        let w = font.map(|f| char_width_u32(f, code)).unwrap_or(500.0);
         let mut advance_text = (w / 1000.0) * font_size + char_spacing;
-        if byte == b' ' {
+        if code == 0x20 {
             advance_text += word_spacing;
         }
-        // Compute user-space width: advance through text matrix
         let (ax, ay) = tm.transform_point(advance_text, 0.0);
         let width_user = ((ax - tx) * (ax - tx) + (ay - ty) * (ay - ty)).sqrt();
 
         glyphs.push(PositionedGlyph {
             x: tx,
             y: ty,
-            char_code: byte,
+            char_code: code,
             width_user_space: width_user,
             font_size_user_space: effective_font_size,
             font_name: font_name.to_vec(),
@@ -278,6 +287,7 @@ mod tests {
                 name: "Helvetica".into(),
                 widths: standard14_widths("Helvetica"),
                 encoding: Encoding::Named("WinAnsiEncoding".into()),
+                to_unicode: None,
             },
         );
         fonts
@@ -343,7 +353,7 @@ mod tests {
         let line1_y = glyphs[0].y;
         let line2_start = glyphs
             .iter()
-            .position(|g| g.char_code == b'L' && (g.y - line1_y).abs() > 0.01);
+            .position(|g| g.char_code == b'L' as u32 && (g.y - line1_y).abs() > 0.01);
         assert!(line2_start.is_some());
         let line2_y = glyphs[line2_start.unwrap()].y;
         assert!(
