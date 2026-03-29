@@ -35,8 +35,17 @@ fn apply_filter(
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     match filter {
         b"FlateDecode" | b"Fl" => {
+            const MAX_DECOMPRESSED_SIZE: usize = 256 * 1024 * 1024; // 256 MB
             let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(data)
                 .map_err(|e| format!("FlateDecode: {e:?}"))?;
+            if decompressed.len() > MAX_DECOMPRESSED_SIZE {
+                return Err(format!(
+                    "FlateDecode: decompressed size {} exceeds limit of {} bytes",
+                    decompressed.len(),
+                    MAX_DECOMPRESSED_SIZE
+                )
+                .into());
+            }
             apply_png_predictor(decompressed, params)
         }
         b"ASCIIHexDecode" | b"AHx" => decode_ascii_hex(data),
@@ -198,12 +207,8 @@ fn decode_ascii_hex(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
 /// Convert a single hex character to its 4-bit value.
 #[inline]
 fn hex_nibble(b: u8) -> Result<u8, Box<dyn Error>> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(format!("ASCIIHexDecode: invalid hex character 0x{b:02X}").into()),
-    }
+    super::util::hex_nibble(b)
+        .ok_or_else(|| format!("ASCIIHexDecode: invalid hex character 0x{b:02X}").into())
 }
 
 // ---------------------------------------------------------------------------

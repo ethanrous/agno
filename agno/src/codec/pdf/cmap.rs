@@ -76,6 +76,7 @@ fn parse_bfchar_section(data: &[u8], start: usize, map: &mut HashMap<u32, u32>) 
 /// Parse entries between beginbfrange ... endbfrange.
 /// Each entry: `<start> <end> <dst_start>` or `<start> <end> [<d1> <d2> ...]`
 fn parse_bfrange_section(data: &[u8], start: usize, map: &mut HashMap<u32, u32>) -> usize {
+    const MAX_RANGE_SPAN: u32 = 65536;
     let mut pos = start;
     while pos < data.len() {
         skip_whitespace(data, &mut pos);
@@ -92,6 +93,10 @@ fn parse_bfrange_section(data: &[u8], start: usize, map: &mut HashMap<u32, u32>)
             None => return pos,
         };
         skip_whitespace(data, &mut pos);
+
+        if range_end.saturating_sub(range_start) > MAX_RANGE_SPAN {
+            continue;
+        }
 
         if pos < data.len() && data[pos] == b'[' {
             pos += 1;

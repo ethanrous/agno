@@ -28,7 +28,11 @@ pub fn decode_image_xobject(
 
     // Raw pixel data — convert to RGB8 based on color space and bpc
     let num_components = color_space.num_components();
-    let mut rgb_data = Vec::with_capacity(width as usize * height as usize * 3);
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(3))
+        .ok_or("Image dimensions overflow")?;
+    let mut rgb_data = Vec::with_capacity(pixel_count);
     let max_val = ((1u32 << bits_per_component) - 1) as f64;
 
     match bits_per_component {

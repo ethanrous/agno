@@ -1,6 +1,8 @@
 //! PDF document structure: opens a PDF, resolves indirect objects, navigates the
 //! page tree, and extracts content streams and resources (ISO 32000-1 §7.7).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::error::Error;
 
 use super::lexer::Lexer;
@@ -14,13 +16,18 @@ const MAX_RESOLVE_DEPTH: usize = 32;
 pub struct PdfDocument<'a> {
     data: &'a [u8],
     xref: Xref,
+    cache: RefCell<HashMap<u32, PdfObject>>,
 }
 
 impl<'a> PdfDocument<'a> {
     /// Open a PDF from raw bytes, parsing the cross-reference table and trailer.
     pub fn open(data: &'a [u8]) -> Result<Self, Box<dyn Error>> {
         let xref = parse_xref(data)?;
-        Ok(PdfDocument { data, xref })
+        Ok(PdfDocument {
+            data,
+            xref,
+            cache: RefCell::new(HashMap::new()),
+        })
     }
 
     /// Resolve an indirect object reference to its parsed value.
@@ -96,13 +103,17 @@ impl<'a> PdfDocument<'a> {
             .into());
         }
 
+        if let Some(cached) = self.cache.borrow().get(&obj_ref.num) {
+            return Ok(cached.clone());
+        }
+
         let entry = self
             .xref
             .entries
             .get(&obj_ref.num)
             .ok_or_else(|| format!("Object {} not found in xref", obj_ref.num))?;
 
-        match *entry {
+        let result = match *entry {
             XrefEntry::InUse { offset, .. } => {
                 self.parse_indirect_object(offset as usize, depth)
             }
@@ -113,7 +124,10 @@ impl<'a> PdfDocument<'a> {
                 stream_obj,
                 index,
             } => self.resolve_compressed_object(stream_obj, index, depth),
-        }
+        }?;
+
+        self.cache.borrow_mut().insert(obj_ref.num, result.clone());
+        Ok(result)
     }
 
     /// Parse an indirect object at the given byte offset.
@@ -195,14 +209,17 @@ impl<'a> PdfDocument<'a> {
         let length = match length_obj.as_reference() {
             Some(r) => {
                 let resolved = self.resolve_with_depth(r, depth + 1)?;
-                resolved
-                    .as_i64()
-                    .ok_or("Stream /Length reference did not resolve to integer")?
-                    as usize
+                safe_usize(
+                    resolved
+                        .as_i64()
+                        .ok_or("Stream /Length reference did not resolve to integer")?,
+                )?
             }
-            None => length_obj
-                .as_i64()
-                .ok_or("Stream /Length is not an integer")? as usize,
+            None => safe_usize(
+                length_obj
+                    .as_i64()
+                    .ok_or("Stream /Length is not an integer")?,
+            )?,
         };
 
         if data_start + length > self.data.len() {
@@ -318,14 +335,16 @@ impl<'a> PdfDocument<'a> {
             .as_stream()
             .ok_or("Object stream is not a Stream")?;
 
-        let n = dict
-            .get(b"N".as_slice())
-            .and_then(|o| o.as_i64())
-            .ok_or("Object stream missing /N")? as usize;
-        let first = dict
-            .get(b"First".as_slice())
-            .and_then(|o| o.as_i64())
-            .ok_or("Object stream missing /First")? as usize;
+        let n = safe_usize(
+            dict.get(b"N".as_slice())
+                .and_then(|o| o.as_i64())
+                .ok_or("Object stream missing /N")?,
+        )?;
+        let first = safe_usize(
+            dict.get(b"First".as_slice())
+                .and_then(|o| o.as_i64())
+                .ok_or("Object stream missing /First")?,
+        )?;
 
         if (index as usize) >= n {
             return Err(format!(
@@ -343,10 +362,12 @@ impl<'a> PdfDocument<'a> {
                 .next_object()?
                 .and_then(|o| o.as_i64())
                 .ok_or("Bad object stream index entry")?;
-            let off = lexer
-                .next_object()?
-                .and_then(|o| o.as_i64())
-                .ok_or("Bad object stream offset entry")? as usize;
+            let off = safe_usize(
+                lexer
+                    .next_object()?
+                    .and_then(|o| o.as_i64())
+                    .ok_or("Bad object stream offset entry")?,
+            )?;
             offsets.push(off);
         }
 
@@ -495,6 +516,11 @@ impl<'a> PdfDocument<'a> {
         // No resources found — return empty dict.
         Ok(PdfObject::Dictionary(std::collections::HashMap::new()))
     }
+}
+
+/// Convert an i64 to usize, returning an error for negative or oversized values.
+fn safe_usize(val: i64) -> Result<usize, Box<dyn Error>> {
+    usize::try_from(val).map_err(|_| format!("Negative or oversized value: {val}").into())
 }
 
 /// Skip the mandatory newline after the "stream" keyword.

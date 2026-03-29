@@ -7,12 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use super::objects::{ObjRef, PdfObject};
-
-/// PDF whitespace bytes: NUL, TAB, LF, FF, CR, SPACE (ISO 32000-1 Table 1).
-#[inline]
-fn is_pdf_whitespace(b: u8) -> bool {
-    matches!(b, 0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
-}
+use super::util::{hex_nibble, is_pdf_whitespace};
 
 /// PDF delimiter bytes: `( ) < > [ ] { } / %` plus whitespace.
 #[inline]
@@ -20,15 +15,18 @@ fn is_delimiter(b: u8) -> bool {
     is_pdf_whitespace(b) || matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
 }
 
+const MAX_NESTING_DEPTH: u32 = 128;
+
 /// A streaming tokenizer over a PDF byte slice.
 pub struct Lexer<'a> {
     data: &'a [u8],
     pos: usize,
+    depth: u32,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        Lexer { data, pos: 0 }
+        Lexer { data, pos: 0, depth: 0 }
     }
 
     pub fn position(&self) -> usize {
@@ -323,14 +321,21 @@ impl<'a> Lexer<'a> {
 
     /// Read an array after the leading `[` has been consumed.
     fn read_array(&mut self) -> Result<PdfObject, Box<dyn Error>> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.depth -= 1;
+            return Err("PDF nesting too deep".into());
+        }
         let mut items: Vec<PdfObject> = Vec::new();
         loop {
             self.skip_whitespace();
             if self.at_end() {
+                self.depth -= 1;
                 return Err("Unterminated array".into());
             }
             if self.data[self.pos] == b']' {
                 self.pos += 1; // consume ']'
+                self.depth -= 1;
                 return Ok(PdfObject::Array(items));
             }
             match self.next_object()? {
@@ -340,6 +345,7 @@ impl<'a> Lexer<'a> {
                     if !self.at_end() && self.data[self.pos] == b']' {
                         self.pos += 1;
                     }
+                    self.depth -= 1;
                     return Ok(PdfObject::Array(items));
                 }
             }
@@ -348,29 +354,44 @@ impl<'a> Lexer<'a> {
 
     /// Read a dictionary after `<<` has been consumed.
     fn read_dictionary(&mut self) -> Result<PdfObject, Box<dyn Error>> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.depth -= 1;
+            return Err("PDF nesting too deep".into());
+        }
         let mut dict: HashMap<Vec<u8>, PdfObject> = HashMap::new();
         loop {
             self.skip_whitespace();
             if self.at_end() {
+                self.depth -= 1;
                 return Err("Unterminated dictionary".into());
             }
             // Check for end-of-dictionary `>>`
             if self.data.get(self.pos) == Some(&b'>') && self.data.get(self.pos + 1) == Some(&b'>') {
                 self.pos += 2;
+                self.depth -= 1;
                 return Ok(PdfObject::Dictionary(dict));
             }
             // Next token must be a Name (key).
             let key = match self.next_object()? {
                 Some(PdfObject::Name(n)) => n,
                 Some(other) => {
+                    self.depth -= 1;
                     return Err(format!("Dictionary key must be a Name, got: {other}").into())
                 }
-                None => return Err("Unexpected end in dictionary (expected key)".into()),
+                None => {
+                    self.depth -= 1;
+                    return Err("Unexpected end in dictionary (expected key)".into())
+                }
             };
             // Value.
-            let val = self
-                .next_object()?
-                .ok_or("Unexpected end in dictionary (expected value)")?;
+            let val = match self.next_object()? {
+                Some(v) => v,
+                None => {
+                    self.depth -= 1;
+                    return Err("Unexpected end in dictionary (expected value)".into());
+                }
+            };
             dict.insert(key, val);
         }
     }
@@ -473,16 +494,6 @@ impl<'a> Lexer<'a> {
 // -------------------------------------------------------------------------
 // Small stateless utilities
 // -------------------------------------------------------------------------
-
-/// Convert a single ASCII hex character to its nibble value (0-15).
-fn hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
 
 /// Decode two ASCII hex characters into a byte value.
 fn decode_hex_byte(hi: u8, lo: u8) -> Option<u8> {

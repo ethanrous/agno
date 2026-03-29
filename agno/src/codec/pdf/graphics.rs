@@ -124,7 +124,10 @@ impl GraphicsStateStack {
     }
 
     pub fn save(&mut self) {
-        self.stack.push(self.current.clone());
+        const MAX_GRAPHICS_STACK_DEPTH: usize = 256;
+        if self.stack.len() < MAX_GRAPHICS_STACK_DEPTH {
+            self.stack.push(self.current.clone());
+        }
     }
 
     pub fn restore(&mut self) -> Result<(), Box<dyn std::error::Error>> {

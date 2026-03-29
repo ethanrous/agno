@@ -14,6 +14,8 @@ pub struct Operator {
     pub operands: Vec<PdfObject>,
 }
 
+const MAX_OPERATORS: usize = 1_000_000;
+
 /// Parse a PDF content stream into a sequence of operators with their operands.
 pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>, Box<dyn Error>> {
     let mut ops = Vec::new();
@@ -54,11 +56,17 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>, Box<dyn Error>
                     name: b"BI".to_vec(),
                     operands,
                 });
+                if ops.len() > MAX_OPERATORS {
+                    return Err("Content stream exceeds operator limit".into());
+                }
             } else {
                 ops.push(Operator {
                     name: keyword,
                     operands: std::mem::take(&mut operand_stack),
                 });
+                if ops.len() > MAX_OPERATORS {
+                    return Err("Content stream exceeds operator limit".into());
+                }
             }
         } else {
             // Parse as a PDF object (operand).

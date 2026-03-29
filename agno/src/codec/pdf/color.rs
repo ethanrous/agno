@@ -26,20 +26,21 @@ impl ColorSpace {
 
 /// Convert color components to RGB (0.0–1.0 range).
 pub fn to_rgb(space: &ColorSpace, components: &[f64]) -> (f64, f64, f64) {
+    let get = |i: usize| components.get(i).copied().unwrap_or(0.0);
     match space {
         ColorSpace::DeviceRGB
         | ColorSpace::CalRGB
         | ColorSpace::ICCBased { num_components: 3 } => {
-            (components[0], components[1], components[2])
+            (get(0), get(1), get(2))
         }
         ColorSpace::DeviceGray
         | ColorSpace::CalGray
         | ColorSpace::ICCBased { num_components: 1 } => {
-            let g = components[0];
+            let g = get(0);
             (g, g, g)
         }
         ColorSpace::DeviceCMYK | ColorSpace::ICCBased { num_components: 4 } => {
-            let (c, m, y, k) = (components[0], components[1], components[2], components[3]);
+            let (c, m, y, k) = (get(0), get(1), get(2), get(3));
             (
                 (1.0 - c) * (1.0 - k),
                 (1.0 - m) * (1.0 - k),

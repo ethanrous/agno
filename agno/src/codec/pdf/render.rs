@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::sync::OnceLock;
 
 use tiny_skia::{
     FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, Stroke,
@@ -15,9 +14,10 @@ use tiny_skia::{
 use super::content::{parse_content_stream, Operator};
 use super::document::PdfDocument;
 use super::font::ResolvedFont;
+use super::glyph::{build_font_data_cache, render_glyph};
 use super::graphics::{Color, GraphicsStateStack, Matrix};
 use super::objects::PdfObject;
-use super::text::{layout_text, PositionedGlyph};
+use super::text::layout_text;
 
 /// Holds document-level context needed during content stream execution.
 struct RenderContext<'a> {
@@ -56,6 +56,18 @@ pub fn render_page(
     let render_w = (page_w * render_scale as f64).ceil() as u32;
     let render_h = (page_h * render_scale as f64).ceil() as u32;
 
+    const MAX_PIXEL_COUNT: u64 = 100_000_000;
+    if (render_w as u64) * (render_h as u64) > MAX_PIXEL_COUNT {
+        return Err(format!(
+            "Page dimensions too large: {}x{} ({} pixels exceeds limit of {})",
+            render_w,
+            render_h,
+            (render_w as u64) * (render_h as u64),
+            MAX_PIXEL_COUNT
+        )
+        .into());
+    }
+
     let mut pixmap = Pixmap::new(render_w, render_h)
         .ok_or("Failed to create pixmap (dimensions too large)")?;
     pixmap.fill(tiny_skia::Color::WHITE);
@@ -67,6 +79,7 @@ pub fn render_page(
         PdfObject::Dictionary(HashMap::new())
     });
     let fonts = resolve_fonts_from_resources(&resources, doc);
+    let font_data_cache = build_font_data_cache(&fonts);
 
     let base = Transform::from_row(
         render_scale,
@@ -87,11 +100,11 @@ pub fn render_page(
     let mut state = GraphicsStateStack::new();
     let clip_mask: Option<Mask> = None;
 
-    execute_content_stream(&operators, &mut state, &mut pixmap, &ctx, &fonts, clip_mask.as_ref());
+    execute_content_stream(&operators, &mut state, &mut pixmap, &ctx, &fonts, &font_data_cache, clip_mask.as_ref());
 
     // Downscale from render resolution to target resolution.
     if render_w != target_w || render_h != target_h {
-        Ok(downscale_pixmap(&pixmap, target_w, target_h))
+        Ok(downscale_pixmap(&pixmap, target_w, target_h)?)
     } else {
         Ok(pixmap)
     }
@@ -99,8 +112,9 @@ pub fn render_page(
 
 /// Downscale a pixmap using box-filter averaging (equivalent to area-based downsampling).
 /// This produces high-quality anti-aliased output from a supersampled source.
-fn downscale_pixmap(src: &Pixmap, dst_w: u32, dst_h: u32) -> Pixmap {
-    let mut dst = Pixmap::new(dst_w, dst_h).unwrap();
+fn downscale_pixmap(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pixmap, Box<dyn Error>> {
+    let mut dst = Pixmap::new(dst_w, dst_h)
+        .ok_or("Failed to allocate downscale pixmap")?;
     let src_data = src.data();
     let dst_data = dst.data_mut();
     let sw = src.width() as f64;
@@ -146,7 +160,7 @@ fn downscale_pixmap(src: &Pixmap, dst_w: u32, dst_h: u32) -> Pixmap {
             }
         }
     }
-    dst
+    Ok(dst)
 }
 
 /// Execute a parsed content stream, handling BT/ET text blocks and dispatching
@@ -157,11 +171,14 @@ fn execute_content_stream(
     pixmap: &mut Pixmap,
     ctx: &RenderContext,
     fonts: &HashMap<Vec<u8>, ResolvedFont>,
+    font_data_cache: &HashMap<Vec<u8>, Vec<u8>>,
     initial_clip: Option<&Mask>,
 ) {
     let mut path_builder = PathBuilder::new();
     let mut clip_pending: Option<FillRule> = None;
     let mut clip_mask: Option<Mask> = initial_clip.cloned();
+    let mut current_point: Option<(f32, f32)> = None;
+    let mut subpath_start: Option<(f32, f32)> = None;
 
     let mut i = 0;
     while i < operators.len() {
@@ -184,6 +201,8 @@ fn execute_content_stream(
                             &mut path_builder,
                             &mut clip_pending,
                             &mut clip_mask,
+                            &mut current_point,
+                            &mut subpath_start,
                         );
                     }
                     _ => {}
@@ -197,21 +216,13 @@ fn execute_content_stream(
                     op.name.as_slice(),
                     b"Tf" | b"Td" | b"TD" | b"Tm" | b"T*"
                     | b"Tj" | b"TJ" | b"Tc" | b"Tw" | b"TL"
+                    | b"Tz" | b"Ts" | b"Tr"
                     | b"'" | b"\""
                 ))
                 .collect();
 
             if !text_ops.is_empty() {
-                // Build owned ops slice for layout_text.
-                let text_op_refs: Vec<Operator> = text_ops
-                    .into_iter()
-                    .map(|o| Operator {
-                        name: o.name.clone(),
-                        operands: o.operands.clone(),
-                    })
-                    .collect();
-
-                if let Ok(glyphs) = layout_text(&text_op_refs, state.current(), fonts) {
+                if let Ok(glyphs) = layout_text(&text_ops, state.current(), fonts) {
                     let transform = combined_transform(&state.current().ctm, ctx.base);
                     let color = &state.current().fill_color;
                     let alpha = state.current().fill_alpha;
@@ -221,6 +232,7 @@ fn execute_content_stream(
                         render_glyph(
                             glyph,
                             fonts,
+                            font_data_cache,
                             color,
                             alpha,
                             transform,
@@ -243,6 +255,8 @@ fn execute_content_stream(
                 &mut path_builder,
                 &mut clip_pending,
                 &mut clip_mask,
+                &mut current_point,
+                &mut subpath_start,
             );
             i += 1;
         }
@@ -288,6 +302,8 @@ fn execute_operator(
     path_builder: &mut PathBuilder,
     clip_pending: &mut Option<FillRule>,
     clip_mask: &mut Option<Mask>,
+    current_point: &mut Option<(f32, f32)>,
+    subpath_start: &mut Option<(f32, f32)>,
 ) {
     let name = op.name.as_slice();
     let args = &op.operands;
@@ -407,10 +423,15 @@ fn execute_operator(
 
         // --- Path construction ---
         b"m" if args.len() >= 2 => {
-            path_builder.move_to(arg_f32(args, 0), arg_f32(args, 1));
+            let (x, y) = (arg_f32(args, 0), arg_f32(args, 1));
+            path_builder.move_to(x, y);
+            *current_point = Some((x, y));
+            *subpath_start = Some((x, y));
         }
         b"l" if args.len() >= 2 => {
-            path_builder.line_to(arg_f32(args, 0), arg_f32(args, 1));
+            let (x, y) = (arg_f32(args, 0), arg_f32(args, 1));
+            path_builder.line_to(x, y);
+            *current_point = Some((x, y));
         }
         b"c" if args.len() >= 6 => {
             path_builder.cubic_to(
@@ -421,33 +442,28 @@ fn execute_operator(
                 arg_f32(args, 4),
                 arg_f32(args, 5),
             );
+            *current_point = Some((arg_f32(args, 4), arg_f32(args, 5)));
         }
         b"v" if args.len() >= 4 => {
-            // Current point used as first control point.
-            // PathBuilder doesn't expose current point, so approximate with cubic_to
-            // using the second control point as the first.
+            let (cpx, cpy) = current_point.unwrap_or((0.0, 0.0));
             path_builder.cubic_to(
-                arg_f32(args, 0),
-                arg_f32(args, 1),
-                arg_f32(args, 0),
-                arg_f32(args, 1),
-                arg_f32(args, 2),
-                arg_f32(args, 3),
+                cpx, cpy,
+                arg_f32(args, 0), arg_f32(args, 1),
+                arg_f32(args, 2), arg_f32(args, 3),
             );
+            *current_point = Some((arg_f32(args, 2), arg_f32(args, 3)));
         }
         b"y" if args.len() >= 4 => {
-            // End point used as second control point.
             path_builder.cubic_to(
-                arg_f32(args, 0),
-                arg_f32(args, 1),
-                arg_f32(args, 2),
-                arg_f32(args, 3),
-                arg_f32(args, 2),
-                arg_f32(args, 3),
+                arg_f32(args, 0), arg_f32(args, 1),
+                arg_f32(args, 2), arg_f32(args, 3),
+                arg_f32(args, 2), arg_f32(args, 3),
             );
+            *current_point = Some((arg_f32(args, 2), arg_f32(args, 3)));
         }
         b"h" => {
             path_builder.close();
+            *current_point = *subpath_start;
         }
         b"re" if args.len() >= 4 => {
             let (x, y, w, h) = (
@@ -461,40 +477,59 @@ fn execute_operator(
             path_builder.line_to(x + w, y + h);
             path_builder.line_to(x, y + h);
             path_builder.close();
+            *current_point = Some((x, y));
+            *subpath_start = Some((x, y));
         }
 
         // --- Path painting ---
         b"S" => {
             paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, false, true, FillRule::Winding);
+            *current_point = None;
+            *subpath_start = None;
         }
         b"s" => {
             path_builder.close();
             paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, false, true, FillRule::Winding);
+            *current_point = None;
+            *subpath_start = None;
         }
         b"f" | b"F" => {
             paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, false, FillRule::Winding);
+            *current_point = None;
+            *subpath_start = None;
         }
         b"f*" => {
             paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, false, FillRule::EvenOdd);
+            *current_point = None;
+            *subpath_start = None;
         }
         b"B" => {
             paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, true, FillRule::Winding);
+            *current_point = None;
+            *subpath_start = None;
         }
         b"B*" => {
             paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, true, FillRule::EvenOdd);
+            *current_point = None;
+            *subpath_start = None;
         }
         b"b" => {
             path_builder.close();
             paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, true, FillRule::Winding);
+            *current_point = None;
+            *subpath_start = None;
         }
         b"b*" => {
             path_builder.close();
             paint_path(state, pixmap, ctx.base, path_builder, clip_pending, clip_mask, true, true, FillRule::EvenOdd);
+            *current_point = None;
+            *subpath_start = None;
         }
         b"n" => {
-            // End path without painting (clipping only).
             apply_pending_clip(path_builder, clip_pending, clip_mask, pixmap, state, ctx.base);
             *path_builder = PathBuilder::new();
+            *current_point = None;
+            *subpath_start = None;
         }
 
         // --- Clipping ---
@@ -519,6 +554,24 @@ fn execute_operator(
         }
 
         // --- Extended graphics state ---
+        b"gs" if !args.is_empty() => {
+            if let Some(gs_name) = args[0].as_name() {
+                if let Some(ext_gs) = ctx.resources.get(b"ExtGState") {
+                    if let Ok(gs_dict) = ctx.doc.resolve_value(ext_gs) {
+                        if let Some(entry) = gs_dict.get(gs_name) {
+                            if let Ok(gs_obj) = ctx.doc.resolve_value(entry) {
+                                if let Some(ca) = gs_obj.get_f64(b"ca") {
+                                    state.current_mut().fill_alpha = ca.clamp(0.0, 1.0);
+                                }
+                                if let Some(big_ca) = gs_obj.get_f64(b"CA") {
+                                    state.current_mut().stroke_alpha = big_ca.clamp(0.0, 1.0);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         b"gs" => {}
 
         // --- Inline image ---
@@ -838,6 +891,7 @@ fn render_xobject(
 
     // 6. Resolve fonts for this form's resources
     let form_fonts = resolve_fonts_from_resources(&form_resources, ctx.doc);
+    let form_font_cache = build_font_data_cache(&form_fonts);
 
     // 7. Build child context with incremented depth
     let child_ctx = RenderContext {
@@ -848,7 +902,7 @@ fn render_xobject(
     };
 
     // 8. Execute the form's content stream
-    execute_content_stream(&content_ops, state, pixmap, &child_ctx, &form_fonts, clip);
+    execute_content_stream(&content_ops, state, pixmap, &child_ctx, &form_fonts, &form_font_cache, clip);
 
     // 9. Restore state
     let _ = state.restore();
@@ -942,10 +996,10 @@ fn paint_path(
 
     // Apply pending clip if set.
     if let Some(rule) = clip_pending.take() {
-        let mut mask = Mask::new(pixmap.width(), pixmap.height())
-            .unwrap_or_else(|| Mask::new(1, 1).unwrap());
-        mask.fill_path(&path, rule, true, transform);
-        *clip_mask = Some(mask);
+        if let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) {
+            mask.fill_path(&path, rule, true, transform);
+            *clip_mask = Some(mask);
+        }
     }
 }
 
@@ -961,10 +1015,10 @@ fn apply_pending_clip(
         let built = std::mem::replace(path_builder, PathBuilder::new());
         if let Some(path) = built.finish() {
             let transform = combined_transform(&state.current().ctm, base);
-            let mut mask = Mask::new(pixmap.width(), pixmap.height())
-                .unwrap_or_else(|| Mask::new(1, 1).unwrap());
-            mask.fill_path(&path, rule, true, transform);
-            *clip_mask = Some(mask);
+            if let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) {
+                mask.fill_path(&path, rule, true, transform);
+                *clip_mask = Some(mask);
+            }
         }
     }
 }
@@ -1053,478 +1107,6 @@ fn resolve_fonts_from_resources(
     fonts
 }
 
-/// Render a single positioned glyph. Uses embedded font outlines via ttf-parser
-/// when available, falls back to filled rectangles for Standard 14 fonts.
-fn render_glyph(
-    glyph: &PositionedGlyph,
-    fonts: &HashMap<Vec<u8>, ResolvedFont>,
-    color: &Color,
-    alpha: f64,
-    transform: Transform,
-    pixmap: &mut Pixmap,
-    mask: Option<&Mask>,
-) {
-    let font_size = glyph.font_size_user_space;
-    if font_size < 0.5 {
-        return;
-    }
-
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(
-        (color.r.clamp(0.0, 1.0) * 255.0) as u8,
-        (color.g.clamp(0.0, 1.0) * 255.0) as u8,
-        (color.b.clamp(0.0, 1.0) * 255.0) as u8,
-        (alpha.clamp(0.0, 1.0) * 255.0) as u8,
-    );
-    paint.anti_alias = true;
-
-    // Try font outline rendering with encoding-aware mapping.
-    match fonts.get(&glyph.font_name) {
-        Some(ResolvedFont::Embedded { data, first_char, encoding, to_unicode, .. }) => {
-            if let Some(path) = glyph_outline_path(data, glyph, *first_char, encoding, to_unicode.as_ref(), 0) {
-                pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                return;
-            }
-        }
-        Some(ResolvedFont::Standard14 { name, encoding, to_unicode, .. }) => {
-            if let Some(font_data) = system_font_for_standard14(name) {
-                let face_idx = super::font::ttc_face_index(name);
-                if let Some(path) = glyph_outline_path(font_data, glyph, 0, encoding, to_unicode.as_ref(), face_idx) {
-                    pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                    return;
-                }
-            }
-        }
-        Some(ResolvedFont::CIDFont { data, cid_to_gid, to_unicode, .. }) => {
-            let encoding = super::font::Encoding::Identity;
-            if let Some(path) = glyph_outline_path(data, glyph, 0, &encoding, to_unicode.as_ref(), 0) {
-                pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                return;
-            }
-            // Try CIDToGIDMap-aware resolution.
-            if !data.is_empty() {
-                let otf_wrapped;
-                let face = match ttf_parser::Face::parse(data, 0) {
-                    Ok(f) => Some(f),
-                    Err(_) => {
-                        otf_wrapped = wrap_cff_in_otf(data);
-                        ttf_parser::Face::parse(&otf_wrapped, 0).ok()
-                    }
-                };
-                if let Some(face) = face {
-                    let gid = match cid_to_gid {
-                        super::font::CIDToGIDMap::Identity => {
-                            ttf_parser::GlyphId(glyph.char_code as u16)
-                        }
-                        super::font::CIDToGIDMap::Explicit(map) => {
-                            let cid = glyph.char_code as usize;
-                            ttf_parser::GlyphId(map.get(cid).copied().unwrap_or(0))
-                        }
-                    };
-                    if gid.0 != 0 {
-                        let units_per_em = face.units_per_em() as f64;
-                        if units_per_em > 0.0 {
-                            let scale = glyph.font_size_user_space / units_per_em;
-                            let mut builder = GlyphPathBuilder {
-                                pb: PathBuilder::new(),
-                                x_off: glyph.x as f32,
-                                y_off: glyph.y as f32,
-                                scale: scale as f32,
-                            };
-                            if face.outline_glyph(gid, &mut builder).is_some() {
-                                if let Some(path) = builder.pb.finish() {
-                                    pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None => {}
-    }
-
-    // Don't draw fallback rectangles for space/whitespace characters.
-    if glyph.char_code == 0x20 || glyph.width_user_space < 0.5
-        || is_space_glyph(glyph, fonts) {
-        return;
-    }
-
-    // Fallback: filled rectangle.
-    let glyph_w = (glyph.width_user_space * 0.7) as f32;
-    let glyph_h = (font_size * 0.75) as f32;
-    let x = glyph.x as f32;
-    let y = (glyph.y - font_size * 0.2) as f32;
-
-    let mut pb = PathBuilder::new();
-    pb.move_to(x, y);
-    pb.line_to(x + glyph_w, y);
-    pb.line_to(x + glyph_w, y + glyph_h);
-    pb.line_to(x, y + glyph_h);
-    pb.close();
-    if let Some(path) = pb.finish() {
-        pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-    }
-}
-
-/// Check if a glyph maps to a space character (no visible outline expected).
-fn is_space_glyph(glyph: &PositionedGlyph, fonts: &HashMap<Vec<u8>, ResolvedFont>) -> bool {
-    let font = match fonts.get(&glyph.font_name) {
-        Some(f) => f,
-        None => return false,
-    };
-
-    // Check ToUnicode mapping.
-    let to_unicode = match font {
-        ResolvedFont::Embedded { to_unicode, .. } => to_unicode.as_ref(),
-        ResolvedFont::Standard14 { to_unicode, .. } => to_unicode.as_ref(),
-        ResolvedFont::CIDFont { to_unicode, .. } => to_unicode.as_ref(),
-    };
-    if let Some(tu) = to_unicode {
-        if let Some(ch) = tu.get(glyph.char_code) {
-            return ch == ' ' || ch == '\u{00A0}';
-        }
-    }
-
-    // Check Differences encoding for "space" name.
-    let encoding = match font {
-        ResolvedFont::Embedded { encoding, .. } => encoding,
-        ResolvedFont::Standard14 { encoding, .. } => encoding,
-        ResolvedFont::CIDFont { .. } => return false,
-    };
-    if let super::font::Encoding::Differences { diffs, .. } = encoding {
-        if let Some(name) = diffs.get(&(glyph.char_code as u8)) {
-            return name == "space" || name == "nbspace";
-        }
-    }
-
-    false
-}
-
-/// Try to build a tiny-skia Path from a font's glyph outline.
-///
-/// Glyph mapping priority:
-/// 0. ToUnicode CMap: char_code → Unicode → face.glyph_index()
-/// 1. Encoding Differences: char_code → glyph_name → resolve_glyph_by_name
-/// 2. Named encoding (WinAnsi/MacRoman/Standard): char_code → glyph_name → resolve_glyph_by_name
-/// 3. cmap: char_code as Unicode → face.glyph_index()
-/// 4. Direct glyph index: GlyphId(char_code)
-/// 5. FirstChar offset: GlyphId(char_code - first_char)
-fn glyph_outline_path(
-    font_data: &[u8],
-    glyph: &PositionedGlyph,
-    first_char: u32,
-    encoding: &super::font::Encoding,
-    to_unicode: Option<&super::cmap::ToUnicodeMap>,
-    face_index: u32,
-) -> Option<Path> {
-    let otf_wrapped;
-    let face = match ttf_parser::Face::parse(font_data, face_index) {
-        Ok(f) => f,
-        Err(_) => {
-            otf_wrapped = wrap_cff_in_otf(font_data);
-            match ttf_parser::Face::parse(&otf_wrapped, 0) {
-                Ok(f) => f,
-                Err(_) => return None,
-            }
-        }
-    };
-
-    let units_per_em = face.units_per_em() as f64;
-    if units_per_em == 0.0 {
-        return None;
-    }
-
-    let code = glyph.char_code;
-    let glyph_id = resolve_glyph_id(&face, code, first_char, encoding, to_unicode)?;
-    if glyph_id.0 == 0 {
-        return None;
-    }
-
-    let scale = glyph.font_size_user_space / units_per_em;
-    let mut builder = GlyphPathBuilder {
-        pb: PathBuilder::new(),
-        x_off: glyph.x as f32,
-        y_off: glyph.y as f32,
-        scale: scale as f32,
-    };
-
-    face.outline_glyph(glyph_id, &mut builder)?;
-    builder.pb.finish()
-}
-
-/// Resolve a character code to a GlyphId using the encoding-aware pipeline.
-fn resolve_glyph_id(
-    face: &ttf_parser::Face,
-    code: u32,
-    first_char: u32,
-    encoding: &super::font::Encoding,
-    to_unicode: Option<&super::cmap::ToUnicodeMap>,
-) -> Option<ttf_parser::GlyphId> {
-    use super::encoding::{
-        agl_name_to_unicode, macroman_name, resolve_glyph_by_name, standard_name, winansi_name,
-    };
-    use super::font::Encoding;
-
-    // Strategy 0: ToUnicode CMap (highest priority).
-    if let Some(tu) = to_unicode {
-        if let Some(unicode_char) = tu.get(code) {
-            let gid = face.glyph_index(unicode_char);
-            if gid.is_some() && gid != Some(ttf_parser::GlyphId(0)) {
-                return gid;
-            }
-        }
-    }
-
-    // Strategy 1: Encoding Differences.
-    if let Encoding::Differences { diffs, base, .. } = encoding {
-        if let Some(glyph_name) = diffs.get(&(code as u8)) {
-            if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
-                return Some(gid);
-            }
-            if let Some(unicode_char) = agl_name_to_unicode(glyph_name) {
-                if let Some(gid) = face.glyph_index(unicode_char) {
-                    if gid.0 != 0 { return Some(gid); }
-                }
-            }
-        }
-        let name = match base.as_str() {
-            "MacRomanEncoding" => macroman_name(code as u8),
-            "StandardEncoding" => standard_name(code as u8),
-            _ => winansi_name(code as u8),
-        };
-        if let Some(glyph_name) = name {
-            if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
-                return Some(gid);
-            }
-        }
-    }
-
-    // Strategy 2: Named encoding table.
-    if let Encoding::Named(enc_name) = encoding {
-        let name = match enc_name.as_str() {
-            "MacRomanEncoding" => macroman_name(code as u8),
-            "StandardEncoding" => standard_name(code as u8),
-            _ => winansi_name(code as u8),
-        };
-        if let Some(glyph_name) = name {
-            if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
-                return Some(gid);
-            }
-        }
-    }
-
-    // Strategy 3: cmap lookup using char_code as Unicode.
-    if let Some(ch) = char::from_u32(code) {
-        let gid = face.glyph_index(ch);
-        if gid.is_some() && gid != Some(ttf_parser::GlyphId(0)) {
-            return gid;
-        }
-    }
-
-    // Strategy 4: Direct glyph index.
-    let direct_id = ttf_parser::GlyphId(code as u16);
-    if face.outline_glyph(direct_id, &mut NullOutlineBuilder).is_some() {
-        return Some(direct_id);
-    }
-
-    // Strategy 5: Offset by first_char.
-    if code >= first_char {
-        let offset_id = ttf_parser::GlyphId((code - first_char) as u16);
-        if face.outline_glyph(offset_id, &mut NullOutlineBuilder).is_some() {
-            return Some(offset_id);
-        }
-    }
-
-    None
-}
-
-/// Wrap raw CFF (Type1C) data in a minimal OpenType container so ttf-parser can parse it.
-/// OpenType/CFF requires: offset table + CFF table record + CFF data.
-/// Wrap raw CFF (Type1C) data in a minimal OpenType container so ttf-parser can parse it.
-/// Includes the minimum required tables: head, hhea, maxp, and CFF.
-fn wrap_cff_in_otf(cff_data: &[u8]) -> Vec<u8> {
-    // Minimal head table (54 bytes)
-    #[rustfmt::skip]
-    let head: [u8; 54] = [
-        0x00, 0x01, 0x00, 0x00, // majorVersion=1, minorVersion=0
-        0x00, 0x01, 0x00, 0x00, // fontRevision=1.0
-        0x00, 0x00, 0x00, 0x00, // checksumAdjustment (placeholder)
-        0x5F, 0x0F, 0x3C, 0xF5, // magicNumber
-        0x00, 0x0B,             // flags
-        0x03, 0xE8,             // unitsPerEm = 1000
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // created
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // modified
-        0x00, 0x00,             // xMin = 0
-        0x00, 0x00,             // yMin = 0
-        0x03, 0xE8,             // xMax = 1000
-        0x03, 0xE8,             // yMax = 1000
-        0x00, 0x00,             // macStyle
-        0x00, 0x08,             // lowestRecPPEM = 8
-        0x00, 0x02,             // fontDirectionHint
-        0x00, 0x01,             // indexToLocFormat = 1 (long)
-        0x00, 0x00,             // glyphDataFormat
-    ];
-
-    // Minimal hhea table (36 bytes)
-    #[rustfmt::skip]
-    let hhea: [u8; 36] = [
-        0x00, 0x01, 0x00, 0x00, // majorVersion=1, minorVersion=0
-        0x03, 0x20,             // ascender = 800
-        0xFF, 0x38,             // descender = -200
-        0x00, 0x00,             // lineGap = 0
-        0x03, 0xE8,             // advanceWidthMax = 1000
-        0x00, 0x00,             // minLeftSideBearing
-        0x00, 0x00,             // minRightSideBearing
-        0x03, 0xE8,             // xMaxExtent = 1000
-        0x00, 0x01,             // caretSlopeRise = 1
-        0x00, 0x00,             // caretSlopeRun = 0
-        0x00, 0x00,             // caretOffset
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
-        0x00, 0x00,             // metricDataFormat
-        0x00, 0x01,             // numberOfHMetrics = 1
-    ];
-
-    // Minimal maxp table (6 bytes for CFF)
-    #[rustfmt::skip]
-    let maxp: [u8; 6] = [
-        0x00, 0x00, 0x50, 0x00, // version = 0.5 (CFF)
-        0x00, 0xFF,             // numGlyphs = 255 (generous default)
-    ];
-
-    let num_tables: u16 = 4;
-    let header_size = 12u32;
-    let record_size = 16u32;
-    let records_end = header_size + num_tables as u32 * record_size; // 12 + 64 = 76
-
-    // Pad each table to 4-byte boundary
-    fn pad4(n: usize) -> usize { (n + 3) & !3 }
-
-    let head_offset = records_end;
-    let hhea_offset = head_offset + pad4(head.len()) as u32;
-    let maxp_offset = hhea_offset + pad4(hhea.len()) as u32;
-    let cff_offset = maxp_offset + pad4(maxp.len()) as u32;
-    let total = cff_offset as usize + cff_data.len();
-
-    fn table_checksum(data: &[u8]) -> u32 {
-        let mut sum = 0u32;
-        let mut i = 0;
-        while i + 4 <= data.len() {
-            sum = sum.wrapping_add(u32::from_be_bytes([data[i], data[i+1], data[i+2], data[i+3]]));
-            i += 4;
-        }
-        if i < data.len() {
-            let mut tail = [0u8; 4];
-            for (j, &b) in data[i..].iter().enumerate() { tail[j] = b; }
-            sum = sum.wrapping_add(u32::from_be_bytes(tail));
-        }
-        sum
-    }
-
-    let mut otf = Vec::with_capacity(total);
-
-    // Offset table header
-    otf.extend_from_slice(b"OTTO");
-    otf.extend_from_slice(&num_tables.to_be_bytes());
-    otf.extend_from_slice(&32u16.to_be_bytes()); // searchRange
-    otf.extend_from_slice(&1u16.to_be_bytes());  // entrySelector
-    otf.extend_from_slice(&32u16.to_be_bytes()); // rangeShift
-
-    // Table records (must be sorted by tag)
-    // CFF  (0x43464620)
-    otf.extend_from_slice(b"CFF ");
-    otf.extend_from_slice(&table_checksum(cff_data).to_be_bytes());
-    otf.extend_from_slice(&cff_offset.to_be_bytes());
-    otf.extend_from_slice(&(cff_data.len() as u32).to_be_bytes());
-
-    // head (0x68656164)
-    otf.extend_from_slice(b"head");
-    otf.extend_from_slice(&table_checksum(&head).to_be_bytes());
-    otf.extend_from_slice(&head_offset.to_be_bytes());
-    otf.extend_from_slice(&(head.len() as u32).to_be_bytes());
-
-    // hhea (0x68686561)
-    otf.extend_from_slice(b"hhea");
-    otf.extend_from_slice(&table_checksum(&hhea).to_be_bytes());
-    otf.extend_from_slice(&hhea_offset.to_be_bytes());
-    otf.extend_from_slice(&(hhea.len() as u32).to_be_bytes());
-
-    // maxp (0x6D617870)
-    otf.extend_from_slice(b"maxp");
-    otf.extend_from_slice(&table_checksum(&maxp).to_be_bytes());
-    otf.extend_from_slice(&maxp_offset.to_be_bytes());
-    otf.extend_from_slice(&(maxp.len() as u32).to_be_bytes());
-
-    // Table data
-    otf.extend_from_slice(&head);
-    while otf.len() % 4 != 0 { otf.push(0); }
-    otf.extend_from_slice(&hhea);
-    while otf.len() % 4 != 0 { otf.push(0); }
-    otf.extend_from_slice(&maxp);
-    while otf.len() % 4 != 0 { otf.push(0); }
-    otf.extend_from_slice(cff_data);
-
-    otf
-}
-
-/// No-op outline builder for testing if a glyph has outlines.
-struct NullOutlineBuilder;
-impl ttf_parser::OutlineBuilder for NullOutlineBuilder {
-    fn move_to(&mut self, _x: f32, _y: f32) {}
-    fn line_to(&mut self, _x: f32, _y: f32) {}
-    fn quad_to(&mut self, _x1: f32, _y1: f32, _x: f32, _y: f32) {}
-    fn curve_to(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _x: f32, _y: f32) {}
-    fn close(&mut self) {}
-}
-
-/// Adapter from ttf_parser::OutlineBuilder to tiny_skia::PathBuilder.
-/// Converts font-unit coordinates to user-space coordinates, flipping Y
-/// (font Y-up → PDF Y-up, but we apply the base transform later which flips).
-struct GlyphPathBuilder {
-    pb: PathBuilder,
-    x_off: f32,
-    y_off: f32,
-    scale: f32,
-}
-
-impl GlyphPathBuilder {
-    fn tx(&self, x: f32) -> f32 {
-        self.x_off + x * self.scale
-    }
-    fn ty(&self, y: f32) -> f32 {
-        // Font coordinates are Y-up, PDF user space is also Y-up.
-        // The base transform handles the flip to pixel space.
-        self.y_off + y * self.scale
-    }
-}
-
-impl ttf_parser::OutlineBuilder for GlyphPathBuilder {
-    fn move_to(&mut self, x: f32, y: f32) {
-        self.pb.move_to(self.tx(x), self.ty(y));
-    }
-    fn line_to(&mut self, x: f32, y: f32) {
-        self.pb.line_to(self.tx(x), self.ty(y));
-    }
-    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        self.pb
-            .quad_to(self.tx(x1), self.ty(y1), self.tx(x), self.ty(y));
-    }
-    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        self.pb.cubic_to(
-            self.tx(x1),
-            self.ty(y1),
-            self.tx(x2),
-            self.ty(y2),
-            self.tx(x),
-            self.ty(y),
-        );
-    }
-    fn close(&mut self) {
-        self.pb.close();
-    }
-}
-
 /// Extract an f64 from operand at index, defaulting to 0.0.
 fn arg_f64(args: &[PdfObject], idx: usize) -> f64 {
     args.get(idx).and_then(|o| o.as_f64()).unwrap_or(0.0)
@@ -1534,94 +1116,6 @@ fn arg_f64(args: &[PdfObject], idx: usize) -> f64 {
 fn arg_f32(args: &[PdfObject], idx: usize) -> f32 {
     arg_f64(args, idx) as f32
 }
-
-/// Cached system font data for Standard 14 font rendering.
-/// Keyed by font category: "sans", "serif", "mono".
-static SYSTEM_FONT_CACHE: OnceLock<HashMap<&'static str, Vec<u8>>> = OnceLock::new();
-
-/// Try to load a system font matching a Standard 14 font name.
-/// Returns cached font data on success, None if no suitable system font found.
-fn system_font_for_standard14(name: &str) -> Option<&'static Vec<u8>> {
-    let cache = SYSTEM_FONT_CACHE.get_or_init(|| {
-        let mut map = HashMap::new();
-        // Try sans-serif fonts (Helvetica substitutes)
-        for path in SANS_FONT_PATHS {
-            if let Ok(data) = std::fs::read(path) {
-                map.insert("sans", data);
-                break;
-            }
-        }
-        // Try serif fonts (Times substitutes)
-        for path in SERIF_FONT_PATHS {
-            if let Ok(data) = std::fs::read(path) {
-                map.insert("serif", data);
-                break;
-            }
-        }
-        // Try monospace fonts (Courier substitutes)
-        for path in MONO_FONT_PATHS {
-            if let Ok(data) = std::fs::read(path) {
-                map.insert("mono", data);
-                break;
-            }
-        }
-        map
-    });
-
-    let category = match name {
-        n if n.starts_with("Courier") => "mono",
-        n if n.starts_with("Times") => "serif",
-        _ => "sans", // Helvetica and everything else
-    };
-    cache.get(category)
-}
-
-// System font search paths, in priority order.
-#[cfg(target_os = "macos")]
-const SANS_FONT_PATHS: &[&str] = &[
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/System/Library/Fonts/SFNSText.ttf",
-    "/Library/Fonts/Arial.ttf",
-];
-#[cfg(target_os = "macos")]
-const SERIF_FONT_PATHS: &[&str] = &[
-    "/System/Library/Fonts/Times.ttc",
-    "/Library/Fonts/Times New Roman.ttf",
-];
-#[cfg(target_os = "macos")]
-const MONO_FONT_PATHS: &[&str] = &[
-    "/System/Library/Fonts/Courier.ttc",
-    "/System/Library/Fonts/Menlo.ttc",
-    "/Library/Fonts/Courier New.ttf",
-];
-
-#[cfg(target_os = "linux")]
-const SANS_FONT_PATHS: &[&str] = &[
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans.ttf",
-];
-#[cfg(target_os = "linux")]
-const SERIF_FONT_PATHS: &[&str] = &[
-    "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-    "/usr/share/fonts/liberation-serif/LiberationSerif-Regular.ttf",
-];
-#[cfg(target_os = "linux")]
-const MONO_FONT_PATHS: &[&str] = &[
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
-];
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-const SANS_FONT_PATHS: &[&str] = &[];
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-const SERIF_FONT_PATHS: &[&str] = &[];
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-const MONO_FONT_PATHS: &[&str] = &[];
 
 #[cfg(test)]
 mod tests {

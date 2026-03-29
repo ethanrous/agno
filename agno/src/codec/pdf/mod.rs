@@ -1,17 +1,20 @@
-pub mod cmap;
-pub mod color;
-pub mod content;
+mod cmap;
+mod color;
+mod content;
 pub mod document;
-pub mod encoding;
-pub mod font;
-pub mod graphics;
-pub mod image;
-pub mod lexer;
-pub mod objects;
-pub mod render;
-pub mod stream;
-pub mod text;
-pub mod xref;
+mod encoding;
+mod font;
+mod glyph;
+mod graphics;
+mod image;
+mod lexer;
+mod objects;
+mod render;
+mod stream;
+mod system_fonts;
+mod text;
+mod util;
+mod xref;
 
 use std::error::Error;
 
@@ -43,6 +46,21 @@ pub fn render_pdf_page(
     let rgb = render::pixmap_to_rgb8(&pixmap);
 
     Ok((rgb, width, height, page_count))
+}
+
+/// Render a single page from an already-opened PDF document.
+///
+/// Avoids re-parsing the document when the caller already has a `PdfDocument`.
+pub fn render_pdf_page_from_doc(
+    doc: &document::PdfDocument,
+    page_index: usize,
+    scale: f32,
+) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
+    let pixmap = render::render_page(doc, page_index, scale)?;
+    let width = pixmap.width();
+    let height = pixmap.height();
+    let rgb = render::pixmap_to_rgb8(&pixmap);
+    Ok((rgb, width, height))
 }
 
 /// Get the number of pages in a PDF without rendering.

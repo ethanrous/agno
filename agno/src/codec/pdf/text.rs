@@ -12,7 +12,7 @@ use super::graphics::{GraphicsState, Matrix};
 
 /// Positioned glyph for rendering.
 #[derive(Debug)]
-pub struct PositionedGlyph {
+pub struct PositionedGlyph<'a> {
     pub x: f64,
     pub y: f64,
     pub char_code: u32,
@@ -21,29 +21,32 @@ pub struct PositionedGlyph {
     /// Effective font size in user space (Tf size * text matrix scale).
     pub font_size_user_space: f64,
     /// Font name for looking up the ResolvedFont during rendering.
-    pub font_name: Vec<u8>,
+    pub font_name: &'a [u8],
 }
 
 /// Process text operators (between BT and ET) and produce positioned glyphs.
-pub fn layout_text(
-    ops: &[Operator],
-    state: &GraphicsState,
+pub fn layout_text<'a>(
+    ops: &[&'a Operator],
+    state: &'a GraphicsState,
     fonts: &HashMap<Vec<u8>, ResolvedFont>,
-) -> Result<Vec<PositionedGlyph>, Box<dyn Error>> {
+) -> Result<Vec<PositionedGlyph<'a>>, Box<dyn Error>> {
     let mut glyphs = Vec::new();
     let mut tm = Matrix::identity();
     let mut tlm = Matrix::identity();
-    let mut font_name = state.font_name.clone();
+    let mut font_name: &'a [u8] = &state.font_name;
     let mut font_size = state.font_size;
     let mut char_spacing = state.char_spacing;
     let mut word_spacing = state.word_spacing;
     let mut text_leading = state.text_leading;
+    let mut horizontal_scaling = state.horizontal_scaling;
+    let mut text_rise = state.text_rise;
+    let mut text_rendering_mode = state.text_rendering_mode;
 
     for op in ops {
         match op.name.as_slice() {
             b"Tf" => {
                 if op.operands.len() >= 2 {
-                    font_name = op.operands[0].as_name().unwrap_or_default().to_vec();
+                    font_name = op.operands[0].as_name().unwrap_or_default();
                     font_size = op.operands[1].as_f64().unwrap_or(12.0);
                 }
             }
@@ -55,6 +58,15 @@ pub fn layout_text(
             }
             b"TL" => {
                 text_leading = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
+            }
+            b"Tz" => {
+                horizontal_scaling = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(100.0);
+            }
+            b"Ts" => {
+                text_rise = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
+            }
+            b"Tr" => {
+                text_rendering_mode = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0) as u8;
             }
             b"Td" => {
                 if op.operands.len() >= 2 {
@@ -119,10 +131,13 @@ pub fn layout_text(
                     show_string(
                         text,
                         &mut tm,
-                        &font_name,
+                        font_name,
                         font_size,
                         char_spacing,
                         word_spacing,
+                        horizontal_scaling,
+                        text_rise,
+                        text_rendering_mode,
                         fonts,
                         &mut glyphs,
                     );
@@ -135,10 +150,13 @@ pub fn layout_text(
                             show_string(
                                 text,
                                 &mut tm,
-                                &font_name,
+                                font_name,
                                 font_size,
                                 char_spacing,
                                 word_spacing,
+                                horizontal_scaling,
+                                text_rise,
+                                text_rendering_mode,
                                 fonts,
                                 &mut glyphs,
                             );
@@ -172,10 +190,13 @@ pub fn layout_text(
                     show_string(
                         text,
                         &mut tm,
-                        &font_name,
+                        font_name,
                         font_size,
                         char_spacing,
                         word_spacing,
+                        horizontal_scaling,
+                        text_rise,
+                        text_rendering_mode,
                         fonts,
                         &mut glyphs,
                     );
@@ -199,10 +220,13 @@ pub fn layout_text(
                         show_string(
                             text,
                             &mut tm,
-                            &font_name,
+                            font_name,
                             font_size,
                             char_spacing,
                             word_spacing,
+                            horizontal_scaling,
+                            text_rise,
+                            text_rendering_mode,
                             fonts,
                             &mut glyphs,
                         );
@@ -215,19 +239,23 @@ pub fn layout_text(
     Ok(glyphs)
 }
 
-fn show_string(
+fn show_string<'a>(
     text: &[u8],
     tm: &mut Matrix,
-    font_name: &[u8],
+    font_name: &'a [u8],
     font_size: f64,
     char_spacing: f64,
     word_spacing: f64,
+    horizontal_scaling: f64,
+    text_rise: f64,
+    text_rendering_mode: u8,
     fonts: &HashMap<Vec<u8>, ResolvedFont>,
-    glyphs: &mut Vec<PositionedGlyph>,
+    glyphs: &mut Vec<PositionedGlyph<'a>>,
 ) {
     let font = fonts.get(font_name);
     let tm_y_scale = (tm.b * tm.b + tm.d * tm.d).sqrt();
     let effective_font_size = font_size * tm_y_scale;
+    let th = horizontal_scaling / 100.0;
 
     let is_two_byte = matches!(font, Some(ResolvedFont::CIDFont { is_two_byte: true, .. }));
 
@@ -243,23 +271,26 @@ fn show_string(
             c
         };
 
-        let (tx, ty) = tm.transform_point(0.0, 0.0);
+        let (tx, ty) = tm.transform_point(0.0, text_rise);
         let w = font.map(|f| char_width_u32(f, code)).unwrap_or(500.0);
-        let mut advance_text = (w / 1000.0) * font_size + char_spacing;
+        let mut advance_text = ((w / 1000.0) * font_size + char_spacing) * th;
         if code == 0x20 {
-            advance_text += word_spacing;
+            advance_text += word_spacing * th;
         }
-        let (ax, ay) = tm.transform_point(advance_text, 0.0);
+        let (ax, ay) = tm.transform_point(advance_text, text_rise);
         let width_user = ((ax - tx) * (ax - tx) + (ay - ty) * (ay - ty)).sqrt();
 
-        glyphs.push(PositionedGlyph {
-            x: tx,
-            y: ty,
-            char_code: code,
-            width_user_space: width_user,
-            font_size_user_space: effective_font_size,
-            font_name: font_name.to_vec(),
-        });
+        // Rendering mode 3 = invisible: advance position but skip glyph output.
+        if text_rendering_mode != 3 {
+            glyphs.push(PositionedGlyph {
+                x: tx,
+                y: ty,
+                char_code: code,
+                width_user_space: width_user,
+                font_size_user_space: effective_font_size,
+                font_name,
+            });
+        }
         let advance_m = Matrix {
             a: 1.0,
             b: 0.0,
@@ -311,10 +342,11 @@ mod tests {
     fn simple_text_positioning() {
         let stream = b"BT /F1 12 Tf 100 700 Td (Hello) Tj ET";
         let text_ops = extract_text_ops(stream);
+        let text_op_refs: Vec<&Operator> = text_ops.iter().collect();
 
         let state = default_state();
         let fonts = make_fonts();
-        let glyphs = layout_text(&text_ops, &state, &fonts).unwrap();
+        let glyphs = layout_text(&text_op_refs, &state, &fonts).unwrap();
 
         assert_eq!(glyphs.len(), 5);
         assert!((glyphs[0].x - 100.0).abs() < 0.01);
@@ -326,10 +358,11 @@ mod tests {
     fn tj_array_with_kerning() {
         let stream = b"BT /F1 12 Tf 0 0 Td [(H) -100 (ello)] TJ ET";
         let text_ops = extract_text_ops(stream);
+        let text_op_refs: Vec<&Operator> = text_ops.iter().collect();
 
         let state = default_state();
         let fonts = make_fonts();
-        let glyphs = layout_text(&text_ops, &state, &fonts).unwrap();
+        let glyphs = layout_text(&text_op_refs, &state, &fonts).unwrap();
         assert_eq!(glyphs.len(), 5);
         let h_advance = glyphs[0].width_user_space;
         let kern = 100.0 / 1000.0 * 12.0;
@@ -345,10 +378,11 @@ mod tests {
     fn text_leading_newline() {
         let stream = b"BT /F1 12 Tf 14 TL 0 100 Td (Line1) Tj T* (Line2) Tj ET";
         let text_ops = extract_text_ops(stream);
+        let text_op_refs: Vec<&Operator> = text_ops.iter().collect();
 
         let state = default_state();
         let fonts = make_fonts();
-        let glyphs = layout_text(&text_ops, &state, &fonts).unwrap();
+        let glyphs = layout_text(&text_op_refs, &state, &fonts).unwrap();
 
         let line1_y = glyphs[0].y;
         let line2_start = glyphs
@@ -366,10 +400,11 @@ mod tests {
     fn empty_text_block() {
         let stream = b"BT ET";
         let text_ops = extract_text_ops(stream);
+        let text_op_refs: Vec<&Operator> = text_ops.iter().collect();
 
         let state = default_state();
         let fonts = HashMap::new();
-        let glyphs = layout_text(&text_ops, &state, &fonts).unwrap();
+        let glyphs = layout_text(&text_op_refs, &state, &fonts).unwrap();
         assert!(glyphs.is_empty());
     }
 }

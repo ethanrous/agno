@@ -13,32 +13,42 @@ pub fn load_pdf_page_from_bytes(
     max_dims: Option<(u32, u32)>,
     exif: ExifContext,
 ) -> Result<AgnoImage, Box<dyn Error>> {
-    let (rgb, width, height, page_count) =
-        crate::codec::pdf::render_pdf_page(data, page_index, scale_for_dims(data, page_index, max_dims))?;
+    let doc = crate::codec::pdf::document::PdfDocument::open(data)?;
+    let page_count = doc.page_count();
+    if page_index >= page_count {
+        return Err(format!(
+            "PDF page {page_index} not found (document has {page_count} pages)"
+        )
+        .into());
+    }
+    let scale = scale_for_dims_from_doc(&doc, page_index, max_dims);
+    let (rgb, width, height) =
+        crate::codec::pdf::render_pdf_page_from_doc(&doc, page_index, scale)?;
 
     let mut img = AgnoImage::new(rgb, width as u64, height as u64, exif);
     img.set_page_count(page_count as u64);
     Ok(img)
 }
 
-/// Compute the render scale from optional max dimensions using actual page size.
+/// Compute the render scale from an already-opened document.
 /// Falls back to 4.0 (288 DPI) for crisp vector rendering when no constraint is given.
 #[cfg(feature = "pdf")]
-fn scale_for_dims(data: &[u8], page_index: usize, max_dims: Option<(u32, u32)>) -> f32 {
+fn scale_for_dims_from_doc(
+    doc: &crate::codec::pdf::document::PdfDocument,
+    page_index: usize,
+    max_dims: Option<(u32, u32)>,
+) -> f32 {
     const DEFAULT_SCALE: f32 = 4.0;
     const MAX_SCALE: f32 = 8.0;
     match max_dims {
         Some((max_w, max_h)) => {
-            // Try to get actual page dimensions for accurate scaling
-            if let Ok(doc) = crate::codec::pdf::document::PdfDocument::open(data) {
-                if let Ok((x0, y0, x1, y1)) = doc.page_media_box(page_index) {
-                    let page_w = (x1 - x0).abs() as f32;
-                    let page_h = (y1 - y0).abs() as f32;
-                    if page_w > 0.0 && page_h > 0.0 {
-                        let sx = max_w as f32 / page_w;
-                        let sy = max_h as f32 / page_h;
-                        return sx.min(sy).min(MAX_SCALE);
-                    }
+            if let Ok((x0, y0, x1, y1)) = doc.page_media_box(page_index) {
+                let page_w = (x1 - x0).abs() as f32;
+                let page_h = (y1 - y0).abs() as f32;
+                if page_w > 0.0 && page_h > 0.0 {
+                    let sx = max_w as f32 / page_w;
+                    let sy = max_h as f32 / page_h;
+                    return sx.min(sy).min(MAX_SCALE);
                 }
             }
             DEFAULT_SCALE
