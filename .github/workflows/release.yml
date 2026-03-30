@@ -14,7 +14,7 @@ env:
 
 jobs:
   build:
-    name: Build (${{ matrix.target.platform }}${{ matrix.gpu.suffix }})
+    name: Build ${{ matrix.output.label }} (${{ matrix.target.platform }}${{ matrix.gpu.suffix }})
     runs-on: ${{ matrix.target.runner }}
     strategy:
       matrix:
@@ -35,6 +35,17 @@ jobs:
           - enabled: false
             features: "jpeg,png,webp,pdf"
             suffix: ""
+        output:
+          - label: library
+            cargo_flag: "--lib"
+            src_file: "libagno.a"
+            asset_prefix: "libagno-"
+            asset_suffix: ".a"
+          - label: executable
+            cargo_flag: "--bin agno"
+            src_file: "agno"
+            asset_prefix: "agno-"
+            asset_suffix: ""
 
     steps:
       - uses: actions/checkout@v6
@@ -55,9 +66,8 @@ jobs:
         with:
           key: ${{ matrix.target.triple }}${{ matrix.gpu.suffix }}
 
-      - name: Build static library
+      - name: Build
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_TRIPLE: ${{ matrix.target.triple }}
           AGNO_FEATURES: ${{ matrix.gpu.features }}
         run: |
@@ -65,13 +75,14 @@ jobs:
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
           fi
-          ./build/sh/build-agno.bash libagno.a
+          cargo build --release ${{ matrix.output.cargo_flag }} --no-default-features --features "${AGNO_FEATURES}" --target "${TARGET_TRIPLE}"
+          cp "target/${TARGET_TRIPLE}/release/${{ matrix.output.src_file }}" artifact
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: libagno-${{ matrix.target.platform }}${{ matrix.gpu.suffix }}.a
-          path: libagno.a
+          name: ${{ matrix.output.asset_prefix }}${{ matrix.target.platform }}${{ matrix.gpu.suffix }}${{ matrix.output.asset_suffix }}
+          path: artifact
 
   release:
     name: Create Release
@@ -89,9 +100,9 @@ jobs:
       - name: Prepare assets
         run: |
           mkdir -p release
-          for dir in artifacts/libagno-*.a; do
+          for dir in artifacts/*; do
             name="$(basename "$dir")"
-            cp "$dir/libagno.a" "release/$name"
+            cp "$dir/artifact" "release/$name"
           done
           ls -lh release/
 
@@ -100,6 +111,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" release/*.a \
+          gh release create "$TAG" release/* \
             --title "$TAG" \
             --generate-notes
