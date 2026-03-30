@@ -3,6 +3,8 @@ pub mod hevc;
 pub mod isobmff;
 #[cfg(feature = "jpeg")]
 pub mod jpeg;
+#[cfg(feature = "pdf")]
+pub mod pdf;
 #[cfg(feature = "png")]
 pub mod png;
 #[cfg(feature = "webp")]

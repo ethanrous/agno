@@ -58,7 +58,7 @@ Three crates in a Cargo workspace:
 
 - **No runtime dynamic library dependencies**: The default build must produce a fully self-contained static library with zero `.so`/`.dylib` requirements at runtime. All C/C++ dependencies (e.g., pdfium) must be statically linked. Opt-in feature flags may offer dynamic linking as an alternative, but the default must always be self-contained. This is critical — agno produces `libagno.a` consumed via CGO, and runtime deps break deployment (Docker, cross-compilation).
 - **GPU-first with CPU fallback**: All GPU operations return `Option` — caller always provides CPU fallback path. GPU unavailability is normal (Docker, CI), not an error.
-- **Native codecs**: JPEG, WebP, PNG, HEIF/HEVC decoders/encoders are all implemented in pure Rust in `codec/` (no C library dependencies). HEIC images are decoded natively via the HEIF container parser and HEVC still-image decoder. This keeps the static library fully self-contained.
+- **Native codecs**: JPEG, WebP, PNG, HEIF/HEVC, and PDF decoders/encoders are all implemented in pure Rust in `codec/` (no C library dependencies). HEIC images are decoded natively via the HEIF container parser and HEVC still-image decoder. PDF rendering uses a native parser + tiny-skia rasterizer (replaced hayro/pdfium). This keeps the static library fully self-contained.
 - **C FFI with dual allocators**: `AgnoImage` buffers use `libc::malloc()` for C/Go interop; `AgnoBuffer` (in-memory encoding) uses Rust's allocator. Each has its own free function. See `.claude/rules/ffi-interface.md`.
 - **Format auto-detection**: `agno_image/load/load.rs` detects format by magic bytes, not file extension.
 - **EXIF-driven transforms**: Orientation, white balance, color matrix all sourced from EXIF metadata.
@@ -71,8 +71,7 @@ Three crates in a Cargo workspace:
 | `jpeg` | yes | Native JPEG encode/decode |
 | `png` | yes | Native PNG decode |
 | `webp` | yes | Native WebP encode/decode |
-| `pdf` | yes | PDF rendering via hayro (pure Rust) |
-| `pdf-pdfium` | no | Adds pdfium (C++, static) fallback for PDFs hayro can't render |
+| `pdf` | yes | Native PDF rasterizer (tiny-skia + ttf-parser) |
 | `cabac-trace` | no | Debug: log every CABAC decision for HEVC decoder comparison |
 
 HEIF/HEVC decoding is always compiled (not feature-gated). The `heic-experimental-decoder` flag in Cargo.toml is a legacy artifact with no effect.

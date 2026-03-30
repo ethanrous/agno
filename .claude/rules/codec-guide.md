@@ -62,8 +62,11 @@ Not all codecs have both (PNG is decode-only).
 | WebP | `decode_webp()` | `encode_webp()` | Encoding (`webp_gpu.rs`) | `Box<dyn Error>` |
 | HEVC | `decode_hevc_still()` | — | — | `anyhow::Result` |
 | HEIF | `parse_heif()` | — | — | `anyhow::Result` |
+| PDF | `render_pdf_page()` | — | — | `Box<dyn Error>` |
 
 HEIF is a container format (parses to tile bitstreams), HEVC is the actual image decoder. They work together: `parse_heif()` → `decode_hevc_still()` per tile → stitch grid. Both are pure Rust with no C library dependencies (libheif/libde265 were used as reference implementations during development but are not runtime dependencies).
+
+PDF uses a native parser (objects, xref tables/streams, page tree) with tiny-skia for 2D rasterization and ttf-parser for font parsing. Replaced hayro/pdfium. Supports linearized PDFs, per-page rendering, paths, shapes, colors, embedded images, and text with Standard 14 font metrics. `render_pdf_page()` takes `(data, page_index, scale)` and returns `(rgb8, width, height, page_count)` — differs from the standard codec pattern because PDFs are multi-page and vector (require scale).
 
 See `hevc-decoder.md` for decoder status (61.7 dB Y PSNR), remaining issues, and debugging methodology.
 
