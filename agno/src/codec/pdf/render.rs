@@ -240,25 +240,25 @@ fn execute_content_stream(
                 })
                 .collect();
 
-            if !text_ops.is_empty() {
-                if let Ok(glyphs) = layout_text(&text_ops, state.current(), fonts) {
-                    let transform = combined_transform(&state.current().ctm, ctx.base);
-                    let color = &state.current().fill_color;
-                    let alpha = state.current().fill_alpha;
+            if !text_ops.is_empty()
+                && let Ok(glyphs) = layout_text(&text_ops, state.current(), fonts)
+            {
+                let transform = combined_transform(&state.current().ctm, ctx.base);
+                let color = &state.current().fill_color;
+                let alpha = state.current().fill_alpha;
 
-                    let mask_ref = clip_mask.as_ref();
-                    for glyph in &glyphs {
-                        render_glyph(
-                            glyph,
-                            fonts,
-                            font_data_cache,
-                            color,
-                            alpha,
-                            transform,
-                            pixmap,
-                            mask_ref,
-                        );
-                    }
+                let mask_ref = clip_mask.as_ref();
+                for glyph in &glyphs {
+                    render_glyph(
+                        glyph,
+                        fonts,
+                        font_data_cache,
+                        color,
+                        alpha,
+                        transform,
+                        pixmap,
+                        mask_ref,
+                    );
                 }
             }
             // Skip past ET
@@ -313,6 +313,7 @@ fn combined_transform(ctm: &Matrix, base: Transform) -> Transform {
     base.pre_concat(ctm_t)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_operator(
     op: &Operator,
     state: &mut GraphicsStateStack,
@@ -658,29 +659,26 @@ fn execute_operator(
 
         // --- XObject ---
         b"Do" if !args.is_empty() => {
-            if ctx.depth < MAX_XOBJECT_DEPTH {
-                if let Some(xobj_name) = args[0].as_name() {
-                    render_xobject(xobj_name, state, pixmap, ctx, clip_mask.as_ref());
-                }
+            if ctx.depth < MAX_XOBJECT_DEPTH
+                && let Some(xobj_name) = args[0].as_name()
+            {
+                render_xobject(xobj_name, state, pixmap, ctx, clip_mask.as_ref());
             }
         }
 
         // --- Extended graphics state ---
         b"gs" if !args.is_empty() => {
-            if let Some(gs_name) = args[0].as_name() {
-                if let Some(ext_gs) = ctx.resources.get(b"ExtGState") {
-                    if let Ok(gs_dict) = ctx.doc.resolve_value(ext_gs) {
-                        if let Some(entry) = gs_dict.get(gs_name) {
-                            if let Ok(gs_obj) = ctx.doc.resolve_value(entry) {
-                                if let Some(ca) = gs_obj.get_f64(b"ca") {
-                                    state.current_mut().fill_alpha = ca.clamp(0.0, 1.0);
-                                }
-                                if let Some(big_ca) = gs_obj.get_f64(b"CA") {
-                                    state.current_mut().stroke_alpha = big_ca.clamp(0.0, 1.0);
-                                }
-                            }
-                        }
-                    }
+            if let Some(gs_name) = args[0].as_name()
+                && let Some(ext_gs) = ctx.resources.get(b"ExtGState")
+                && let Ok(gs_dict) = ctx.doc.resolve_value(ext_gs)
+                && let Some(entry) = gs_dict.get(gs_name)
+                && let Ok(gs_obj) = ctx.doc.resolve_value(entry)
+            {
+                if let Some(ca) = gs_obj.get_f64(b"ca") {
+                    state.current_mut().fill_alpha = ca.clamp(0.0, 1.0);
+                }
+                if let Some(big_ca) = gs_obj.get_f64(b"CA") {
+                    state.current_mut().stroke_alpha = big_ca.clamp(0.0, 1.0);
                 }
             }
         }
@@ -818,7 +816,7 @@ fn render_inline_mask(
     let b = (color.b.clamp(0.0, 1.0) * 255.0) as u8;
 
     let mut rgba = vec![0u8; img_w as usize * img_h as usize * 4];
-    let row_bytes = (img_w as usize + 7) / 8;
+    let row_bytes = (img_w as usize).div_ceil(8);
 
     for y in 0..img_h as usize {
         for x in 0..img_w as usize {
@@ -956,25 +954,25 @@ fn parse_image_colorspace(
             _ => None,
         };
     }
-    if let Some(arr) = cs_obj.as_array() {
-        if let Some(name) = arr.first().and_then(|v| v.as_name_str()) {
-            return match name {
-                "ICCBased" => {
-                    let n = arr
-                        .get(1)
-                        .and_then(|r| doc.resolve_value(r).ok())
-                        .and_then(|o| o.get_i64(b"N"))
-                        .unwrap_or(3) as u8;
-                    Some(super::color::ColorSpace::ICCBased { num_components: n })
-                }
-                "CalRGB" => Some(super::color::ColorSpace::CalRGB),
-                "CalGray" => Some(super::color::ColorSpace::CalGray),
-                "DeviceRGB" => Some(super::color::ColorSpace::DeviceRGB),
-                "DeviceGray" => Some(super::color::ColorSpace::DeviceGray),
-                "DeviceCMYK" => Some(super::color::ColorSpace::DeviceCMYK),
-                _ => None,
-            };
-        }
+    if let Some(arr) = cs_obj.as_array()
+        && let Some(name) = arr.first().and_then(|v| v.as_name_str())
+    {
+        return match name {
+            "ICCBased" => {
+                let n = arr
+                    .get(1)
+                    .and_then(|r| doc.resolve_value(r).ok())
+                    .and_then(|o| o.get_i64(b"N"))
+                    .unwrap_or(3) as u8;
+                Some(super::color::ColorSpace::ICCBased { num_components: n })
+            }
+            "CalRGB" => Some(super::color::ColorSpace::CalRGB),
+            "CalGray" => Some(super::color::ColorSpace::CalGray),
+            "DeviceRGB" => Some(super::color::ColorSpace::DeviceRGB),
+            "DeviceGray" => Some(super::color::ColorSpace::DeviceGray),
+            "DeviceCMYK" => Some(super::color::ColorSpace::DeviceCMYK),
+            _ => None,
+        };
     }
     None
 }
@@ -1021,18 +1019,18 @@ fn render_xobject(
 
     // 4. Save state, apply Form matrix
     state.save();
-    if let Some(matrix_arr) = xobj.get(b"Matrix").and_then(|m| m.as_array()) {
-        if matrix_arr.len() >= 6 {
-            let m = Matrix {
-                a: matrix_arr[0].as_f64().unwrap_or(1.0),
-                b: matrix_arr[1].as_f64().unwrap_or(0.0),
-                c: matrix_arr[2].as_f64().unwrap_or(0.0),
-                d: matrix_arr[3].as_f64().unwrap_or(1.0),
-                e: matrix_arr[4].as_f64().unwrap_or(0.0),
-                f: matrix_arr[5].as_f64().unwrap_or(0.0),
-            };
-            state.current_mut().ctm = m.concat(&state.current().ctm);
-        }
+    if let Some(matrix_arr) = xobj.get(b"Matrix").and_then(|m| m.as_array())
+        && matrix_arr.len() >= 6
+    {
+        let m = Matrix {
+            a: matrix_arr[0].as_f64().unwrap_or(1.0),
+            b: matrix_arr[1].as_f64().unwrap_or(0.0),
+            c: matrix_arr[2].as_f64().unwrap_or(0.0),
+            d: matrix_arr[3].as_f64().unwrap_or(1.0),
+            e: matrix_arr[4].as_f64().unwrap_or(0.0),
+            f: matrix_arr[5].as_f64().unwrap_or(0.0),
+        };
+        state.current_mut().ctm = m.concat(&state.current().ctm);
     }
 
     // 5. Get Form resources (or inherit from parent)
@@ -1127,6 +1125,7 @@ fn cmyk_to_color(c: f64, m: f64, y: f64, k: f64) -> Color {
 
 /// Finalize the current path, optionally fill and/or stroke, apply pending clip,
 /// then reset the path builder.
+#[allow(clippy::too_many_arguments)]
 fn paint_path(
     state: &mut GraphicsStateStack,
     pixmap: &mut Pixmap,
@@ -1167,11 +1166,11 @@ fn paint_path(
     }
 
     // Apply pending clip if set.
-    if let Some(rule) = clip_pending.take() {
-        if let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) {
-            mask.fill_path(&path, rule, true, transform);
-            *clip_mask = Some(mask);
-        }
+    if let Some(rule) = clip_pending.take()
+        && let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height())
+    {
+        mask.fill_path(&path, rule, true, transform);
+        *clip_mask = Some(mask);
     }
 }
 
@@ -1231,19 +1230,21 @@ fn stroke_path(
     );
     paint.anti_alias = true;
 
-    let mut stroke = Stroke::default();
-    stroke.width = gs.line_width as f32;
-    stroke.line_cap = match gs.line_cap {
-        1 => LineCap::Round,
-        2 => LineCap::Square,
-        _ => LineCap::Butt,
+    let mut stroke = Stroke {
+        width: gs.line_width as f32,
+        line_cap: match gs.line_cap {
+            1 => LineCap::Round,
+            2 => LineCap::Square,
+            _ => LineCap::Butt,
+        },
+        line_join: match gs.line_join {
+            1 => LineJoin::Round,
+            2 => LineJoin::Bevel,
+            _ => LineJoin::Miter,
+        },
+        miter_limit: gs.miter_limit as f32,
+        ..Default::default()
     };
-    stroke.line_join = match gs.line_join {
-        1 => LineJoin::Round,
-        2 => LineJoin::Bevel,
-        _ => LineJoin::Miter,
-    };
-    stroke.miter_limit = gs.miter_limit as f32;
     if !gs.dash_array.is_empty() {
         let dashes: Vec<f32> = gs.dash_array.iter().map(|&d| d as f32).collect();
         stroke.dash = StrokeDash::new(dashes, gs.dash_phase as f32);
@@ -1270,10 +1271,10 @@ fn resolve_fonts_from_resources(
         None => return fonts,
     };
     for (name, font_ref) in dict {
-        if let Ok(font_obj) = doc.resolve_value(font_ref) {
-            if let Ok(font) = super::font::resolve_font(&font_obj, doc) {
-                fonts.insert(name.clone(), font);
-            }
+        if let Ok(font_obj) = doc.resolve_value(font_ref)
+            && let Ok(font) = super::font::resolve_font(&font_obj, doc)
+        {
+            fonts.insert(name.clone(), font);
         }
     }
     fonts

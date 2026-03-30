@@ -280,19 +280,21 @@ const STANDARD: [Option<&str>; 256] = [
 /// Also handles the algorithmic `uniXXXX` pattern (e.g., "uni00C4" → U+00C4).
 pub fn agl_name_to_unicode(name: &str) -> Option<char> {
     // Handle uniXXXX algorithmic pattern (ISO 32000-1 Annex D)
-    if name.starts_with("uni") && name.len() == 7 {
-        if let Ok(cp) = u32::from_str_radix(&name[3..], 16) {
-            return char::from_u32(cp);
-        }
+    if name.starts_with("uni")
+        && name.len() == 7
+        && let Ok(cp) = u32::from_str_radix(&name[3..], 16)
+    {
+        return char::from_u32(cp);
     }
     // Handle uXXXX-uYYYY (ligature) or uXXXXX (supplementary) — return first code point
     if name.starts_with('u') && name.len() >= 5 && name.as_bytes()[1].is_ascii_hexdigit() {
         let hex_part = name.split('-').next().unwrap_or(name);
         let hex = &hex_part[1..];
-        if hex.len() >= 4 && hex.len() <= 6 {
-            if let Ok(cp) = u32::from_str_radix(hex, 16) {
-                return char::from_u32(cp);
-            }
+        if hex.len() >= 4
+            && hex.len() <= 6
+            && let Ok(cp) = u32::from_str_radix(hex, 16)
+        {
+            return char::from_u32(cp);
         }
     }
     // Binary search in sorted AGL table
@@ -400,20 +402,19 @@ pub fn resolve_glyph_by_name(face: &ttf_parser::Face, name: &str) -> Option<ttf_
     let num_glyphs = face.number_of_glyphs();
     for i in 0..num_glyphs {
         let gid = ttf_parser::GlyphId(i);
-        if let Some(glyph_name) = face.glyph_name(gid) {
-            if glyph_name == name {
-                return Some(gid);
-            }
+        if let Some(glyph_name) = face.glyph_name(gid)
+            && glyph_name == name
+        {
+            return Some(gid);
         }
     }
 
     // Strategy 2: AGL name → Unicode → cmap lookup.
-    if let Some(unicode_char) = agl_name_to_unicode(name) {
-        if let Some(gid) = face.glyph_index(unicode_char) {
-            if gid.0 != 0 {
-                return Some(gid);
-            }
-        }
+    if let Some(unicode_char) = agl_name_to_unicode(name)
+        && let Some(gid) = face.glyph_index(unicode_char)
+        && gid.0 != 0
+    {
+        return Some(gid);
     }
 
     None

@@ -294,7 +294,7 @@ fn parse_xref_stream(
     };
     let params: Vec<Option<&PdfObject>> = match dict_obj.get(b"DecodeParms") {
         Some(p) if matches!(p, PdfObject::Dictionary(_)) => vec![Some(p)],
-        Some(PdfObject::Array(arr)) => arr.iter().map(|o| Some(o)).collect(),
+        Some(PdfObject::Array(arr)) => arr.iter().map(Some).collect(),
         _ => filters.iter().map(|_| None).collect(),
     };
     let decompressed = super::stream::decode_stream(raw_stream, &filters, &params)?;

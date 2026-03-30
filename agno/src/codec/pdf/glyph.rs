@@ -46,6 +46,7 @@ pub(super) fn build_font_data_cache(
 /// Render a single positioned glyph onto the pixmap. Uses embedded font outlines
 /// via ttf-parser when available, falls back to filled rectangles for Standard 14
 /// fonts without system font substitutes.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_glyph(
     glyph: &PositionedGlyph,
     fonts: &HashMap<Vec<u8>, ResolvedFont>,
@@ -102,30 +103,30 @@ pub(super) fn render_glyph(
             ..
         }) => {
             let face_idx = super::font::ttc_face_index(name);
-            if let Some(font_bytes) = cached_data {
-                if let Some(path) = glyph_outline_path_cached(
+            if let Some(font_bytes) = cached_data
+                && let Some(path) = glyph_outline_path_cached(
                     font_bytes,
                     glyph,
                     0,
                     encoding,
                     to_unicode.as_ref(),
                     face_idx,
-                ) {
-                    pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                    return;
-                }
-            } else if let Some(sys_data) = system_font_for_standard14(name) {
-                if let Some(path) = glyph_outline_path_cached(
+                )
+            {
+                pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+                return;
+            } else if let Some(sys_data) = system_font_for_standard14(name)
+                && let Some(path) = glyph_outline_path_cached(
                     sys_data,
                     glyph,
                     0,
                     encoding,
                     to_unicode.as_ref(),
                     face_idx,
-                ) {
-                    pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                    return;
-                }
+                )
+            {
+                pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+                return;
             }
         }
         Some(ResolvedFont::CIDFont {
@@ -143,39 +144,33 @@ pub(super) fn render_glyph(
                 return;
             }
             // Try CIDToGIDMap-aware resolution using cached data.
-            if !font_bytes.is_empty() {
-                if let Ok(face) = ttf_parser::Face::parse(font_bytes, 0) {
-                    let gid = match cid_to_gid {
-                        super::font::CIDToGIDMap::Identity => {
-                            ttf_parser::GlyphId(glyph.char_code as u16)
-                        }
-                        super::font::CIDToGIDMap::Explicit(map) => {
-                            let cid = glyph.char_code as usize;
-                            ttf_parser::GlyphId(map.get(cid).copied().unwrap_or(0))
-                        }
-                    };
-                    if gid.0 != 0 {
-                        let units_per_em = face.units_per_em() as f64;
-                        if units_per_em > 0.0 {
-                            let scale = glyph.font_size_user_space / units_per_em;
-                            let mut builder = GlyphPathBuilder {
-                                pb: PathBuilder::new(),
-                                x_off: glyph.x as f32,
-                                y_off: glyph.y as f32,
-                                scale: scale as f32,
-                            };
-                            if face.outline_glyph(gid, &mut builder).is_some() {
-                                if let Some(path) = builder.pb.finish() {
-                                    pixmap.fill_path(
-                                        &path,
-                                        &paint,
-                                        FillRule::Winding,
-                                        transform,
-                                        mask,
-                                    );
-                                    return;
-                                }
-                            }
+            if !font_bytes.is_empty()
+                && let Ok(face) = ttf_parser::Face::parse(font_bytes, 0)
+            {
+                let gid = match cid_to_gid {
+                    super::font::CIDToGIDMap::Identity => {
+                        ttf_parser::GlyphId(glyph.char_code as u16)
+                    }
+                    super::font::CIDToGIDMap::Explicit(map) => {
+                        let cid = glyph.char_code as usize;
+                        ttf_parser::GlyphId(map.get(cid).copied().unwrap_or(0))
+                    }
+                };
+                if gid.0 != 0 {
+                    let units_per_em = face.units_per_em() as f64;
+                    if units_per_em > 0.0 {
+                        let scale = glyph.font_size_user_space / units_per_em;
+                        let mut builder = GlyphPathBuilder {
+                            pb: PathBuilder::new(),
+                            x_off: glyph.x as f32,
+                            y_off: glyph.y as f32,
+                            scale: scale as f32,
+                        };
+                        if face.outline_glyph(gid, &mut builder).is_some()
+                            && let Some(path) = builder.pb.finish()
+                        {
+                            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+                            return;
                         }
                     }
                 }
@@ -219,10 +214,10 @@ fn is_space_glyph(glyph: &PositionedGlyph, fonts: &HashMap<Vec<u8>, ResolvedFont
         ResolvedFont::Standard14 { to_unicode, .. } => to_unicode.as_ref(),
         ResolvedFont::CIDFont { to_unicode, .. } => to_unicode.as_ref(),
     };
-    if let Some(tu) = to_unicode {
-        if let Some(ch) = tu.get(glyph.char_code) {
-            return ch == ' ' || ch == '\u{00A0}';
-        }
+    if let Some(tu) = to_unicode
+        && let Some(ch) = tu.get(glyph.char_code)
+    {
+        return ch == ' ' || ch == '\u{00A0}';
     }
 
     // Check Differences encoding for "space" name.
@@ -231,10 +226,10 @@ fn is_space_glyph(glyph: &PositionedGlyph, fonts: &HashMap<Vec<u8>, ResolvedFont
         ResolvedFont::Standard14 { encoding, .. } => encoding,
         ResolvedFont::CIDFont { .. } => return false,
     };
-    if let Encoding::Differences { diffs, .. } = encoding {
-        if let Some(name) = diffs.get(&(glyph.char_code as u8)) {
-            return name == "space" || name == "nbspace";
-        }
+    if let Encoding::Differences { diffs, .. } = encoding
+        && let Some(name) = diffs.get(&(glyph.char_code as u8))
+    {
+        return name == "space" || name == "nbspace";
     }
 
     false
@@ -298,12 +293,12 @@ fn resolve_glyph_id(
     };
 
     // Strategy 0: ToUnicode CMap (highest priority).
-    if let Some(tu) = to_unicode {
-        if let Some(unicode_char) = tu.get(code) {
-            let gid = face.glyph_index(unicode_char);
-            if gid.is_some() && gid != Some(ttf_parser::GlyphId(0)) {
-                return gid;
-            }
+    if let Some(tu) = to_unicode
+        && let Some(unicode_char) = tu.get(code)
+    {
+        let gid = face.glyph_index(unicode_char);
+        if gid.is_some() && gid != Some(ttf_parser::GlyphId(0)) {
+            return gid;
         }
     }
 
@@ -313,12 +308,11 @@ fn resolve_glyph_id(
             if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
                 return Some(gid);
             }
-            if let Some(unicode_char) = agl_name_to_unicode(glyph_name) {
-                if let Some(gid) = face.glyph_index(unicode_char) {
-                    if gid.0 != 0 {
-                        return Some(gid);
-                    }
-                }
+            if let Some(unicode_char) = agl_name_to_unicode(glyph_name)
+                && let Some(gid) = face.glyph_index(unicode_char)
+                && gid.0 != 0
+            {
+                return Some(gid);
             }
         }
         let name = match base.as_str() {
@@ -326,10 +320,10 @@ fn resolve_glyph_id(
             "StandardEncoding" => standard_name(code as u8),
             _ => winansi_name(code as u8),
         };
-        if let Some(glyph_name) = name {
-            if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
-                return Some(gid);
-            }
+        if let Some(glyph_name) = name
+            && let Some(gid) = resolve_glyph_by_name(face, glyph_name)
+        {
+            return Some(gid);
         }
     }
 
@@ -340,10 +334,10 @@ fn resolve_glyph_id(
             "StandardEncoding" => standard_name(code as u8),
             _ => winansi_name(code as u8),
         };
-        if let Some(glyph_name) = name {
-            if let Some(gid) = resolve_glyph_by_name(face, glyph_name) {
-                return Some(gid);
-            }
+        if let Some(glyph_name) = name
+            && let Some(gid) = resolve_glyph_by_name(face, glyph_name)
+        {
+            return Some(gid);
         }
     }
 

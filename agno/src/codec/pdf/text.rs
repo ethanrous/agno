@@ -244,6 +244,7 @@ pub fn layout_text<'a>(
     Ok(glyphs)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_string<'a>(
     text: &[u8],
     tm: &mut Matrix,

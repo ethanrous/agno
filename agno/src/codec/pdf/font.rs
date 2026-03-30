@@ -78,6 +78,7 @@ impl CIDWidths {
 }
 
 /// Get width of a character code in 1/1000 text space units.
+#[allow(dead_code)]
 pub fn char_width(font: &ResolvedFont, code: u8) -> f64 {
     char_width_u32(font, code as u32)
 }

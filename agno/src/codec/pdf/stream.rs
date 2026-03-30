@@ -82,11 +82,11 @@ fn apply_png_predictor(
         .and_then(|p| p.get_i64(b"BitsPerComponent"))
         .unwrap_or(8) as usize;
 
-    let row_bytes = (columns * colors * bpc + 7) / 8;
-    let bytes_per_pixel = (colors * bpc + 7) / 8;
+    let row_bytes = (columns * colors * bpc).div_ceil(8);
+    let bytes_per_pixel = (colors * bpc).div_ceil(8);
     let stride = 1 + row_bytes; // filter byte + row data
 
-    if data.len() % stride != 0 {
+    if !data.len().is_multiple_of(stride) {
         return Err(format!(
             "PNG predictor: data length {} not divisible by stride {}",
             data.len(),
@@ -288,8 +288,8 @@ fn decode_ascii85(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         }
         let out_bytes = group_len - 1;
         // Pad remaining slots with 84
-        for j in group_len..5 {
-            group[j] = 84;
+        for item in group.iter_mut().skip(group_len) {
+            *item = 84;
         }
         let val = decode_ascii85_group(&group);
         out.extend_from_slice(&val[..out_bytes]);

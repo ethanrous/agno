@@ -72,7 +72,7 @@ pub fn decode_image_xobject(
             // Sub-byte packing, row-padded to byte boundary
             let mask = (1u8 << bits_per_component) - 1;
             let row_bits = width as usize * num_components * bits_per_component as usize;
-            let row_bytes = (row_bits + 7) / 8;
+            let row_bytes = row_bits.div_ceil(8);
 
             for row in 0..height as usize {
                 let row_start = row * row_bytes;

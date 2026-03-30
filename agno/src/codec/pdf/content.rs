@@ -222,7 +222,7 @@ fn compute_inline_data_length(
     };
 
     let row_bits = w * components * bpc;
-    let row_bytes = (row_bits + 7) / 8;
+    let row_bytes = row_bits.div_ceil(8);
     Some(row_bytes * h)
 }
 
@@ -243,23 +243,23 @@ fn expand_inline_key(key: &[u8]) -> Vec<u8> {
 
 /// Expand abbreviated inline image values (color space names, filter names).
 fn expand_inline_value(key: &[u8], val: PdfObject) -> PdfObject {
-    if key == b"ColorSpace" || key == b"Filter" {
-        if let Some(name) = val.as_name_str() {
-            let expanded = match name {
-                "G" => "DeviceGray",
-                "RGB" => "DeviceRGB",
-                "CMYK" => "DeviceCMYK",
-                "AHx" => "ASCIIHexDecode",
-                "A85" => "ASCII85Decode",
-                "LZW" => "LZWDecode",
-                "Fl" => "FlateDecode",
-                "RL" => "RunLengthDecode",
-                "CCF" => "CCITTFaxDecode",
-                "DCT" => "DCTDecode",
-                _ => return val,
-            };
-            return PdfObject::Name(expanded.as_bytes().to_vec());
-        }
+    if (key == b"ColorSpace" || key == b"Filter")
+        && let Some(name) = val.as_name_str()
+    {
+        let expanded = match name {
+            "G" => "DeviceGray",
+            "RGB" => "DeviceRGB",
+            "CMYK" => "DeviceCMYK",
+            "AHx" => "ASCIIHexDecode",
+            "A85" => "ASCII85Decode",
+            "LZW" => "LZWDecode",
+            "Fl" => "FlateDecode",
+            "RL" => "RunLengthDecode",
+            "CCF" => "CCITTFaxDecode",
+            "DCT" => "DCTDecode",
+            _ => return val,
+        };
+        return PdfObject::Name(expanded.as_bytes().to_vec());
     }
     val
 }

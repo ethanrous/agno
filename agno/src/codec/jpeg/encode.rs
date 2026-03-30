@@ -201,7 +201,7 @@ fn encode_420(
 
             let mut blocks = [[0i16; 64]; 6];
 
-            for blk in 0..4 {
+            for (blk, block) in blocks.iter_mut().enumerate().take(4) {
                 let bx = px + (blk % 2) * 8;
                 let by = py + (blk / 2) * 8;
                 let mut dct_block = [0i32; 64];
@@ -214,7 +214,7 @@ fn encode_420(
                 }
                 fdct8x8(&mut dct_block);
                 quantize_block(&mut dct_block, &luma_qt);
-                blocks[blk] = zigzag_reorder(&dct_block);
+                *block = zigzag_reorder(&dct_block);
             }
 
             let mut cb_block = [0i32; 64];

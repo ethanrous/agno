@@ -101,6 +101,7 @@ impl PdfObject {
     }
 
     /// Returns the (dict, data) pair if this is a Stream.
+    #[allow(clippy::type_complexity)]
     pub fn as_stream(&self) -> Option<(&HashMap<Vec<u8>, PdfObject>, &[u8])> {
         match self {
             PdfObject::Stream { dict, data } => Some((dict, data)),

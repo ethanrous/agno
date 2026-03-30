@@ -22,6 +22,7 @@ use std::error::Error;
 ///
 /// `page_index` is 0-based. `scale` controls resolution (1.0 = 72 DPI, 2.0 = 144 DPI).
 /// Returns (rgb8_data, width, height, page_count).
+#[allow(clippy::type_complexity)]
 pub fn render_pdf_page(
     data: &[u8],
     page_index: usize,

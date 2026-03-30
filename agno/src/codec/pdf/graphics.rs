@@ -59,7 +59,7 @@ impl Color {
         }
     }
 
-    pub fn white() -> Self {
+    pub fn _white() -> Self {
         Color {
             r: 1.0,
             g: 1.0,

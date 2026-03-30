@@ -162,10 +162,10 @@ impl<'a> PdfDocument<'a> {
             let kw_pos = lexer.position();
             if !lexer.at_end() {
                 let maybe_kw = lexer.read_keyword();
-                if let Ok(kw) = maybe_kw {
-                    if kw == b"stream" {
-                        return self.extract_stream(value, kw_pos, depth);
-                    }
+                if let Ok(kw) = maybe_kw
+                    && kw == b"stream"
+                {
+                    return self.extract_stream(value, kw_pos, depth);
                 }
             }
             // Not a stream — restore position (doesn't matter, but clean).
@@ -244,6 +244,7 @@ impl<'a> PdfDocument<'a> {
 
     /// Collect /Filter and /DecodeParms from a stream dictionary.
     /// Returns (filter_name_bytes_list, params_list).
+    #[allow(clippy::type_complexity)]
     fn collect_filters(
         &self,
         dict: &std::collections::HashMap<Vec<u8>, PdfObject>,

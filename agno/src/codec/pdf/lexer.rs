@@ -58,7 +58,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// Advance past the current byte and return it.
-    fn consume_byte(&mut self) -> Option<u8> {
+    fn _consume_byte(&mut self) -> Option<u8> {
         let b = self.data.get(self.pos).copied()?;
         self.pos += 1;
         Some(b)
@@ -345,7 +345,7 @@ impl<'a> Lexer<'a> {
             if b == b'>' {
                 self.pos += 1; // consume '>'
                 // Convert nibble pairs to bytes; odd trailing nibble treated as if padded with 0.
-                let mut bytes = Vec::with_capacity((nibbles.len() + 1) / 2);
+                let mut bytes = Vec::with_capacity(nibbles.len().div_ceil(2));
                 let mut i = 0;
                 while i < nibbles.len() {
                     let hi = nibbles[i];
