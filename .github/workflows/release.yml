@@ -1,10 +1,17 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.0.6)"
+        required: true
+        type: string
+      create_release:
+        description: "Create git tags and GitHub release"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -86,11 +93,27 @@ jobs:
 
   release:
     name: Create Release
-    if: github.event_name == 'push'
+    if: inputs.create_release
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Resolve version tag
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+        run: |
+          # Prepend v if missing
+          TAG="${RAW_VERSION#v}"
+          TAG="v${TAG}"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "GO_TAG=bindings/go/agno/${TAG}" >> "$GITHUB_ENV"
+
+      - name: Create and push tags
+        run: |
+          git tag "$TAG"
+          git tag "$GO_TAG"
+          git push origin "$TAG" "$GO_TAG"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -109,7 +132,6 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
         run: |
           gh release create "$TAG" release/* \
             --title "$TAG" \
