@@ -104,7 +104,3 @@ AgnoImage → .to_jpeg(quality) → Vec<u8>     (native JPEG encoder)
           → .to_webp(quality) → Vec<u8>     (native WebP encoder)
           → write to file
 ```
-
-## Integration with Weblens
-
-Agno is a git submodule of the Weblens project. The parent builds it via `just build` (or directly via `build/sh/build-agno.bash`), producing `libagno.a`. The Go backend links this via CGO. The FFI boundary is defined in `lib_interface.rs`; C declarations are consumed directly by Go's CGO bindings in the parent project (no separate `.h` header file in this repo).
