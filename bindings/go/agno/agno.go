@@ -2,7 +2,6 @@
 package agno
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../../lib
 #cgo LDFLAGS: -lagno -lstdc++ -lm
 #cgo darwin LDFLAGS: -framework Metal -framework QuartzCore -framework CoreGraphics
 #include "agno.h"
