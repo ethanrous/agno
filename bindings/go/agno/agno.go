@@ -18,7 +18,7 @@ import (
 // Image represents an image loaded via the agno library.
 // Must be closed after use. Implements io.Closer.
 type Image struct {
-	img   *C.struct_AgnoImage
+	img   *C.AgnoImage
 	mu    sync.Mutex
 	freed bool
 }
