@@ -18,37 +18,37 @@ struct AgnoImage {
 };
 
 
-typedef struct ExifData {
+typedef struct {
   uint8_t *data;
   uintptr_t len;
   uint16_t typ;
 } ExifData;
 
-typedef struct GpsCoordinates {
+typedef struct {
   double lat;
   double lon;
   uint8_t valid;
 } GpsCoordinates;
 
-typedef struct AgnoBuffer {
+typedef struct {
   uint8_t *data;
   uintptr_t len;
 } AgnoBuffer;
 
-AgnoImage *load_image_from_path(const uint8_t *path, uintptr_t len);
+AgnoImage *load_image_from_path(const char *path, uintptr_t len);
 
 #if defined(AGNO_WEBP)
-void write_agno_image_to_webp(const uint8_t *path, uintptr_t len, AgnoImage *img);
+void write_agno_image_to_webp(const char *path, uintptr_t len, AgnoImage *img);
 #endif
 
 AgnoImage *resize_image(AgnoImage *img, uintptr_t new_width, uintptr_t new_height);
 
-struct ExifData get_exif_value(const AgnoImage *img, uint16_t img_tag);
+ExifData get_exif_value(const AgnoImage *img, uint16_t img_tag);
 
-struct GpsCoordinates get_gps_coordinates(const AgnoImage *img);
+GpsCoordinates get_gps_coordinates(const AgnoImage *img);
 
 #if defined(AGNO_JPEG)
-struct AgnoBuffer write_agno_image_to_jpeg_buffer(const AgnoImage *img, uint8_t quality);
+AgnoBuffer write_agno_image_to_jpeg_buffer(const AgnoImage *img, uint8_t quality);
 #endif
 
 #if defined(AGNO_PDF)
@@ -57,14 +57,14 @@ struct AgnoBuffer write_agno_image_to_jpeg_buffer(const AgnoImage *img, uint8_t 
  * `page_num` is 0-based. `max_width`/`max_height` of 0 uses default 2x scale.
  * Returns null on error.
  */
-AgnoImage *load_pdf_page(const uint8_t *path,
+AgnoImage *load_pdf_page(const char *path,
                          uintptr_t len,
                          uintptr_t page_num,
                          uint32_t max_width,
                          uint32_t max_height);
 #endif
 
-void free_agno_buffer(struct AgnoBuffer buf);
+void free_agno_buffer(AgnoBuffer buf);
 
 void free_agno_image(const AgnoImage *img);
 
