@@ -8,14 +8,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-struct AgnoImage {
+typedef struct {
   unsigned char *data;
   size_t len;
   uint64_t width;
   uint64_t height;
   uint64_t page_count;
   /* Remaining fields are Rust-internal — do not access from C */
-};
+} AgnoImage;
 
 
 typedef struct {
