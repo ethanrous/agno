@@ -27,6 +27,12 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
+      - name: Check C header is up-to-date
+        run: |
+          cargo install cbindgen
+          cbindgen --crate agno --config agno/cbindgen.toml --output /tmp/agno.h 2>/dev/null
+          diff bindings/go/agno/agno.h /tmp/agno.h || (echo "bindings/go/agno/agno.h is out of date — run 'just header'" && exit 1)
+
   test:
     name: Test
     runs-on: ubuntu-latest

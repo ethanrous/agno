@@ -1,4 +1,4 @@
-use std::{fs::File, ptr::null_mut};
+use std::{ffi::c_char, fs::File, ptr::null_mut};
 
 use tracing::{debug, info, warn};
 
@@ -50,16 +50,16 @@ impl CString {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn load_image_from_path(path: *const u8, len: usize) -> *mut AgnoImage {
-    let wrapped_path = CString::new(path, len);
+pub extern "C" fn load_image_from_path(path: *const c_char, len: usize) -> *mut AgnoImage {
+    let wrapped_path = CString::new(path as *const u8, len);
 
     ok_or_null!(load_agno_image_from_file(wrapped_path.as_str()))
 }
 
 #[cfg(feature = "webp")]
 #[unsafe(no_mangle)]
-pub extern "C" fn write_agno_image_to_webp(path: *const u8, len: usize, img: &mut AgnoImage) {
-    let wrapped_path = CString::new(path, len);
+pub extern "C" fn write_agno_image_to_webp(path: *const c_char, len: usize, img: &mut AgnoImage) {
+    let wrapped_path = CString::new(path as *const u8, len);
     let mut file = File::create(wrapped_path.as_str()).unwrap();
 
     let _ = write_webp_from_rgb8_writer(
@@ -166,13 +166,13 @@ pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) 
 #[cfg(feature = "pdf")]
 #[unsafe(no_mangle)]
 pub extern "C" fn load_pdf_page(
-    path: *const u8,
+    path: *const c_char,
     len: usize,
     page_num: usize,
     max_width: u32,
     max_height: u32,
 ) -> *mut AgnoImage {
-    let wrapped_path = CString::new(path, len);
+    let wrapped_path = CString::new(path as *const u8, len);
     let max_dims = if max_width > 0 && max_height > 0 {
         Some((max_width, max_height))
     } else {

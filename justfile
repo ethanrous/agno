@@ -104,6 +104,10 @@ check:
 run *args:
     cargo run -p agno -- {{args}}
 
+# Generate C header for Go bindings from Rust FFI exports
+header:
+    cbindgen --crate agno --config agno/cbindgen.toml --output bindings/go/agno/agno.h 2>/dev/null
+
 # Clean build artifacts
 clean:
     cargo clean
