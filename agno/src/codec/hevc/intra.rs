@@ -95,7 +95,7 @@ fn read_sample(pic: &Picture, comp: Component, sx: i32, sy: i32) -> Option<i16> 
     if pic.has_metadata() {
         let (luma_x, luma_y) = match comp {
             Component::Y => (ux, uy),
-            Component::Cb | Component::Cr => (ux * 2, uy * 2),
+            Component::Cb | Component::Cr => (ux * pic.sub_width_c(), uy * pic.sub_height_c()),
         };
         if !pic.is_reconstructed(luma_x, luma_y) {
             return None;
@@ -115,11 +115,7 @@ fn read_sample(pic: &Picture, comp: Component, sx: i32, sy: i32) -> Option<i16> 
 fn plane_dims(pic: &Picture, comp: Component) -> (u32, u32, u32) {
     match comp {
         Component::Y => (pic.width, pic.height, pic.stride_y),
-        Component::Cb | Component::Cr => {
-            let cw = pic.width.div_ceil(2);
-            let ch = pic.height.div_ceil(2);
-            (cw, ch, pic.stride_c)
-        }
+        Component::Cb | Component::Cr => (pic.chroma_width(), pic.chroma_height(), pic.stride_c),
     }
 }
 
@@ -447,10 +443,10 @@ pub fn predict_intra(
         "Invalid block size {size}; must be 4, 8, 16, or 32"
     );
 
-    // For chroma components in 4:2:0, convert luma coordinates to chroma
+    // Convert luma coordinates to chroma using subsampling factors
     let (bx, by, bs) = match component {
         Component::Y => (x, y, size),
-        Component::Cb | Component::Cr => (x / 2, y / 2, size / 2),
+        Component::Cb | Component::Cr => (x / pic.sub_width_c(), y / pic.sub_height_c(), size / 2),
     };
     // Ensure chroma block size is at least 2 (minimum meaningful size)
     let bs = bs.max(2);
@@ -661,7 +657,7 @@ mod tests {
     /// Helper: create a picture and fill a region of the luma plane so that
     /// reference samples around a block at `(bx, by)` of size `n` are available.
     fn make_test_pic(width: u32, height: u32) -> Picture {
-        Picture::new(width, height, 8)
+        Picture::new(width, height, 8, 1)
     }
 
     fn fill_luma_constant(pic: &mut Picture, val: i16) {

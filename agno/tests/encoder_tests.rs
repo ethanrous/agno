@@ -618,3 +618,164 @@ mod pdf_tests {
         std::fs::remove_file(&path).ok();
     }
 }
+
+// --- PDF annotation tests ---
+
+#[test]
+#[cfg(feature = "pdf")]
+fn pdf_annotation_renders() {
+    let pdf = make_pdf_with_annotation();
+    let (rgb, w, _h, _) = agno::codec::pdf::render_pdf_page(&pdf, 0, 1.0).unwrap();
+
+    // The annotation rect is at [60 30 90 70] on a 100x100 page.
+    // Center of annotation in PDF coords: (75, 50). Pixel Y = 100 - 50 = 50.
+    let px = 75usize;
+    let py = 50usize;
+    let idx = (py * w as usize + px) * 3;
+    assert!(
+        rgb[idx] < 50,
+        "Red should be low at annotation, got {}",
+        rgb[idx]
+    );
+    assert!(
+        rgb[idx + 1] < 50,
+        "Green should be low at annotation, got {}",
+        rgb[idx + 1]
+    );
+    assert!(
+        rgb[idx + 2] > 200,
+        "Blue should be high at annotation, got {}",
+        rgb[idx + 2]
+    );
+}
+
+#[cfg(feature = "pdf")]
+fn make_pdf_with_annotation() -> Vec<u8> {
+    use std::io::Write;
+    let mut pdf = Vec::new();
+    write!(pdf, "%PDF-1.4\n").unwrap();
+    let o1 = pdf.len();
+    write!(pdf, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n").unwrap();
+    let o2 = pdf.len();
+    write!(
+        pdf,
+        "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+    )
+    .unwrap();
+    let o3 = pdf.len();
+    write!(pdf, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Annots [5 0 R] >>\nendobj\n").unwrap();
+    let content = b"1 0 0 rg 0 0 100 100 re f";
+    let o4 = pdf.len();
+    write!(pdf, "4 0 obj\n<< /Length {} >>\nstream\n", content.len()).unwrap();
+    pdf.extend_from_slice(content);
+    write!(pdf, "\nendstream\nendobj\n").unwrap();
+    let o5 = pdf.len();
+    write!(pdf, "5 0 obj\n<< /Type /Annot /Subtype /Widget /Rect [60 30 90 70] /AP << /N 6 0 R >> >>\nendobj\n").unwrap();
+    let ap_content = b"0 0 1 rg 0 0 30 40 re f";
+    let o6 = pdf.len();
+    write!(
+        pdf,
+        "6 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 30 40] /Length {} >>\nstream\n",
+        ap_content.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(ap_content);
+    write!(pdf, "\nendstream\nendobj\n").unwrap();
+    let xref = pdf.len();
+    write!(pdf, "xref\n0 7\n").unwrap();
+    write!(pdf, "0000000000 65535 f \n").unwrap();
+    for off in [o1, o2, o3, o4, o5, o6] {
+        write!(pdf, "{:010} 00000 n \n", off).unwrap();
+    }
+    write!(
+        pdf,
+        "trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    )
+    .unwrap();
+    pdf
+}
+
+#[test]
+#[cfg(feature = "pdf")]
+fn pdf_checkbox_annotation_renders_checked_state() {
+    let pdf = make_pdf_with_checkbox();
+    let (rgb, w, _h, _) = agno::codec::pdf::render_pdf_page(&pdf, 0, 1.0).unwrap();
+
+    // Checked checkbox at [0 0 30 30] should render green (from /Yes appearance).
+    // PDF coords center: (15, 15). Pixel Y = 100 - 15 = 85.
+    let px = 15usize;
+    let py = 85usize;
+    let idx = (py * w as usize + px) * 3;
+    assert!(
+        rgb[idx] < 50,
+        "Red should be low for checked checkbox, got {}",
+        rgb[idx]
+    );
+    assert!(
+        rgb[idx + 1] > 200,
+        "Green should be high for checked checkbox, got {}",
+        rgb[idx + 1]
+    );
+    assert!(
+        rgb[idx + 2] < 50,
+        "Blue should be low for checked checkbox, got {}",
+        rgb[idx + 2]
+    );
+}
+
+#[cfg(feature = "pdf")]
+fn make_pdf_with_checkbox() -> Vec<u8> {
+    use std::io::Write;
+    let mut pdf = Vec::new();
+    write!(pdf, "%PDF-1.4\n").unwrap();
+    let o1 = pdf.len();
+    write!(pdf, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n").unwrap();
+    let o2 = pdf.len();
+    write!(
+        pdf,
+        "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+    )
+    .unwrap();
+    let o3 = pdf.len();
+    write!(pdf, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Annots [5 0 R] >>\nendobj\n").unwrap();
+    let o4 = pdf.len();
+    write!(
+        pdf,
+        "4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n"
+    )
+    .unwrap();
+    let o5 = pdf.len();
+    write!(pdf, "5 0 obj\n<< /Type /Annot /Subtype /Widget /FT /Btn /Rect [0 0 30 30] /AS /Yes /AP << /N << /Yes 6 0 R /Off 7 0 R >> >> >>\nendobj\n").unwrap();
+    let yes_ap = b"0 1 0 rg 0 0 30 30 re f";
+    let o6 = pdf.len();
+    write!(
+        pdf,
+        "6 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 30 30] /Length {} >>\nstream\n",
+        yes_ap.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(yes_ap);
+    write!(pdf, "\nendstream\nendobj\n").unwrap();
+    let off_ap = b"1 1 1 rg 0 0 30 30 re f";
+    let o7 = pdf.len();
+    write!(
+        pdf,
+        "7 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 30 30] /Length {} >>\nstream\n",
+        off_ap.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(off_ap);
+    write!(pdf, "\nendstream\nendobj\n").unwrap();
+    let xref = pdf.len();
+    write!(pdf, "xref\n0 8\n").unwrap();
+    write!(pdf, "0000000000 65535 f \n").unwrap();
+    for off in [o1, o2, o3, o4, o5, o6, o7] {
+        write!(pdf, "{:010} 00000 n \n", off).unwrap();
+    }
+    write!(
+        pdf,
+        "trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    )
+    .unwrap();
+    pdf
+}

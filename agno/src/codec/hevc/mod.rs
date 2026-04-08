@@ -57,7 +57,11 @@ pub fn decode_hevc_still(hvcc_data: &[u8], bitstream: &[u8]) -> Result<Picture> 
         sps.pic_width_in_luma_samples,
         sps.pic_height_in_luma_samples,
         bit_depth,
+        sps._chroma_format_idc,
     );
+    if sps.matrix_coefficients != 0 {
+        pic.matrix_coeffs = sps.matrix_coefficients;
+    }
     pic.init_metadata(sps.min_cb_log2_size(), slice_qp);
 
     for (nal_type, slice_data) in &slice_nals {

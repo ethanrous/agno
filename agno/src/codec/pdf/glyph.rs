@@ -44,8 +44,8 @@ pub(super) fn build_font_data_cache(
 }
 
 /// Render a single positioned glyph onto the pixmap. Uses embedded font outlines
-/// via ttf-parser when available, falls back to filled rectangles for Standard 14
-/// fonts without system font substitutes.
+/// via ttf-parser when available. If no outline can be resolved, the glyph is
+/// silently skipped (no visible output) to avoid fallback rectangle artifacts.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_glyph(
     glyph: &PositionedGlyph,
@@ -58,7 +58,7 @@ pub(super) fn render_glyph(
     mask: Option<&Mask>,
 ) {
     let font_size = glyph.font_size_user_space;
-    if font_size < 0.5 {
+    if font_size.abs() < 0.5 {
         return;
     }
 
@@ -93,7 +93,6 @@ pub(super) fn render_glyph(
                 0,
             ) {
                 pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                return;
             }
         }
         Some(ResolvedFont::Standard14 {
@@ -114,7 +113,6 @@ pub(super) fn render_glyph(
                 )
             {
                 pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                return;
             } else if let Some(sys_data) = system_font_for_standard14(name)
                 && let Some(path) = glyph_outline_path_cached(
                     sys_data,
@@ -126,7 +124,6 @@ pub(super) fn render_glyph(
                 )
             {
                 pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                return;
             }
         }
         Some(ResolvedFont::CIDFont {
@@ -164,13 +161,13 @@ pub(super) fn render_glyph(
                             pb: PathBuilder::new(),
                             x_off: glyph.x as f32,
                             y_off: glyph.y as f32,
-                            scale: scale as f32,
+                            x_scale: scale.abs() as f32,
+                            y_scale: scale as f32,
                         };
                         if face.outline_glyph(gid, &mut builder).is_some()
                             && let Some(path) = builder.pb.finish()
                         {
                             pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-                            return;
                         }
                     }
                 }
@@ -178,61 +175,6 @@ pub(super) fn render_glyph(
         }
         None => {}
     }
-
-    // Don't draw fallback rectangles for space/whitespace characters.
-    if glyph.char_code == 0x20 || glyph.width_user_space < 0.5 || is_space_glyph(glyph, fonts) {
-        return;
-    }
-
-    // Fallback: filled rectangle.
-    let glyph_w = (glyph.width_user_space * 0.7) as f32;
-    let glyph_h = (font_size * 0.75) as f32;
-    let x = glyph.x as f32;
-    let y = (glyph.y - font_size * 0.2) as f32;
-
-    let mut pb = PathBuilder::new();
-    pb.move_to(x, y);
-    pb.line_to(x + glyph_w, y);
-    pb.line_to(x + glyph_w, y + glyph_h);
-    pb.line_to(x, y + glyph_h);
-    pb.close();
-    if let Some(path) = pb.finish() {
-        pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
-    }
-}
-
-/// Check if a glyph maps to a space character (no visible outline expected).
-fn is_space_glyph(glyph: &PositionedGlyph, fonts: &HashMap<Vec<u8>, ResolvedFont>) -> bool {
-    let font = match fonts.get(glyph.font_name) {
-        Some(f) => f,
-        None => return false,
-    };
-
-    // Check ToUnicode mapping.
-    let to_unicode = match font {
-        ResolvedFont::Embedded { to_unicode, .. } => to_unicode.as_ref(),
-        ResolvedFont::Standard14 { to_unicode, .. } => to_unicode.as_ref(),
-        ResolvedFont::CIDFont { to_unicode, .. } => to_unicode.as_ref(),
-    };
-    if let Some(tu) = to_unicode
-        && let Some(ch) = tu.get(glyph.char_code)
-    {
-        return ch == ' ' || ch == '\u{00A0}';
-    }
-
-    // Check Differences encoding for "space" name.
-    let encoding = match font {
-        ResolvedFont::Embedded { encoding, .. } => encoding,
-        ResolvedFont::Standard14 { encoding, .. } => encoding,
-        ResolvedFont::CIDFont { .. } => return false,
-    };
-    if let Encoding::Differences { diffs, .. } = encoding
-        && let Some(name) = diffs.get(&(glyph.char_code as u8))
-    {
-        return name == "space" || name == "nbspace";
-    }
-
-    false
 }
 
 /// Build a glyph path using pre-prepared font data (already OTF-wrapped if needed).
@@ -273,7 +215,8 @@ fn build_glyph_path(
         pb: PathBuilder::new(),
         x_off: glyph.x as f32,
         y_off: glyph.y as f32,
-        scale: scale as f32,
+        x_scale: scale.abs() as f32,
+        y_scale: scale as f32,
     };
 
     face.outline_glyph(glyph_id, &mut builder)?;
@@ -530,17 +473,16 @@ struct GlyphPathBuilder {
     pb: PathBuilder,
     x_off: f32,
     y_off: f32,
-    scale: f32,
+    x_scale: f32,
+    y_scale: f32,
 }
 
 impl GlyphPathBuilder {
     fn tx(&self, x: f32) -> f32 {
-        self.x_off + x * self.scale
+        self.x_off + x * self.x_scale
     }
     fn ty(&self, y: f32) -> f32 {
-        // Font coordinates are Y-up, PDF user space is also Y-up.
-        // The base transform handles the flip to pixel space.
-        self.y_off + y * self.scale
+        self.y_off + y * self.y_scale
     }
 }
 

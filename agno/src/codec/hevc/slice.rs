@@ -517,7 +517,7 @@ fn decode_cu_qp_delta(cab: &mut CabacReader) -> i32 {
 }
 
 // Scan type for coefficient scan order (H.265 Section 7.4.9.11)
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum ScanType {
     Diag,
     Horiz,
@@ -1223,9 +1223,9 @@ fn decode_cu(
     if !is_nxn {
         let lm = decode_intra_mode(cab, pic, x0, y0, sps.ctb_log2_size());
         pic.set_intra_mode(x0, y0, size, lm);
-        let cm = decode_chroma_mode(cab, lm);
+        let cm = decode_chroma_mode(cab, lm, sps._chroma_format_idc == 2);
         decode_tt(
-            cab, pic, sps, pps, x0, y0, log2, 0, lm, cm, qps, cb_qp, cr_qp, true, true,
+            cab, pic, sps, pps, x0, y0, log2, 0, lm, cm, qps, cb_qp, cr_qp, true, true, true, true,
         );
     } else {
         // H.265 Section 7.3.8.5: PART_NxN — all prev_intra_luma_pred_flag bins
@@ -1269,15 +1269,29 @@ fn decode_cu(
         }
 
         // Step 3: Decode ONE chroma mode (H.265: for chroma_format_idc != 3)
-        let cm_single = decode_chroma_mode(cab, lm[0]);
+        let cm_single = decode_chroma_mode(cab, lm[0], sps._chroma_format_idc == 2);
         let cm = [cm_single; 4];
         // cbf_cb/cbf_cr decoded at CU level (H.265 7.3.8.7)
+        // Spec order (matching transform_tree): cb[0], cb[1](4:2:2), cr[0], cr[1](4:2:2)
+        // For NxN, IntraSplitFlag forces split at depth=0, so
+        // cbf2 condition (!split || log2==3) = (!true || log2==3).
+        let is_422 = sps._chroma_format_idc == 2;
         let cbf_cb = if log2 > 2 {
             cab.decode_decision(CTX_CBF_CHROMA) != 0
         } else {
             false
         };
+        let cbf_cb2 = if is_422 && log2 == 3 {
+            cab.decode_decision(CTX_CBF_CHROMA) != 0
+        } else {
+            false
+        };
         let cbf_cr = if log2 > 2 {
+            cab.decode_decision(CTX_CBF_CHROMA) != 0
+        } else {
+            false
+        };
+        let cbf_cr2 = if is_422 && log2 == 3 {
             cab.decode_decision(CTX_CBF_CHROMA) != 0
         } else {
             false
@@ -1303,6 +1317,8 @@ fn decode_cu(
                 cr_qp,
                 cbf_cb,
                 cbf_cr,
+                cbf_cb2,
+                cbf_cr2,
                 x0,
                 y0,
                 i as u8,
@@ -1384,14 +1400,187 @@ fn decode_intra_mode(cab: &mut CabacReader, pic: &Picture, x0: u32, y0: u32, ctb
     }
 }
 
-fn decode_chroma_mode(cab: &mut CabacReader, luma: u8) -> u8 {
-    if cab.decode_decision(CTX_CHROMA_PRED) == 0 {
+fn decode_chroma_mode(cab: &mut CabacReader, luma: u8, is_422: bool) -> u8 {
+    let mode_idx = if cab.decode_decision(CTX_CHROMA_PRED) == 0 {
         luma
     } else {
         let table = [0u8, 26, 10, 1];
         let mapped = table[cab.decode_bypass_bits(2) as usize & 3];
         // H.265 8.4.3: if mapped mode == luma mode, substitute mode 34
         if mapped == luma { 34 } else { mapped }
+    };
+    // H.265 Table 8-2: ChromaArrayType=2 uses a different mode mapping
+    if is_422 {
+        const TAB_MODE_IDX: [u8; 35] = [
+            0, 1, 2, 2, 2, 2, 3, 5, 7, 8, 10, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 23, 24, 24,
+            25, 25, 26, 27, 27, 28, 28, 29, 29, 30, 31,
+        ];
+        TAB_MODE_IDX[mode_idx as usize]
+    } else {
+        mode_idx
+    }
+}
+
+/// H.265 7.3.8.11 deferred chroma: when TT splits to log2<=2, chroma residual
+/// is deferred and decoded here using the parent block's base coordinates.
+/// Equivalent to FFmpeg's blk_idx==3 path in hls_transform_unit.
+#[allow(clippy::too_many_arguments)]
+fn decode_deferred_chroma(
+    cab: &mut CabacReader,
+    pic: &mut Picture,
+    sps: &Sps,
+    pps: &Pps,
+    x_base: u32,
+    y_base: u32,
+    child_log2: u32,
+    cm: u8,
+    qps: &mut QpState,
+    cb_qp: i32,
+    cr_qp: i32,
+    cbf_cb: bool,
+    cbf_cr: bool,
+    cbf_cb2: bool,
+    cbf_cr2: bool,
+) {
+    let is_422 = sps._chroma_format_idc == 2;
+    let bd = pic.bit_depth;
+    let max_val = (1i32 << bd) - 1;
+    // Chroma block uses the child's log2 as the residual block size
+    let cl = child_log2;
+    let cs = 1u32 << cl;
+    // Parent block is 2x the child size
+    let parent_size = cs * 2;
+    let cx = x_base / 2;
+    let cy = y_base / pic.sub_height_c();
+    let cw = pic.chroma_width();
+    let ch = pic.chroma_height();
+    let qp = qps.current_qp;
+    let cb_qp_actual = chroma_qp(qp + cb_qp);
+    let cr_qp_actual = chroma_qp(qp + cr_qp);
+    let sign_data_hiding = pps.sign_data_hiding_enabled_flag;
+    let scaling_list = pps.scaling_list.as_ref().or(sps.scaling_list.as_ref());
+    let scan_chroma = derive_scan_type(child_log2, cm);
+    let num_chroma_sub = if is_422 { 2u32 } else { 1u32 };
+    let cbf_cb_pair = [cbf_cb, cbf_cb2];
+    let cbf_cr_pair = [cbf_cr, cbf_cr2];
+
+    // Cb sub-blocks
+    for sub_idx in 0..num_chroma_sub {
+        let cy_sub = cy + sub_idx * cs;
+        if cbf_cb_pair[sub_idx as usize] {
+            let ts_cb = if pps.transform_skip_enabled_flag && cl <= 2 {
+                cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
+            } else {
+                false
+            };
+            let luma_y_for_pred = y_base + sub_idx * cs;
+            let pred_cb = predict_intra(
+                pic,
+                x_base,
+                luma_y_for_pred,
+                parent_size,
+                cm,
+                Component::Cb,
+                false,
+            );
+            let mut c = vec![0i32; (cs * cs) as usize];
+            decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
+            transform::dequantize(&mut c, cb_qp_actual, bd, cl, scaling_list, 1);
+            if ts_cb {
+                transform::transform_skip(&mut c, cs, bd);
+            } else {
+                transform::inverse_transform(&mut c, cs, false, bd);
+            }
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        let i = (py * cs + px) as usize;
+                        pic.set_cb(sx, sy, (pred_cb[i] as i32 + c[i]).clamp(0, max_val) as i16);
+                    }
+                }
+            }
+        } else {
+            let luma_y_for_pred = y_base + sub_idx * cs;
+            let pred_cb = predict_intra(
+                pic,
+                x_base,
+                luma_y_for_pred,
+                parent_size,
+                cm,
+                Component::Cb,
+                false,
+            );
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        pic.set_cb(sx, sy, pred_cb[(py * cs + px) as usize]);
+                    }
+                }
+            }
+        }
+    }
+    // Cr sub-blocks
+    for sub_idx in 0..num_chroma_sub {
+        let cy_sub = cy + sub_idx * cs;
+        if cbf_cr_pair[sub_idx as usize] {
+            let ts_cr = if pps.transform_skip_enabled_flag && cl <= 2 {
+                cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
+            } else {
+                false
+            };
+            let luma_y_for_pred = y_base + sub_idx * cs;
+            let pred_cr = predict_intra(
+                pic,
+                x_base,
+                luma_y_for_pred,
+                parent_size,
+                cm,
+                Component::Cr,
+                false,
+            );
+            let mut c = vec![0i32; (cs * cs) as usize];
+            decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
+            transform::dequantize(&mut c, cr_qp_actual, bd, cl, scaling_list, 2);
+            if ts_cr {
+                transform::transform_skip(&mut c, cs, bd);
+            } else {
+                transform::inverse_transform(&mut c, cs, false, bd);
+            }
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        let i = (py * cs + px) as usize;
+                        pic.set_cr(sx, sy, (pred_cr[i] as i32 + c[i]).clamp(0, max_val) as i16);
+                    }
+                }
+            }
+        } else {
+            let luma_y_for_pred = y_base + sub_idx * cs;
+            let pred_cr = predict_intra(
+                pic,
+                x_base,
+                luma_y_for_pred,
+                parent_size,
+                cm,
+                Component::Cr,
+                false,
+            );
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        pic.set_cr(sx, sy, pred_cr[(py * cs + px) as usize]);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1412,27 +1601,15 @@ fn decode_tt(
     cr_qp: i32,
     parent_cbf_cb: bool,
     parent_cbf_cr: bool,
+    parent_cbf_cb2: bool,
+    parent_cbf_cr2: bool,
 ) {
     if x0 >= sps.pic_width_in_luma_samples || y0 >= sps.pic_height_in_luma_samples {
         return;
     }
-    // H.265 Section 7.3.8.7: cbf_cb/cbf_cr are read at the TOP of transform_tree,
-    // BEFORE the split decision, when log2TrafoSize > 2 and parent cbf allows it.
-    let cbf_cb = if log2 > 2 && (depth == 0 || parent_cbf_cb) {
-        cab.decode_decision(CTX_CBF_CHROMA + depth.min(3) as usize) != 0
-    } else if log2 <= 2 {
-        parent_cbf_cb
-    } else {
-        false
-    };
-    let cbf_cr = if log2 > 2 && (depth == 0 || parent_cbf_cr) {
-        cab.decode_decision(CTX_CBF_CHROMA + depth.min(3) as usize) != 0
-    } else if log2 <= 2 {
-        parent_cbf_cr
-    } else {
-        false
-    };
+    let is_422 = sps._chroma_format_idc == 2;
 
+    // H.265 7.3.8.7: split_transform_flag decoded FIRST
     let split = if log2 > sps.max_tb_log2_size() {
         true
     } else if log2 <= sps.min_tb_log2_size() || depth >= sps.max_transform_hierarchy_depth_intra {
@@ -1441,12 +1618,62 @@ fn decode_tt(
         cab.decode_decision(CTX_SPLIT_TF + (5u32.saturating_sub(log2)).min(2) as usize) != 0
     };
 
+    // H.265 7.3.8.7: cbf_cb/cbf_cr decoded AFTER split.
+    // Spec order: cbf_cb[0], cbf_cb[1] (4:2:2), cbf_cr[0], cbf_cr[1] (4:2:2).
+    let cbf_cb = if log2 > 2 && (depth == 0 || parent_cbf_cb) {
+        cab.decode_decision(CTX_CBF_CHROMA + depth.min(3) as usize) != 0
+    } else if log2 <= 2 {
+        parent_cbf_cb
+    } else {
+        false
+    };
+
+    // 4:2:2: cbf_cb[1] immediately after cbf_cb[0], conditioned on (!split || log2 == 3)
+    let cbf_cb2 = if is_422 && (!split || log2 == 3) {
+        if log2 > 2 && (depth == 0 || parent_cbf_cb2) {
+            cab.decode_decision(CTX_CBF_CHROMA + depth.min(3) as usize) != 0
+        } else if log2 <= 2 {
+            parent_cbf_cb2
+        } else {
+            false
+        }
+    } else if is_422 && log2 <= 2 {
+        parent_cbf_cb2
+    } else {
+        false
+    };
+
+    let cbf_cr = if log2 > 2 && (depth == 0 || parent_cbf_cr) {
+        cab.decode_decision(CTX_CBF_CHROMA + depth.min(3) as usize) != 0
+    } else if log2 <= 2 {
+        parent_cbf_cr
+    } else {
+        false
+    };
+
+    // 4:2:2: cbf_cr[1] immediately after cbf_cr[0]
+    let cbf_cr2 = if is_422 && (!split || log2 == 3) {
+        if log2 > 2 && (depth == 0 || parent_cbf_cr2) {
+            cab.decode_decision(CTX_CBF_CHROMA + depth.min(3) as usize) != 0
+        } else if log2 <= 2 {
+            parent_cbf_cr2
+        } else {
+            false
+        }
+    } else if is_422 && log2 <= 2 {
+        parent_cbf_cr2
+    } else {
+        false
+    };
+
     if split {
         let h = 1u32 << (log2 - 1);
         let d = depth + 1;
         let l = log2 - 1;
+        // All four children receive the same parent cbf arrays (H.265 7.3.8.7)
         decode_tt(
-            cab, pic, sps, pps, x0, y0, l, d, lm, cm, qps, cb_qp, cr_qp, cbf_cb, cbf_cr,
+            cab, pic, sps, pps, x0, y0, l, d, lm, cm, qps, cb_qp, cr_qp, cbf_cb, cbf_cr, cbf_cb2,
+            cbf_cr2,
         );
         decode_tt(
             cab,
@@ -1464,6 +1691,8 @@ fn decode_tt(
             cr_qp,
             cbf_cb,
             cbf_cr,
+            cbf_cb2,
+            cbf_cr2,
         );
         decode_tt(
             cab,
@@ -1481,6 +1710,8 @@ fn decode_tt(
             cr_qp,
             cbf_cb,
             cbf_cr,
+            cbf_cb2,
+            cbf_cr2,
         );
         decode_tt(
             cab,
@@ -1498,16 +1729,29 @@ fn decode_tt(
             cr_qp,
             cbf_cb,
             cbf_cr,
+            cbf_cb2,
+            cbf_cr2,
         );
+        // H.265 7.3.8.11: When children are at log2<=2, chroma is deferred
+        // and processed here using the parent block's coordinates (blk_idx==3 path
+        // in FFmpeg). Chroma residual uses child's log2 size.
+        if l <= 2 && sps._chroma_format_idc != 0 && sps._chroma_format_idc != 3 {
+            decode_deferred_chroma(
+                cab, pic, sps, pps, x0, y0, l, cm, qps, cb_qp, cr_qp, cbf_cb, cbf_cr, cbf_cb2,
+                cbf_cr2,
+            );
+        }
     } else {
         decode_tu(
             cab, pic, sps, pps, x0, y0, log2, depth, lm, cm, qps, cb_qp, cr_qp, cbf_cb, cbf_cr,
+            cbf_cb2, cbf_cr2,
         );
     }
 }
 
 /// Decode a TU for NxN sub-partition. Only decodes luma. Chroma is decoded
 /// at blk_idx==3 covering the full CU chroma block.
+/// For 4:2:2, two vertically stacked chroma sub-blocks are processed.
 #[allow(clippy::too_many_arguments)]
 fn decode_tu_nxn(
     cab: &mut CabacReader,
@@ -1524,6 +1768,8 @@ fn decode_tu_nxn(
     cr_qp: i32,
     cbf_cb: bool,
     cbf_cr: bool,
+    cbf_cb2: bool,
+    cbf_cr2: bool,
     x_base: u32,
     y_base: u32,
     blk_idx: u8,
@@ -1548,17 +1794,11 @@ fn decode_tu_nxn(
 
     let qp = qps.current_qp;
     let sign_data_hiding = pps.sign_data_hiding_enabled_flag;
+    let scaling_list = pps.scaling_list.as_ref().or(sps.scaling_list.as_ref());
 
     // Derive scan types from luma transform log2 (FFmpeg: scan_idx depends on luma TU size)
     let scan_luma = derive_scan_type(log2, lm);
     let scan_chroma = derive_scan_type(log2, cm);
-
-    // H.265 7.3.8.11: transform_skip_flag decoded per component before residual_coding
-    let ts_y = if pps.transform_skip_enabled_flag && log2 <= 2 {
-        cab.decode_decision(CTX_TRANSFORM_SKIP) != 0
-    } else {
-        false
-    };
 
     // Luma
     let pred = predict_intra(
@@ -1571,9 +1811,15 @@ fn decode_tu_nxn(
         sps.strong_intra_smoothing_enabled_flag,
     );
     if cbf_y {
+        // H.265 7.3.8.11: transform_skip_flag decoded only when cbf is set
+        let ts_y = if pps.transform_skip_enabled_flag && log2 <= 2 {
+            cab.decode_decision(CTX_TRANSFORM_SKIP) != 0
+        } else {
+            false
+        };
         let mut c = vec![0i32; (size * size) as usize];
         decode_residual(cab, &mut c, log2, 0, sign_data_hiding, scan_luma);
-        transform::dequantize(&mut c, qp, bd, log2, sps.scaling_list_enabled_flag, 0);
+        transform::dequantize(&mut c, qp, bd, log2, scaling_list, 0);
         if ts_y {
             transform::transform_skip(&mut c, size, bd);
         } else {
@@ -1608,104 +1854,125 @@ fn decode_tu_nxn(
         return;
     }
 
+    let is_422 = pic.chroma_format_idc == 2;
+
     // Chroma uses the enclosing CU coordinates and log2+1 size
     let cu_size = size * 2; // 8x8 CU
     let cu_log2 = log2 + 1;
-    let cs = cu_size / 2; // 4x4 chroma
+    let cs = cu_size / 2; // 4x4 chroma block (square)
     let cl = cu_log2 - 1; // log2(4) = 2
     let cx = x_base / 2;
-    let cy = y_base / 2;
-    let cw = pic.width.div_ceil(2);
-    let ch = pic.height.div_ceil(2);
+    let cy = y_base / pic.sub_height_c();
+    let cw = pic.chroma_width();
+    let ch = pic.chroma_height();
     let cb_qp_actual = chroma_qp(qp + cb_qp);
     let cr_qp_actual = chroma_qp(qp + cr_qp);
 
-    // H.265 7.3.8.11: chroma transform_skip_flag (context +1 for chroma)
-    let ts_cb = if pps.transform_skip_enabled_flag && cl <= 2 {
-        cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
-    } else {
-        false
-    };
+    // H.265 7.3.8.11: chroma residual decode order is by component, then by sub-block.
+    // For 4:2:2: Cb sub0, Cb sub1, Cr sub0, Cr sub1.
+    let num_chroma_sub = if is_422 { 2u32 } else { 1u32 };
+    let cbf_cb_pair = [cbf_cb, cbf_cb2];
+    let cbf_cr_pair = [cbf_cr, cbf_cr2];
 
-    let pred_cb = predict_intra(pic, x_base, y_base, cu_size, cm, Component::Cb, false);
-    if cbf_cb {
-        let mut c = vec![0i32; (cs * cs) as usize];
-        decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
-        transform::dequantize(
-            &mut c,
-            cb_qp_actual,
-            bd,
-            cl,
-            sps.scaling_list_enabled_flag,
-            1,
+    // --- Cb sub-blocks ---
+    for sub_idx in 0..num_chroma_sub {
+        let cy_sub = cy + sub_idx * cs;
+        let active_cbf = cbf_cb_pair[sub_idx as usize];
+
+        let luma_y_for_pred = y_base + sub_idx * cs;
+        let pred_cb = predict_intra(
+            pic,
+            x_base,
+            luma_y_for_pred,
+            cu_size,
+            cm,
+            Component::Cb,
+            false,
         );
-        if ts_cb {
-            transform::transform_skip(&mut c, cs, bd);
-        } else {
-            transform::inverse_transform(&mut c, cs, false, bd);
-        }
-        for py in 0..cs {
-            for px in 0..cs {
-                let sx = cx + px;
-                let sy = cy + py;
-                if sx < cw && sy < ch {
-                    let i = (py * cs + px) as usize;
-                    pic.set_cb(sx, sy, (pred_cb[i] as i32 + c[i]).clamp(0, max_val) as i16);
+        if active_cbf {
+            let ts_cb = if pps.transform_skip_enabled_flag && cl <= 2 {
+                cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
+            } else {
+                false
+            };
+            let mut c = vec![0i32; (cs * cs) as usize];
+            decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
+            transform::dequantize(&mut c, cb_qp_actual, bd, cl, scaling_list, 1);
+            if ts_cb {
+                transform::transform_skip(&mut c, cs, bd);
+            } else {
+                transform::inverse_transform(&mut c, cs, false, bd);
+            }
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        let i = (py * cs + px) as usize;
+                        pic.set_cb(sx, sy, (pred_cb[i] as i32 + c[i]).clamp(0, max_val) as i16);
+                    }
                 }
             }
-        }
-    } else {
-        for py in 0..cs {
-            for px in 0..cs {
-                let sx = cx + px;
-                let sy = cy + py;
-                if sx < cw && sy < ch {
-                    pic.set_cb(sx, sy, pred_cb[(py * cs + px) as usize]);
+        } else {
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        pic.set_cb(sx, sy, pred_cb[(py * cs + px) as usize]);
+                    }
                 }
             }
         }
     }
 
-    let ts_cr = if pps.transform_skip_enabled_flag && cl <= 2 {
-        cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
-    } else {
-        false
-    };
+    // --- Cr sub-blocks ---
+    for sub_idx in 0..num_chroma_sub {
+        let cy_sub = cy + sub_idx * cs;
+        let active_cbf = cbf_cr_pair[sub_idx as usize];
 
-    let pred_cr = predict_intra(pic, x_base, y_base, cu_size, cm, Component::Cr, false);
-    if cbf_cr {
-        let mut c = vec![0i32; (cs * cs) as usize];
-        decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
-        transform::dequantize(
-            &mut c,
-            cr_qp_actual,
-            bd,
-            cl,
-            sps.scaling_list_enabled_flag,
-            2,
+        let luma_y_for_pred = y_base + sub_idx * cs;
+        let pred_cr = predict_intra(
+            pic,
+            x_base,
+            luma_y_for_pred,
+            cu_size,
+            cm,
+            Component::Cr,
+            false,
         );
-        if ts_cr {
-            transform::transform_skip(&mut c, cs, bd);
-        } else {
-            transform::inverse_transform(&mut c, cs, false, bd);
-        }
-        for py in 0..cs {
-            for px in 0..cs {
-                let sx = cx + px;
-                let sy = cy + py;
-                if sx < cw && sy < ch {
-                    let i = (py * cs + px) as usize;
-                    pic.set_cr(sx, sy, (pred_cr[i] as i32 + c[i]).clamp(0, max_val) as i16);
+        if active_cbf {
+            let ts_cr = if pps.transform_skip_enabled_flag && cl <= 2 {
+                cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
+            } else {
+                false
+            };
+            let mut c = vec![0i32; (cs * cs) as usize];
+            decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
+            transform::dequantize(&mut c, cr_qp_actual, bd, cl, scaling_list, 2);
+            if ts_cr {
+                transform::transform_skip(&mut c, cs, bd);
+            } else {
+                transform::inverse_transform(&mut c, cs, false, bd);
+            }
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        let i = (py * cs + px) as usize;
+                        pic.set_cr(sx, sy, (pred_cr[i] as i32 + c[i]).clamp(0, max_val) as i16);
+                    }
                 }
             }
-        }
-    } else {
-        for py in 0..cs {
-            for px in 0..cs {
-                let sx = cx + px;
-                let sy = cy + py;
-                if sx < cw && sy < ch {
-                    pic.set_cr(sx, sy, pred_cr[(py * cs + px) as usize]);
+        } else {
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        pic.set_cr(sx, sy, pred_cr[(py * cs + px) as usize]);
+                    }
                 }
             }
         }
@@ -1729,18 +1996,24 @@ fn decode_tu(
     cr_qp: i32,
     inherited_cbf_cb: bool,
     inherited_cbf_cr: bool,
+    inherited_cbf_cb2: bool,
+    inherited_cbf_cr2: bool,
 ) {
     let size = 1u32 << log2;
     let bd = pic.bit_depth;
     let max_val = (1i32 << bd) - 1;
+    let is_422 = pic.chroma_format_idc == 2;
 
     let cbf_cb = inherited_cbf_cb;
     let cbf_cr = inherited_cbf_cr;
+    let cbf_cb2 = inherited_cbf_cb2;
+    let cbf_cr2 = inherited_cbf_cr2;
     // FFmpeg: cbf_luma always decoded for INTRA; context = !trafo_depth (line 833)
     let cbf_y = cab.decode_decision(CTX_CBF_LUMA + (depth == 0) as usize) != 0;
 
     // H.265 7.3.8.11: cu_qp_delta decoded in first TU with non-zero cbf in a QG
-    if qps.enabled && !qps.is_cu_qp_delta_coded && (cbf_y || cbf_cb || cbf_cr) {
+    let any_cbf = cbf_y || cbf_cb || cbf_cr || (is_422 && (cbf_cb2 || cbf_cr2));
+    if qps.enabled && !qps.is_cu_qp_delta_coded && any_cbf {
         let delta = decode_cu_qp_delta(cab);
         // H.265 8.6.1: QPY = (qPY_PRED + CuQpDelta + 52) % 52
         let qp_pred = qps.derive_qp_pred(pic, x0, y0);
@@ -1755,17 +2028,11 @@ fn decode_tu(
     let cr_qp_actual = chroma_qp(qp + cr_qp);
 
     let sign_data_hiding = pps.sign_data_hiding_enabled_flag;
+    let scaling_list = pps.scaling_list.as_ref().or(sps.scaling_list.as_ref());
 
     // Derive scan types from luma TU log2 (FFmpeg: both scan_idx and scan_idx_c use luma TU size)
     let scan_luma = derive_scan_type(log2, lm);
     let scan_chroma = derive_scan_type(log2, cm);
-
-    // H.265 7.3.8.11: transform_skip_flag decoded per component before residual_coding
-    let ts_y = if pps.transform_skip_enabled_flag && log2 <= 2 {
-        cab.decode_decision(CTX_TRANSFORM_SKIP) != 0
-    } else {
-        false
-    };
 
     // Luma
     let pred = predict_intra(
@@ -1778,9 +2045,15 @@ fn decode_tu(
         sps.strong_intra_smoothing_enabled_flag,
     );
     if cbf_y {
+        // H.265 7.3.8.11: transform_skip_flag decoded only when cbf is set
+        let ts_y = if pps.transform_skip_enabled_flag && log2 <= 2 {
+            cab.decode_decision(CTX_TRANSFORM_SKIP) != 0
+        } else {
+            false
+        };
         let mut c = vec![0i32; (size * size) as usize];
         decode_residual(cab, &mut c, log2, 0, sign_data_hiding, scan_luma);
-        transform::dequantize(&mut c, qp, bd, log2, sps.scaling_list_enabled_flag, 0);
+        transform::dequantize(&mut c, qp, bd, log2, scaling_list, 0);
         if ts_y {
             transform::transform_skip(&mut c, size, bd);
         } else {
@@ -1816,98 +2089,102 @@ fn decode_tu(
     let cs = size / 2;
     let cl = log2 - 1;
     let cx = x0 / 2;
-    let cy = y0 / 2;
-    let cw = pic.width.div_ceil(2);
-    let ch = pic.height.div_ceil(2);
+    let cy = y0 / pic.sub_height_c();
+    let cw = pic.chroma_width();
+    let ch = pic.chroma_height();
 
-    // H.265 7.3.8.11: chroma transform_skip_flag (context +1 for chroma)
-    let ts_cb = if pps.transform_skip_enabled_flag && cl <= 2 {
-        cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
-    } else {
-        false
-    };
+    // H.265 7.3.8.11: chroma residual decode order is by component, then by sub-block.
+    // For 4:2:2: Cb sub0, Cb sub1, Cr sub0, Cr sub1.
+    // For 4:2:0: Cb, then Cr (single block each).
+    let num_chroma_sub = if is_422 { 2u32 } else { 1u32 };
+    let cbf_cb_pair = [cbf_cb, cbf_cb2];
+    let cbf_cr_pair = [cbf_cr, cbf_cr2];
 
-    // Cb
-    let pred_cb = predict_intra(pic, x0, y0, size, cm, Component::Cb, false);
-    if cbf_cb {
-        let mut c = vec![0i32; (cs * cs) as usize];
-        decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
-        transform::dequantize(
-            &mut c,
-            cb_qp_actual,
-            bd,
-            cl,
-            sps.scaling_list_enabled_flag,
-            1,
-        );
-        if ts_cb {
-            transform::transform_skip(&mut c, cs, bd);
-        } else {
-            transform::inverse_transform(&mut c, cs, false, bd);
-        }
-        for py in 0..cs {
-            for px in 0..cs {
-                let sx = cx + px;
-                let sy = cy + py;
-                if sx < cw && sy < ch {
-                    let i = (py * cs + px) as usize;
-                    pic.set_cb(sx, sy, (pred_cb[i] as i32 + c[i]).clamp(0, max_val) as i16);
+    // --- Cb sub-blocks ---
+    for sub_idx in 0..num_chroma_sub {
+        let cy_sub = cy + sub_idx * cs;
+        let active_cbf = cbf_cb_pair[sub_idx as usize];
+
+        let luma_y_for_pred = y0 + sub_idx * cs;
+        let pred_cb = predict_intra(pic, x0, luma_y_for_pred, size, cm, Component::Cb, false);
+        if active_cbf {
+            // H.265 7.3.8.11: transform_skip_flag decoded only when cbf is set
+            let ts_cb = if pps.transform_skip_enabled_flag && cl <= 2 {
+                cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
+            } else {
+                false
+            };
+            let mut c = vec![0i32; (cs * cs) as usize];
+            decode_residual(cab, &mut c, cl, 1, sign_data_hiding, scan_chroma);
+            transform::dequantize(&mut c, cb_qp_actual, bd, cl, scaling_list, 1);
+            if ts_cb {
+                transform::transform_skip(&mut c, cs, bd);
+            } else {
+                transform::inverse_transform(&mut c, cs, false, bd);
+            }
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        let i = (py * cs + px) as usize;
+                        pic.set_cb(sx, sy, (pred_cb[i] as i32 + c[i]).clamp(0, max_val) as i16);
+                    }
                 }
             }
-        }
-    } else {
-        for py in 0..cs {
-            for px in 0..cs {
-                let sx = cx + px;
-                let sy = cy + py;
-                if sx < cw && sy < ch {
-                    pic.set_cb(sx, sy, pred_cb[(py * cs + px) as usize]);
+        } else {
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        pic.set_cb(sx, sy, pred_cb[(py * cs + px) as usize]);
+                    }
                 }
             }
         }
     }
 
-    let ts_cr = if pps.transform_skip_enabled_flag && cl <= 2 {
-        cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
-    } else {
-        false
-    };
+    // --- Cr sub-blocks ---
+    for sub_idx in 0..num_chroma_sub {
+        let cy_sub = cy + sub_idx * cs;
+        let active_cbf = cbf_cr_pair[sub_idx as usize];
 
-    // Cr
-    let pred_cr = predict_intra(pic, x0, y0, size, cm, Component::Cr, false);
-    if cbf_cr {
-        let mut c = vec![0i32; (cs * cs) as usize];
-        decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
-        transform::dequantize(
-            &mut c,
-            cr_qp_actual,
-            bd,
-            cl,
-            sps.scaling_list_enabled_flag,
-            2,
-        );
-        if ts_cr {
-            transform::transform_skip(&mut c, cs, bd);
-        } else {
-            transform::inverse_transform(&mut c, cs, false, bd);
-        }
-        for py in 0..cs {
-            for px in 0..cs {
-                let sx = cx + px;
-                let sy = cy + py;
-                if sx < cw && sy < ch {
-                    let i = (py * cs + px) as usize;
-                    pic.set_cr(sx, sy, (pred_cr[i] as i32 + c[i]).clamp(0, max_val) as i16);
+        let luma_y_for_pred = y0 + sub_idx * cs;
+        let pred_cr = predict_intra(pic, x0, luma_y_for_pred, size, cm, Component::Cr, false);
+        if active_cbf {
+            // H.265 7.3.8.11: transform_skip_flag decoded only when cbf is set
+            let ts_cr = if pps.transform_skip_enabled_flag && cl <= 2 {
+                cab.decode_decision(CTX_TRANSFORM_SKIP + 1) != 0
+            } else {
+                false
+            };
+            let mut c = vec![0i32; (cs * cs) as usize];
+            decode_residual(cab, &mut c, cl, 2, sign_data_hiding, scan_chroma);
+            transform::dequantize(&mut c, cr_qp_actual, bd, cl, scaling_list, 2);
+            if ts_cr {
+                transform::transform_skip(&mut c, cs, bd);
+            } else {
+                transform::inverse_transform(&mut c, cs, false, bd);
+            }
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        let i = (py * cs + px) as usize;
+                        pic.set_cr(sx, sy, (pred_cr[i] as i32 + c[i]).clamp(0, max_val) as i16);
+                    }
                 }
             }
-        }
-    } else {
-        for py in 0..cs {
-            for px in 0..cs {
-                let sx = cx + px;
-                let sy = cy + py;
-                if sx < cw && sy < ch {
-                    pic.set_cr(sx, sy, pred_cr[(py * cs + px) as usize]);
+        } else {
+            for py in 0..cs {
+                for px in 0..cs {
+                    let sx = cx + px;
+                    let sy = cy_sub + py;
+                    if sx < cw && sy < ch {
+                        pic.set_cr(sx, sy, pred_cr[(py * cs + px) as usize]);
+                    }
                 }
             }
         }

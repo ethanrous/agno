@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 
+use super::crypt::CryptContext;
 use super::lexer::Lexer;
 use super::objects::{ObjRef, PdfObject};
 use super::xref::{Xref, XrefEntry, parse_xref};
@@ -17,17 +18,21 @@ pub struct PdfDocument<'a> {
     data: &'a [u8],
     xref: Xref,
     cache: RefCell<HashMap<u32, PdfObject>>,
+    crypt: Option<CryptContext>,
 }
 
 impl<'a> PdfDocument<'a> {
     /// Open a PDF from raw bytes, parsing the cross-reference table and trailer.
     pub fn open(data: &'a [u8]) -> Result<Self, Box<dyn Error>> {
         let xref = parse_xref(data)?;
-        Ok(PdfDocument {
+        let mut doc = PdfDocument {
             data,
             xref,
             cache: RefCell::new(HashMap::new()),
-        })
+            crypt: None,
+        };
+        doc.crypt = doc.setup_encryption()?;
+        Ok(doc)
     }
 
     /// Resolve an indirect object reference to its parsed value.
@@ -79,10 +84,64 @@ impl<'a> PdfDocument<'a> {
         self.read_content_streams(&contents)
     }
 
+    /// Return the resolved annotation objects for a page.
+    /// Returns an empty Vec if the page has no /Annots.
+    pub fn page_annotations(&self, page_index: usize) -> Result<Vec<PdfObject>, Box<dyn Error>> {
+        let page = self.page_object(page_index)?;
+        let annots_ref = match page.get(b"Annots") {
+            Some(a) => a.clone(),
+            None => return Ok(Vec::new()),
+        };
+        let annots = self.resolve_value(&annots_ref)?;
+        let arr = match annots.as_array() {
+            Some(a) => a,
+            None => return Ok(Vec::new()),
+        };
+        let mut result = Vec::new();
+        for item in arr {
+            if let Ok(resolved) = self.resolve_value(item) {
+                result.push(resolved);
+            }
+        }
+        Ok(result)
+    }
+
     /// Return the /Resources dictionary for a page, walking up /Parent if needed.
     pub fn page_resources(&self, page_index: usize) -> Result<PdfObject, Box<dyn Error>> {
         let page = self.page_object(page_index)?;
         self.find_resources_in_hierarchy(&page)
+    }
+
+    /// Check the trailer for /Encrypt and set up decryption if present.
+    fn setup_encryption(&self) -> Result<Option<CryptContext>, Box<dyn Error>> {
+        let encrypt_obj = match self.xref.trailer.get(b"Encrypt") {
+            Some(obj) => obj,
+            None => return Ok(None),
+        };
+
+        // Resolve the /Encrypt dictionary. crypt is None at this point,
+        // so no decryption is applied (correct: /Encrypt itself is not encrypted).
+        let encrypt_dict = self.resolve_value(encrypt_obj)?;
+        let dict = encrypt_dict
+            .as_dict()
+            .ok_or("/Encrypt did not resolve to a dictionary")?;
+
+        // Extract the first element of the trailer /ID array.
+        let id_array = self
+            .xref
+            .trailer
+            .get(b"ID")
+            .and_then(|o| o.as_array())
+            .ok_or("Encrypted PDF trailer missing /ID array")?;
+        let file_id = id_array
+            .first()
+            .and_then(|o| o.as_string_bytes())
+            .ok_or("Trailer /ID[0] is not a string")?;
+
+        let encrypt_obj_num = encrypt_obj.as_reference().map(|r| r.num);
+
+        let ctx = CryptContext::new(dict, file_id, encrypt_obj_num)?;
+        Ok(Some(ctx))
     }
 
     // ------------------------------------------------------------------
@@ -139,8 +198,16 @@ impl<'a> PdfDocument<'a> {
         lexer.set_position(offset);
 
         // Read: N G obj
-        let _obj_num = lexer.next_object()?.ok_or("Expected object number")?;
-        let _gen = lexer.next_object()?.ok_or("Expected generation number")?;
+        let obj_num = lexer
+            .next_object()?
+            .ok_or("Expected object number")?
+            .as_i64()
+            .ok_or("Object number is not an integer")? as u32;
+        let gen_num = lexer
+            .next_object()?
+            .ok_or("Expected generation number")?
+            .as_i64()
+            .ok_or("Generation number is not an integer")? as u16;
         lexer.expect_keyword(b"obj")?;
 
         // Read the object value.
@@ -154,92 +221,147 @@ impl<'a> PdfDocument<'a> {
         }
 
         // Check if this is a stream object (dictionary followed by "stream" keyword).
-        if value.as_dict().is_some() {
+        let value = if value.as_dict().is_some() {
             let saved_pos = lexer.position();
             lexer.skip_whitespace();
 
-            // Peek to see if next keyword is "stream".
             let kw_pos = lexer.position();
             if !lexer.at_end() {
                 let maybe_kw = lexer.read_keyword();
                 if let Ok(kw) = maybe_kw
                     && kw == b"stream"
                 {
-                    return self.extract_stream(value, kw_pos, depth);
+                    return self.extract_stream(value, kw_pos, depth, obj_num, gen_num);
                 }
             }
-            // Not a stream — restore position (doesn't matter, but clean).
             lexer.set_position(saved_pos);
-        }
+            value
+        } else {
+            value
+        };
 
-        Ok(value)
+        // Decrypt string values if encryption is active and this is not the /Encrypt dict.
+        match &self.crypt {
+            Some(crypt) if !crypt.is_encrypt_dict(obj_num) => {
+                Ok(decrypt_strings(crypt, value, obj_num, gen_num))
+            }
+            _ => Ok(value),
+        }
     }
 
     /// Extract stream data from a dictionary object whose "stream" keyword starts
     /// at `kw_pos` in the file. Handles /Length, /Filter, /DecodeParms.
+    ///
+    /// Many real-world PDFs have incorrect `/Length` values (off-by-one from
+    /// CRLF/LF confusion, wrong indirect references, etc.). When `/Length`-based
+    /// extraction fails to decompress, we fall back to scanning for the
+    /// `endstream` keyword to find the true data boundary.
     fn extract_stream(
         &self,
         dict_obj: PdfObject,
         kw_pos: usize,
         depth: usize,
+        obj_num: u32,
+        gen_num: u16,
     ) -> Result<PdfObject, Box<dyn Error>> {
         let dict = dict_obj
             .as_dict()
             .ok_or("Stream object is not a dictionary")?;
 
-        // Position after "stream" keyword.
         let after_kw = kw_pos + b"stream".len();
-
-        // Skip the mandatory newline after "stream" (LF or CRLF).
         let data_start = skip_stream_eol(self.data, after_kw);
 
-        // Get /Length — may be a reference that needs resolving.
+        let length_result = self.resolve_stream_length(dict, depth);
+        let raw_data = match length_result {
+            Ok(length) if data_start + length <= self.data.len() => {
+                &self.data[data_start..data_start + length]
+            }
+            _ => scan_for_endstream(self.data, data_start)?,
+        };
+
+        // Decrypt the raw stream bytes before decompression.
+        let decrypted;
+        let effective_data = match &self.crypt {
+            Some(crypt) if !crypt.is_encrypt_dict(obj_num) => {
+                decrypted = crypt.decrypt(raw_data, obj_num, gen_num);
+                &decrypted[..]
+            }
+            _ => raw_data,
+        };
+
+        let (filter_names, params_list) = self.collect_filters(dict, depth)?;
+        let filter_refs: Vec<&[u8]> = filter_names.iter().map(|f| f.as_slice()).collect();
+        let params_refs: Vec<Option<&PdfObject>> = params_list.iter().map(|p| p.as_ref()).collect();
+
+        let decoded = if filter_refs.is_empty() {
+            effective_data.to_vec()
+        } else {
+            match super::stream::decode_stream(effective_data, &filter_refs, &params_refs) {
+                Ok(data) => data,
+                Err(first_err) => {
+                    // /Length may be subtly wrong. Retry with endstream-scanned boundaries,
+                    // but only if the scanned data differs from what we already tried.
+                    let scanned = scan_for_endstream(self.data, data_start)?;
+                    if scanned.len() == raw_data.len() {
+                        return Err(first_err);
+                    }
+                    let rescanned_decrypted;
+                    let rescanned_effective = match &self.crypt {
+                        Some(crypt) if !crypt.is_encrypt_dict(obj_num) => {
+                            rescanned_decrypted = crypt.decrypt(scanned, obj_num, gen_num);
+                            &rescanned_decrypted[..]
+                        }
+                        _ => scanned,
+                    };
+                    super::stream::decode_stream(rescanned_effective, &filter_refs, &params_refs)?
+                }
+            }
+        };
+
+        // Decrypt string values inside the stream dictionary.
+        let final_dict = match &self.crypt {
+            Some(crypt) if !crypt.is_encrypt_dict(obj_num) => dict
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        decrypt_strings(crypt, v.clone(), obj_num, gen_num),
+                    )
+                })
+                .collect(),
+            _ => dict.clone(),
+        };
+
+        Ok(PdfObject::Stream {
+            dict: final_dict,
+            data: decoded,
+        })
+    }
+
+    /// Resolve the /Length value from a stream dictionary, handling indirect references.
+    fn resolve_stream_length(
+        &self,
+        dict: &std::collections::HashMap<Vec<u8>, PdfObject>,
+        depth: usize,
+    ) -> Result<usize, Box<dyn Error>> {
         let length_obj = dict
             .get(b"Length".as_slice())
             .ok_or("Stream dictionary missing /Length")?;
-        let length = match length_obj.as_reference() {
+        match length_obj.as_reference() {
             Some(r) => {
                 let resolved = self.resolve_with_depth(r, depth + 1)?;
                 safe_usize(
                     resolved
                         .as_i64()
                         .ok_or("Stream /Length reference did not resolve to integer")?,
-                )?
+                )
             }
             None => safe_usize(
                 length_obj
                     .as_i64()
                     .ok_or("Stream /Length is not an integer")?,
-            )?,
-        };
-
-        if data_start + length > self.data.len() {
-            return Err(format!(
-                "Stream data at offset {} with /Length {} exceeds file size {}",
-                data_start,
-                length,
-                self.data.len()
-            )
-            .into());
+            ),
         }
-
-        let raw_data = &self.data[data_start..data_start + length];
-
-        // Collect filters.
-        let (filter_names, params_list) = self.collect_filters(dict, depth)?;
-        let filter_refs: Vec<&[u8]> = filter_names.iter().map(|f| f.as_slice()).collect();
-        let params_refs: Vec<Option<&PdfObject>> = params_list.iter().map(|p| p.as_ref()).collect();
-
-        let decoded = if filter_refs.is_empty() {
-            raw_data.to_vec()
-        } else {
-            super::stream::decode_stream(raw_data, &filter_refs, &params_refs)?
-        };
-
-        Ok(PdfObject::Stream {
-            dict: dict.clone(),
-            data: decoded,
-        })
     }
 
     /// Collect /Filter and /DecodeParms from a stream dictionary.
@@ -499,9 +621,91 @@ impl<'a> PdfDocument<'a> {
     }
 }
 
+/// Recursively decrypt all String/HexString values in a PDF object tree.
+/// Stream data is NOT decrypted here — that is handled in `extract_stream`
+/// before decompression. This only decrypts metadata strings in stream dicts.
+fn decrypt_strings(crypt: &CryptContext, obj: PdfObject, obj_num: u32, gen_num: u16) -> PdfObject {
+    decrypt_strings_bounded(crypt, obj, obj_num, gen_num, 0)
+}
+
+fn decrypt_strings_bounded(
+    crypt: &CryptContext,
+    obj: PdfObject,
+    obj_num: u32,
+    gen_num: u16,
+    depth: usize,
+) -> PdfObject {
+    const MAX_DEPTH: usize = 32;
+    if depth >= MAX_DEPTH {
+        return obj;
+    }
+    match obj {
+        PdfObject::String(data) => PdfObject::String(crypt.decrypt(&data, obj_num, gen_num)),
+        PdfObject::HexString(data) => PdfObject::HexString(crypt.decrypt(&data, obj_num, gen_num)),
+        PdfObject::Array(items) => PdfObject::Array(
+            items
+                .into_iter()
+                .map(|item| decrypt_strings_bounded(crypt, item, obj_num, gen_num, depth + 1))
+                .collect(),
+        ),
+        PdfObject::Dictionary(d) => PdfObject::Dictionary(
+            d.into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        decrypt_strings_bounded(crypt, v, obj_num, gen_num, depth + 1),
+                    )
+                })
+                .collect(),
+        ),
+        PdfObject::Stream { dict, data } => PdfObject::Stream {
+            dict: dict
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        decrypt_strings_bounded(crypt, v, obj_num, gen_num, depth + 1),
+                    )
+                })
+                .collect(),
+            data,
+        },
+        other => other,
+    }
+}
+
 /// Convert an i64 to usize, returning an error for negative or oversized values.
 fn safe_usize(val: i64) -> Result<usize, Box<dyn Error>> {
     usize::try_from(val).map_err(|_| format!("Negative or oversized value: {val}").into())
+}
+
+/// Scan forward from `start` for the `endstream` keyword and return the
+/// stream data slice, trimming any trailing whitespace before the marker.
+///
+/// Stream data is arbitrary binary, so we require the keyword to sit on PDF
+/// token boundaries (preceded by whitespace and followed by whitespace or
+/// end-of-data) to avoid false positives where the byte pattern occurs inside
+/// the stream payload.
+fn scan_for_endstream(data: &[u8], start: usize) -> Result<&[u8], Box<dyn Error>> {
+    let marker = b"endstream";
+    let search_end = data.len().saturating_sub(marker.len());
+    let mut pos = start;
+    while pos <= search_end {
+        if &data[pos..pos + marker.len()] == marker {
+            let preceded_by_ws = pos == 0 || data[pos - 1].is_ascii_whitespace();
+            let after = pos + marker.len();
+            let followed_by_ws = after >= data.len() || data[after].is_ascii_whitespace();
+            if preceded_by_ws && followed_by_ws {
+                let mut end = pos;
+                while end > start && data[end - 1].is_ascii_whitespace() {
+                    end -= 1;
+                }
+                return Ok(&data[start..end]);
+            }
+        }
+        pos += 1;
+    }
+    Err("Could not find 'endstream' marker".into())
 }
 
 /// Skip the mandatory newline after the "stream" keyword.
@@ -613,10 +817,28 @@ mod tests {
     }
 
     #[test]
+    fn open_non_encrypted_pdf_has_no_crypt() {
+        let pdf = make_simple_pdf();
+        let doc = PdfDocument::open(&pdf).unwrap();
+        assert!(
+            doc.crypt.is_none(),
+            "Non-encrypted PDF should have no CryptContext"
+        );
+    }
+
+    #[test]
     fn resolve_through_references() {
         let pdf = make_simple_pdf();
         let doc = PdfDocument::open(&pdf).unwrap();
         let page = doc.page_object(0).unwrap();
         assert_eq!(page.get_name_str(b"Type"), Some("Page"));
+    }
+
+    #[test]
+    fn page_annotations_returns_empty_for_no_annots() {
+        let pdf = make_simple_pdf();
+        let doc = PdfDocument::open(&pdf).unwrap();
+        let annots = doc.page_annotations(0).unwrap();
+        assert!(annots.is_empty());
     }
 }

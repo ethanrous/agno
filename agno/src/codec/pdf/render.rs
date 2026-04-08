@@ -110,6 +110,8 @@ pub fn render_page(
         clip_mask.as_ref(),
     );
 
+    render_annotations(doc, page_index, &mut state, &mut pixmap, base);
+
     // Downscale from render resolution to target resolution.
     if render_w != target_w || render_h != target_h {
         Ok(downscale_pixmap(&pixmap, target_w, target_h)?)
@@ -172,6 +174,7 @@ fn downscale_pixmap(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pixmap, Box<
 
 /// Execute a parsed content stream, handling BT/ET text blocks and dispatching
 /// individual operators. Shared by `render_page` and `render_xobject`.
+#[allow(clippy::too_many_arguments)]
 fn execute_content_stream(
     operators: &[Operator],
     state: &mut GraphicsStateStack,
@@ -211,6 +214,15 @@ fn execute_content_stream(
                             &mut subpath_start,
                         );
                     }
+                    // Persist Tf into graphics state so it carries across BT/ET
+                    // blocks and into child Form XObjects.
+                    b"Tf" if operators[i].operands.len() >= 2 => {
+                        if let Some(fname) = operators[i].operands[0].as_name() {
+                            state.current_mut().font_name = fname.to_vec();
+                            state.current_mut().font_size =
+                                operators[i].operands[1].as_f64().unwrap_or(12.0);
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -246,7 +258,6 @@ fn execute_content_stream(
                 let transform = combined_transform(&state.current().ctm, ctx.base);
                 let color = &state.current().fill_color;
                 let alpha = state.current().fill_alpha;
-
                 let mask_ref = clip_mask.as_ref();
                 for glyph in &glyphs {
                     render_glyph(
@@ -653,9 +664,17 @@ fn execute_operator(
             *clip_pending = Some(FillRule::EvenOdd);
         }
 
+        // --- Text font (also handled inside BT/ET, but capture here for state persistence) ---
+        b"Tf" if args.len() >= 2 => {
+            if let Some(name) = args[0].as_name() {
+                state.current_mut().font_name = name.to_vec();
+                state.current_mut().font_size = args[1].as_f64().unwrap_or(12.0);
+            }
+        }
+
         // --- Text (handled in execute_content_stream BT/ET loop) ---
-        b"BT" | b"ET" | b"Tf" | b"Td" | b"TD" | b"Tm" | b"T*" | b"Tj" | b"TJ" | b"Tc" | b"Tw"
-        | b"Tz" | b"TL" | b"Tr" | b"Ts" | b"'" | b"\"" => {}
+        b"BT" | b"ET" | b"Td" | b"TD" | b"Tm" | b"T*" | b"Tj" | b"TJ" | b"Tc" | b"Tw" | b"Tz"
+        | b"TL" | b"Tr" | b"Ts" | b"'" | b"\"" => {}
 
         // --- XObject ---
         b"Do" if !args.is_empty() => {
@@ -770,22 +789,24 @@ fn render_inline_image(
         return;
     }
 
-    let image =
-        match super::image::decode_image_xobject(&decoded_data, img_w, img_h, bpc, &cs, None) {
-            Ok(img) => img,
-            Err(_) => return,
-        };
+    let effective_filter: Option<&[u8]> = filter_names
+        .iter()
+        .find(|f| is_passthrough_image_filter(f.as_slice()))
+        .map(|f| f.as_slice());
 
-    let mut rgba = Vec::with_capacity(image.width as usize * image.height as usize * 4);
-    for pixel in image.rgb_data.chunks(3) {
-        if pixel.len() < 3 {
-            break;
-        }
-        rgba.push(pixel[0]);
-        rgba.push(pixel[1]);
-        rgba.push(pixel[2]);
-        rgba.push(255);
-    }
+    let image = match super::image::decode_image_xobject(
+        &decoded_data,
+        img_w,
+        img_h,
+        bpc,
+        &cs,
+        effective_filter,
+    ) {
+        Ok(img) => img,
+        Err(_) => return,
+    };
+
+    let rgba = rgb_to_rgba(&image.rgb_data);
 
     let src_pixmap = match tiny_skia::PixmapRef::from_bytes(&rgba, image.width, image.height) {
         Some(p) => p,
@@ -903,30 +924,24 @@ fn render_image_xobject(
         .and_then(|cs| parse_image_colorspace(cs, ctx.doc))
         .unwrap_or(super::color::ColorSpace::DeviceRGB);
 
-    // Determine if the raw data is JPEG (DCTDecode passes through stream.rs).
-    let filter = xobj
-        .get(b"Filter")
-        .and_then(|f| f.as_name())
-        .map(|n| n.to_vec());
-    let filter_ref = filter.as_deref();
+    // Determine if the stream contains JPEG/JPEG2000 data. Stream data is already
+    // decoded through the filter chain by document.rs. stream.rs passes DCTDecode
+    // through, so the data IS raw JPEG bytes when DCTDecode appears in the chain.
+    let effective_filter = extract_effective_image_filter(xobj.get(b"Filter"));
 
-    let image =
-        match super::image::decode_image_xobject(stream_data, img_w, img_h, bpc, &cs, filter_ref) {
-            Ok(img) => img,
-            Err(_) => return,
-        };
+    let image = match super::image::decode_image_xobject(
+        stream_data,
+        img_w,
+        img_h,
+        bpc,
+        &cs,
+        effective_filter,
+    ) {
+        Ok(img) => img,
+        Err(_) => return,
+    };
 
-    // Convert RGB8 to RGBA8 for tiny-skia PixmapRef.
-    let mut rgba = Vec::with_capacity(image.width as usize * image.height as usize * 4);
-    for pixel in image.rgb_data.chunks(3) {
-        if pixel.len() < 3 {
-            break;
-        }
-        rgba.push(pixel[0]);
-        rgba.push(pixel[1]);
-        rgba.push(pixel[2]);
-        rgba.push(255);
-    }
+    let rgba = rgb_to_rgba(&image.rgb_data);
 
     let src_pixmap = match tiny_skia::PixmapRef::from_bytes(&rgba, image.width, image.height) {
         Some(p) => p,
@@ -940,6 +955,46 @@ fn render_image_xobject(
         quality: tiny_skia::FilterQuality::Bilinear,
     };
     pixmap.draw_pixmap(0, 0, src_pixmap, &paint, transform, None);
+}
+
+/// Extract the effective image-specific filter from a /Filter entry.
+///
+/// Stream data is already fully decoded by `document.rs::extract_stream()`.
+/// `stream.rs` passes DCTDecode/JPXDecode through as no-ops, so the resolved
+/// stream data for `[/FlateDecode /DCTDecode]` is raw JPEG bytes. We detect
+/// whether DCTDecode (or JPXDecode) was in the filter chain so `image.rs`
+/// can call the appropriate codec.
+fn extract_effective_image_filter(filter_obj: Option<&PdfObject>) -> Option<&[u8]> {
+    let filter = filter_obj?;
+    if let Some(name) = filter.as_name() {
+        return is_passthrough_image_filter(name).then_some(name);
+    }
+    if let Some(arr) = filter.as_array() {
+        for item in arr {
+            if let Some(name) = item.as_name()
+                && is_passthrough_image_filter(name)
+            {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// Returns true for filters whose decoded output is image-codec bytes (JPEG/JPEG2000).
+/// `stream.rs` passes these through as no-ops, so the resolved stream data IS the
+/// raw codec bytes when one of these names appears in the filter chain.
+fn is_passthrough_image_filter(name: &[u8]) -> bool {
+    matches!(name, b"DCTDecode" | b"DCT" | b"JPXDecode")
+}
+
+/// Convert packed RGB8 pixel data to RGBA8 with full alpha for tiny-skia.
+fn rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
+    for pixel in rgb.chunks_exact(3) {
+        rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+    }
+    rgba
 }
 
 fn parse_image_colorspace(
@@ -1007,29 +1062,19 @@ fn render_xobject(
 
     // 2. Get stream data
     let stream_data = match &xobj {
-        PdfObject::Stream { data, .. } => data.clone(),
+        PdfObject::Stream { data, .. } => data.as_slice(),
         _ => return,
     };
 
     // 3. Parse the Form's content stream
-    let content_ops = match parse_content_stream(&stream_data) {
+    let content_ops = match parse_content_stream(stream_data) {
         Ok(ops) => ops,
         Err(_) => return,
     };
 
     // 4. Save state, apply Form matrix
     state.save();
-    if let Some(matrix_arr) = xobj.get(b"Matrix").and_then(|m| m.as_array())
-        && matrix_arr.len() >= 6
-    {
-        let m = Matrix {
-            a: matrix_arr[0].as_f64().unwrap_or(1.0),
-            b: matrix_arr[1].as_f64().unwrap_or(0.0),
-            c: matrix_arr[2].as_f64().unwrap_or(0.0),
-            d: matrix_arr[3].as_f64().unwrap_or(1.0),
-            e: matrix_arr[4].as_f64().unwrap_or(0.0),
-            f: matrix_arr[5].as_f64().unwrap_or(0.0),
-        };
+    if let Some(m) = parse_matrix_entry(&xobj) {
         state.current_mut().ctm = m.concat(&state.current().ctm);
     }
 
@@ -1252,6 +1297,171 @@ fn stroke_path(
     pixmap.stroke_path(path, &paint, &stroke, transform, mask);
 }
 
+/// Render page annotations (form fields, stamps, etc.) by executing their
+/// normal appearance streams (/AP/N).
+fn render_annotations(
+    doc: &PdfDocument,
+    page_index: usize,
+    state: &mut GraphicsStateStack,
+    pixmap: &mut Pixmap,
+    base: Transform,
+) {
+    let annots = match doc.page_annotations(page_index) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    if annots.is_empty() {
+        return;
+    }
+
+    let page_resources = doc
+        .page_resources(page_index)
+        .unwrap_or_else(|_| PdfObject::Dictionary(HashMap::new()));
+
+    for annot in &annots {
+        render_single_annotation(annot, doc, &page_resources, state, pixmap, base);
+    }
+}
+
+fn render_single_annotation(
+    annot: &PdfObject,
+    doc: &PdfDocument,
+    page_resources: &PdfObject,
+    state: &mut GraphicsStateStack,
+    pixmap: &mut Pixmap,
+    base: Transform,
+) {
+    let rect = match annot.get(b"Rect").and_then(|r| r.as_array()) {
+        Some(r) if r.len() >= 4 => r,
+        _ => return,
+    };
+    let rx0 = rect[0].as_f64().unwrap_or(0.0);
+    let ry0 = rect[1].as_f64().unwrap_or(0.0);
+    let rx1 = rect[2].as_f64().unwrap_or(0.0);
+    let ry1 = rect[3].as_f64().unwrap_or(0.0);
+
+    let ap = match annot.get(b"AP") {
+        Some(ap) => ap,
+        None => return,
+    };
+    let n_ref = match ap.get(b"N") {
+        Some(n) => n,
+        None => return,
+    };
+
+    // /N can be a stream directly or a dictionary of named states.
+    let appearance = match resolve_appearance_stream(n_ref, annot, doc) {
+        Some(obj) => obj,
+        None => return,
+    };
+
+    let stream_data = match &appearance {
+        PdfObject::Stream { data, .. } => data.as_slice(),
+        _ => return,
+    };
+
+    let content_ops = match parse_content_stream(stream_data) {
+        Ok(ops) => ops,
+        Err(_) => return,
+    };
+
+    state.save();
+
+    let (bx0, by0, bw, bh) = extract_bbox(&appearance, rx1 - rx0, ry1 - ry0);
+    let rect_w = (rx1 - rx0).abs();
+    let rect_h = (ry1 - ry0).abs();
+    let sx = if bw.abs() > 0.001 { rect_w / bw } else { 1.0 };
+    let sy = if bh.abs() > 0.001 { rect_h / bh } else { 1.0 };
+
+    let mut ctm = Matrix {
+        a: sx,
+        b: 0.0,
+        c: 0.0,
+        d: sy,
+        e: rx0 - bx0 * sx,
+        f: ry0 - by0 * sy,
+    };
+    if let Some(form_m) = parse_matrix_entry(&appearance) {
+        ctm = form_m.concat(&ctm);
+    }
+    state.current_mut().ctm = ctm.concat(&state.current().ctm);
+
+    let form_resources = appearance
+        .get(b"Resources")
+        .and_then(|r| doc.resolve_value(r).ok())
+        .unwrap_or_else(|| page_resources.clone());
+
+    let form_fonts = resolve_fonts_from_resources(&form_resources, doc);
+    let form_font_cache = build_font_data_cache(&form_fonts);
+
+    let child_ctx = RenderContext {
+        doc,
+        resources: form_resources,
+        base,
+        depth: 1,
+    };
+
+    execute_content_stream(
+        &content_ops,
+        state,
+        pixmap,
+        &child_ctx,
+        &form_fonts,
+        &form_font_cache,
+        None,
+    );
+
+    let _ = state.restore();
+}
+
+/// Resolve the appearance stream from /AP/N, handling both direct streams
+/// and named-state dictionaries (e.g., checkboxes with /Yes and /Off).
+fn resolve_appearance_stream(
+    n_ref: &PdfObject,
+    annot: &PdfObject,
+    doc: &PdfDocument,
+) -> Option<PdfObject> {
+    let obj = doc.resolve_value(n_ref).ok()?;
+    if obj.as_stream().is_some() {
+        return Some(obj);
+    }
+    let dict = obj.as_dict()?;
+    let as_key = annot.get(b"AS").and_then(|v| v.as_name()).unwrap_or(b"Yes");
+    let entry = dict.get(as_key).or_else(|| dict.values().next())?;
+    doc.resolve_value(entry).ok()
+}
+
+/// Extract BBox from an appearance stream, falling back to rect dimensions.
+fn extract_bbox(appearance: &PdfObject, default_w: f64, default_h: f64) -> (f64, f64, f64, f64) {
+    match appearance.get(b"BBox").and_then(|b| b.as_array()) {
+        Some(b) if b.len() >= 4 => {
+            let bx0 = b[0].as_f64().unwrap_or(0.0);
+            let by0 = b[1].as_f64().unwrap_or(0.0);
+            let bx1 = b[2].as_f64().unwrap_or(default_w);
+            let by1 = b[3].as_f64().unwrap_or(default_h);
+            (bx0, by0, bx1 - bx0, by1 - by0)
+        }
+        _ => (0.0, 0.0, default_w, default_h),
+    }
+}
+
+/// Parse a /Matrix entry from a form XObject as a Matrix.
+fn parse_matrix_entry(obj: &PdfObject) -> Option<Matrix> {
+    let m = obj.get(b"Matrix")?.as_array()?;
+    if m.len() < 6 {
+        return None;
+    }
+    Some(Matrix {
+        a: m[0].as_f64().unwrap_or(1.0),
+        b: m[1].as_f64().unwrap_or(0.0),
+        c: m[2].as_f64().unwrap_or(0.0),
+        d: m[3].as_f64().unwrap_or(1.0),
+        e: m[4].as_f64().unwrap_or(0.0),
+        f: m[5].as_f64().unwrap_or(0.0),
+    })
+}
+
 /// Resolve fonts from a /Resources dictionary.
 fn resolve_fonts_from_resources(
     resources: &PdfObject,
@@ -1414,5 +1624,43 @@ mod tests {
         assert!((rgb[idx] as i32 - 128).abs() < 5, "Got {}", rgb[idx]);
         assert!((rgb[idx + 1] as i32 - 128).abs() < 5);
         assert!((rgb[idx + 2] as i32 - 128).abs() < 5);
+    }
+
+    #[test]
+    fn extract_filter_single_dct() {
+        let obj = PdfObject::Name(b"DCTDecode".to_vec());
+        assert_eq!(
+            extract_effective_image_filter(Some(&obj)),
+            Some(b"DCTDecode".as_slice())
+        );
+    }
+
+    #[test]
+    fn extract_filter_array_with_dct() {
+        let obj = PdfObject::Array(vec![
+            PdfObject::Name(b"FlateDecode".to_vec()),
+            PdfObject::Name(b"DCTDecode".to_vec()),
+        ]);
+        assert_eq!(
+            extract_effective_image_filter(Some(&obj)),
+            Some(b"DCTDecode".as_slice())
+        );
+    }
+
+    #[test]
+    fn extract_filter_array_without_dct() {
+        let obj = PdfObject::Array(vec![PdfObject::Name(b"FlateDecode".to_vec())]);
+        assert_eq!(extract_effective_image_filter(Some(&obj)), None);
+    }
+
+    #[test]
+    fn extract_filter_none() {
+        assert_eq!(extract_effective_image_filter(None), None);
+    }
+
+    #[test]
+    fn extract_filter_single_flate() {
+        let obj = PdfObject::Name(b"FlateDecode".to_vec());
+        assert_eq!(extract_effective_image_filter(Some(&obj)), None);
     }
 }

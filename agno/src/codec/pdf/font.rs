@@ -21,6 +21,7 @@ pub enum ResolvedFont {
         encoding: Encoding,
         first_char: u32,
         widths: Vec<f64>,
+        missing_width: f64,
         to_unicode: Option<ToUnicodeMap>,
     },
     CIDFont {
@@ -90,12 +91,15 @@ pub fn char_width_u32(font: &ResolvedFont, code: u32) -> f64 {
             widths.get(code as usize).copied().unwrap_or(0.0)
         }
         ResolvedFont::Embedded {
-            widths, first_char, ..
+            widths,
+            first_char,
+            missing_width,
+            ..
         } => {
             if code >= *first_char && (code - first_char) < widths.len() as u32 {
                 widths[(code - first_char) as usize]
             } else {
-                0.0
+                *missing_width
             }
         }
         ResolvedFont::CIDFont {
@@ -150,6 +154,7 @@ pub fn resolve_font(
     // Check for embedded font via FontDescriptor
     if let Some(descriptor_ref) = font_dict.get(b"FontDescriptor") {
         let descriptor = doc.resolve_value(descriptor_ref)?;
+        let missing_width = descriptor.get_f64(b"MissingWidth").unwrap_or(0.0);
         for key in &[
             b"FontFile2".as_slice(),
             b"FontFile3".as_slice(),
@@ -165,6 +170,7 @@ pub fn resolve_font(
                         encoding,
                         first_char,
                         widths,
+                        missing_width,
                         to_unicode,
                     });
                 }
@@ -522,12 +528,13 @@ mod tests {
             encoding: Encoding::Identity,
             first_char: 32,
             widths: vec![250.0, 300.0, 500.0],
+            missing_width: 600.0,
             to_unicode: None,
         };
         assert!((char_width(&font, 32) - 250.0).abs() < 1.0);
         assert!((char_width(&font, 33) - 300.0).abs() < 1.0);
         assert!((char_width(&font, 34) - 500.0).abs() < 1.0);
-        assert!((char_width(&font, 31) - 0.0).abs() < 1.0);
+        assert!((char_width(&font, 31) - 600.0).abs() < 1.0); // missing_width fallback
     }
 
     #[test]

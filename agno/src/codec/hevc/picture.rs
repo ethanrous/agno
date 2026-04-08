@@ -29,10 +29,12 @@ pub struct CtuSaoParams {
     pub cr: SaoParams,
 }
 
-/// Decoded HEVC picture in YCbCr 4:2:0 planar format.
+/// Decoded HEVC picture in YCbCr planar format.
 ///
-/// Luma plane is full resolution. Chroma planes (Cb, Cr) are half resolution
-/// in both dimensions per the 4:2:0 subsampling scheme.
+/// Luma plane is full resolution. Chroma plane dimensions depend on
+/// chroma_format_idc:
+///   - 1 (4:2:0): chroma = luma/2 x luma/2
+///   - 2 (4:2:2): chroma = luma/2 x luma (half width, full height)
 pub struct Picture {
     pub width: u32,
     pub height: u32,
@@ -42,6 +44,8 @@ pub struct Picture {
     pub stride_y: u32,
     pub stride_c: u32,
     pub bit_depth: u8,
+    /// Chroma subsampling format: 1 = 4:2:0, 2 = 4:2:2
+    pub chroma_format_idc: u32,
     /// ITU-T H.265 matrix_coefficients: 1 = BT.709 (default), 5/6 = BT.601
     pub matrix_coeffs: u8,
     /// SAO parameters per CTU, indexed by CTU raster-scan address.
@@ -76,11 +80,18 @@ pub struct Picture {
 impl Picture {
     /// Allocate a new picture with zeroed planes.
     ///
-    /// Chroma dimensions are `width/2` x `height/2` for 4:2:0 subsampling.
+    /// Chroma dimensions depend on `chroma_format_idc`:
+    ///   - 1 (4:2:0): `width/2` x `height/2`
+    ///   - 2 (4:2:2): `width/2` x `height`
+    ///
     /// Strides equal dimensions (no alignment padding).
-    pub fn new(width: u32, height: u32, bit_depth: u8) -> Self {
+    pub fn new(width: u32, height: u32, bit_depth: u8, chroma_format_idc: u32) -> Self {
         let chroma_w = width.div_ceil(2);
-        let chroma_h = height.div_ceil(2);
+        let chroma_h = if chroma_format_idc == 2 {
+            height
+        } else {
+            height.div_ceil(2)
+        };
 
         let luma_len = (width as usize) * (height as usize);
         let chroma_len = (chroma_w as usize) * (chroma_h as usize);
@@ -94,6 +105,7 @@ impl Picture {
             stride_y: width,
             stride_c: chroma_w,
             bit_depth,
+            chroma_format_idc,
             matrix_coeffs: MATRIX_COEFFS_BT709,
             sao_params: Vec::new(),
             cu_depth: Vec::new(),
@@ -107,6 +119,28 @@ impl Picture {
             reco_stride: 0,
             reco_log2: 0,
         }
+    }
+
+    /// Horizontal chroma subsampling factor (SubWidthC).
+    /// 2 for both 4:2:0 and 4:2:2.
+    pub fn sub_width_c(&self) -> u32 {
+        2
+    }
+
+    /// Vertical chroma subsampling factor (SubHeightC).
+    /// 2 for 4:2:0, 1 for 4:2:2.
+    pub fn sub_height_c(&self) -> u32 {
+        if self.chroma_format_idc == 2 { 1 } else { 2 }
+    }
+
+    /// Chroma width in samples.
+    pub fn chroma_width(&self) -> u32 {
+        self.width.div_ceil(self.sub_width_c())
+    }
+
+    /// Chroma height in samples.
+    pub fn chroma_height(&self) -> u32 {
+        self.height.div_ceil(self.sub_height_c())
     }
 
     /// Whether per-CU metadata maps have been initialized.
@@ -349,9 +383,10 @@ impl Picture {
         self.cr[idx] = val;
     }
 
-    /// Convert the YCbCr 4:2:0 picture to interleaved RGB8.
+    /// Convert the YCbCr picture to interleaved RGB8.
     ///
-    /// Chroma is upsampled from half-resolution using nearest-neighbor.
+    /// Chroma is upsampled from subsampled resolution using nearest-neighbor.
+    /// Supports both 4:2:0 (chroma_format_idc=1) and 4:2:2 (chroma_format_idc=2).
     /// Color matrix selection is based on `matrix_coeffs`:
     /// - 1 (default): BT.709
     /// - 5, 6: BT.601
@@ -368,21 +403,23 @@ impl Picture {
             0
         };
 
+        let sub_height_c = self.sub_height_c() as usize;
+
         let coeffs = matrix_for(self.matrix_coeffs);
         let mut rgb = vec![0u8; w * h * 3];
 
         for py in 0..h {
-            let cy = py / 2;
-            let chroma_h_max = (self.height as usize).div_ceil(2).saturating_sub(1);
-            let cy_clamped = cy.min(chroma_h_max);
+            let cy = py / sub_height_c;
+            let chroma_h_max = self.chroma_height() as usize;
+            let cy_clamped = cy.min(chroma_h_max.saturating_sub(1));
             let row_y_base = py * stride_y;
             let row_c_base = cy_clamped * stride_c;
             let rgb_row_base = py * w * 3;
 
             for px in 0..w {
                 let cx = px / 2;
-                let chroma_w_max = (self.width as usize).div_ceil(2).saturating_sub(1);
-                let cx_clamped = cx.min(chroma_w_max);
+                let chroma_w_max = self.chroma_width() as usize;
+                let cx_clamped = cx.min(chroma_w_max.saturating_sub(1));
 
                 let y_val = self.y[row_y_base + px] >> shift;
                 let cb_val = self.cb[row_c_base + cx_clamped] >> shift;
@@ -468,7 +505,7 @@ mod tests {
 
     #[test]
     fn new_allocates_correct_sizes() {
-        let pic = Picture::new(1920, 1080, 8);
+        let pic = Picture::new(1920, 1080, 8, 1);
         assert_eq!(pic.y.len(), 1920 * 1080);
         assert_eq!(pic.cb.len(), 960 * 540);
         assert_eq!(pic.cr.len(), 960 * 540);
@@ -480,7 +517,7 @@ mod tests {
 
     #[test]
     fn new_odd_dimensions() {
-        let pic = Picture::new(7, 5, 10);
+        let pic = Picture::new(7, 5, 10, 1);
         // chroma: (7+1)/2 = 4, (5+1)/2 = 3
         assert_eq!(pic.cb.len(), 4 * 3);
         assert_eq!(pic.stride_c, 4);
@@ -488,7 +525,7 @@ mod tests {
 
     #[test]
     fn set_and_get_samples() {
-        let mut pic = Picture::new(4, 4, 8);
+        let mut pic = Picture::new(4, 4, 8, 1);
         pic.set_y(2, 3, 200);
         assert_eq!(pic.y_at(2, 3), 200);
 
@@ -501,7 +538,7 @@ mod tests {
 
     #[test]
     fn mutable_plane_access() {
-        let mut pic = Picture::new(2, 2, 8);
+        let mut pic = Picture::new(2, 2, 8, 1);
         let y = pic.y_mut();
         y[0] = 100;
         y[1] = 110;
@@ -516,7 +553,7 @@ mod tests {
     #[test]
     fn neutral_gray_bt709() {
         // Y=128, Cb=128, Cr=128 should produce gray (128, 128, 128)
-        let mut pic = Picture::new(2, 2, 8);
+        let mut pic = Picture::new(2, 2, 8, 1);
         for s in pic.y_mut().iter_mut() {
             *s = 128;
         }
@@ -538,7 +575,7 @@ mod tests {
 
     #[test]
     fn pure_white_bt709() {
-        let mut pic = Picture::new(2, 2, 8);
+        let mut pic = Picture::new(2, 2, 8, 1);
         for s in pic.y_mut().iter_mut() {
             *s = 255;
         }
@@ -559,7 +596,7 @@ mod tests {
 
     #[test]
     fn pure_black() {
-        let mut pic = Picture::new(2, 2, 8);
+        let mut pic = Picture::new(2, 2, 8, 1);
         // Y=0, Cb=128, Cr=128
         for s in pic.cb_mut().iter_mut() {
             *s = 128;
@@ -578,7 +615,7 @@ mod tests {
 
     #[test]
     fn clipping_prevents_overflow() {
-        let mut pic = Picture::new(2, 2, 8);
+        let mut pic = Picture::new(2, 2, 8, 1);
         for s in pic.y_mut().iter_mut() {
             *s = 255;
         }
@@ -596,7 +633,7 @@ mod tests {
 
     #[test]
     fn clipping_prevents_underflow() {
-        let mut pic = Picture::new(2, 2, 8);
+        let mut pic = Picture::new(2, 2, 8, 1);
         // Y=0 with extreme chroma should clip at 0
         for s in pic.cr_mut().iter_mut() {
             *s = 255;
@@ -613,7 +650,7 @@ mod tests {
     #[test]
     fn ten_bit_shift() {
         // 10-bit value 512 >> 2 = 128, which with neutral chroma gives gray
-        let mut pic = Picture::new(2, 2, 10);
+        let mut pic = Picture::new(2, 2, 10, 1);
         for s in pic.y_mut().iter_mut() {
             *s = 512;
         }
@@ -634,7 +671,7 @@ mod tests {
 
     #[test]
     fn bt601_matrix_selection() {
-        let mut pic = Picture::new(2, 2, 8);
+        let mut pic = Picture::new(2, 2, 8, 1);
         pic.matrix_coeffs = MATRIX_COEFFS_BT601_525;
         for s in pic.y_mut().iter_mut() {
             *s = 128;
@@ -659,7 +696,7 @@ mod tests {
     fn bt601_red_differs_from_bt709() {
         // With non-neutral chroma, BT.601 and BT.709 should produce different R values
         let make = |coeffs: u8| -> u8 {
-            let mut pic = Picture::new(2, 2, 8);
+            let mut pic = Picture::new(2, 2, 8, 1);
             pic.matrix_coeffs = coeffs;
             for s in pic.y_mut().iter_mut() {
                 *s = 128;
@@ -681,14 +718,14 @@ mod tests {
 
     #[test]
     fn output_length() {
-        let pic = Picture::new(100, 50, 8);
+        let pic = Picture::new(100, 50, 8, 1);
         let rgb = pic.to_rgb8();
         assert_eq!(rgb.len(), 100 * 50 * 3);
     }
 
     #[test]
     fn single_pixel() {
-        let mut pic = Picture::new(1, 1, 8);
+        let mut pic = Picture::new(1, 1, 8, 1);
         pic.set_y(0, 0, 200);
         pic.set_cb(0, 0, 128);
         pic.set_cr(0, 0, 128);
@@ -708,5 +745,41 @@ mod tests {
         assert_eq!(clip_f32_u8(256.0), 255);
         assert_eq!(clip_f32_u8(127.3), 127);
         assert_eq!(clip_f32_u8(127.7), 128);
+    }
+
+    #[test]
+    fn new_422_allocates_correct_sizes() {
+        let pic = Picture::new(1920, 1080, 8, 2);
+        assert_eq!(pic.y.len(), 1920 * 1080);
+        // 4:2:2: chroma width = 960, chroma height = 1080 (full height)
+        assert_eq!(pic.cb.len(), 960 * 1080);
+        assert_eq!(pic.cr.len(), 960 * 1080);
+        assert_eq!(pic.stride_c, 960);
+        assert_eq!(pic.chroma_format_idc, 2);
+        assert_eq!(pic.sub_height_c(), 1);
+        assert_eq!(pic.sub_width_c(), 2);
+        assert_eq!(pic.chroma_width(), 960);
+        assert_eq!(pic.chroma_height(), 1080);
+    }
+
+    #[test]
+    fn neutral_gray_422() {
+        let mut pic = Picture::new(4, 4, 8, 2);
+        for s in pic.y_mut().iter_mut() {
+            *s = 128;
+        }
+        for s in pic.cb_mut().iter_mut() {
+            *s = 128;
+        }
+        for s in pic.cr_mut().iter_mut() {
+            *s = 128;
+        }
+        let rgb = pic.to_rgb8();
+        assert_eq!(rgb.len(), 4 * 4 * 3);
+        for chunk in rgb.chunks(3) {
+            assert_eq!(chunk[0], 128);
+            assert_eq!(chunk[1], 128);
+            assert_eq!(chunk[2], 128);
+        }
     }
 }

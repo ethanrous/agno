@@ -106,7 +106,9 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
             }
 
             // Chroma (when Bs >= 2)
-            if bs >= 2 && x / 2 < width.div_ceil(2) && y / 2 < height.div_ceil(2) {
+            let chroma_w = pic.chroma_width();
+            let chroma_h = pic.chroma_height();
+            if bs >= 2 && x / 2 < chroma_w && y / pic.sub_height_c() < chroma_h {
                 let tc_c_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
                 let tc_c = TC_TABLE[tc_c_idx as usize];
                 if tc_c > 0 {
@@ -144,7 +146,9 @@ pub fn deblock(pic: &mut Picture, sps: &Sps, pps: &Pps) {
                 deblock_luma_edge_h(pic, x, y, beta, tc, bit_depth_y);
             }
 
-            if bs >= 2 && x / 2 < width.div_ceil(2) && y / 2 < height.div_ceil(2) {
+            let chroma_w = pic.chroma_width();
+            let chroma_h = pic.chroma_height();
+            if bs >= 2 && x / 2 < chroma_w && y / pic.sub_height_c() < chroma_h {
                 let tc_c_idx = clip3(0, 53, qp_avg + 2 * (bs - 1) + (tc_offset << 1));
                 let tc_c = TC_TABLE[tc_c_idx as usize];
                 if tc_c > 0 {
@@ -399,11 +403,13 @@ fn deblock_luma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, beta: i32, tc: i3
 fn deblock_chroma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, tc: i32, bit_depth: i32) {
     let max_val = (1 << bit_depth) - 1;
     let cx = edge_x / 2;
-    let cy = y / 2;
-    let cw = pic.width.div_ceil(2);
-    let ch = pic.height.div_ceil(2);
+    let cy = y / pic.sub_height_c();
+    let cw = pic.chroma_width();
+    let ch = pic.chroma_height();
+    // Number of chroma lines per luma 4-line block: 2 for 4:2:0, 4 for 4:2:2
+    let num_lines = 4 / pic.sub_height_c();
 
-    for dy in 0..2u32 {
+    for dy in 0..num_lines {
         let c_y = cy + dy;
         if c_y >= ch || cx < 1 || cx >= cw {
             continue;
@@ -448,9 +454,9 @@ fn deblock_chroma_edge_v(pic: &mut Picture, edge_x: u32, y: u32, tc: i32, bit_de
 fn deblock_chroma_edge_h(pic: &mut Picture, x: u32, edge_y: u32, tc: i32, bit_depth: i32) {
     let max_val = (1 << bit_depth) - 1;
     let cx = x / 2;
-    let cy = edge_y / 2;
-    let cw = pic.width.div_ceil(2);
-    let ch = pic.height.div_ceil(2);
+    let cy = edge_y / pic.sub_height_c();
+    let cw = pic.chroma_width();
+    let ch = pic.chroma_height();
 
     for dx in 0..2u32 {
         let c_x = cx + dx;
@@ -536,16 +542,18 @@ pub fn apply_sao(pic: &mut Picture, sps: &Sps) {
                 x0,
                 y0,
                 ctb_size,
+                ctb_size,
                 &ctu_sao.y,
                 bit_depth,
             );
 
             // Chroma
-            let cw = width.div_ceil(2);
-            let ch = height.div_ceil(2);
-            let cx0 = x0 / 2;
-            let cy0 = y0 / 2;
-            let c_ctb = ctb_size / 2;
+            let cw = pic.chroma_width();
+            let ch = pic.chroma_height();
+            let cx0 = x0 / pic.sub_width_c();
+            let cy0 = y0 / pic.sub_height_c();
+            let c_ctb_w = ctb_size / pic.sub_width_c();
+            let c_ctb_h = ctb_size / pic.sub_height_c();
 
             apply_sao_component(
                 pic.cb_mut(),
@@ -555,7 +563,8 @@ pub fn apply_sao(pic: &mut Picture, sps: &Sps) {
                 ch,
                 cx0,
                 cy0,
-                c_ctb,
+                c_ctb_w,
+                c_ctb_h,
                 &ctu_sao.cb,
                 bit_depth,
             );
@@ -567,7 +576,8 @@ pub fn apply_sao(pic: &mut Picture, sps: &Sps) {
                 ch,
                 cx0,
                 cy0,
-                c_ctb,
+                c_ctb_w,
+                c_ctb_h,
                 &ctu_sao.cr,
                 bit_depth,
             );
@@ -584,7 +594,8 @@ fn apply_sao_component(
     pic_h: u32,
     x0: u32,
     y0: u32,
-    ctb_size: u32,
+    ctb_w: u32,
+    ctb_h: u32,
     sao: &SaoParams,
     bit_depth: u8,
 ) {
@@ -593,8 +604,8 @@ fn apply_sao_component(
     }
     let max_val = (1i32 << bit_depth) - 1;
 
-    let x_end = (x0 + ctb_size).min(pic_w);
-    let y_end = (y0 + ctb_size).min(pic_h);
+    let x_end = (x0 + ctb_w).min(pic_w);
+    let y_end = (y0 + ctb_h).min(pic_h);
 
     if sao.sao_type_idx == 1 {
         // Band offset
@@ -703,6 +714,7 @@ mod tests {
             _max_transform_hierarchy_depth_inter: 1,
             max_transform_hierarchy_depth_intra: 1,
             scaling_list_enabled_flag: false,
+            scaling_list: None,
             _amp_enabled_flag: true,
             sample_adaptive_offset_enabled_flag: true,
             _pcm_enabled_flag: false,
@@ -718,6 +730,16 @@ mod tests {
             _sps_temporal_mvp_enabled_flag: true,
             strong_intra_smoothing_enabled_flag: true,
             _vui_parameters_present_flag: false,
+            matrix_coefficients: 0,
+            persistent_rice_adaptation_enabled_flag: false,
+            cabac_bypass_alignment_enabled_flag: false,
+            _transform_skip_rotation_enabled_flag: false,
+            _transform_skip_context_enabled_flag: false,
+            _implicit_rdpcm_enabled_flag: false,
+            _explicit_rdpcm_enabled_flag: false,
+            _extended_precision_processing_flag: false,
+            _intra_smoothing_disabled_flag: false,
+            _high_precision_offsets_enabled_flag: false,
         }
     }
 
@@ -764,7 +786,7 @@ mod tests {
             pps_deblocking_filter_disabled_flag: false,
             pps_beta_offset_div2: 0,
             pps_tc_offset_div2: 0,
-            _pps_scaling_list_data_present_flag: false,
+            scaling_list: None,
             _lists_modification_present_flag: false,
             _log2_parallel_merge_level_minus2: 0,
             _slice_segment_header_extension_present_flag: false,
@@ -776,7 +798,7 @@ mod tests {
     }
 
     fn flat_picture_with_qp(w: u32, h: u32, val: i16, qp: i32) -> Picture {
-        let mut pic = Picture::new(w, h, 8);
+        let mut pic = Picture::new(w, h, 8, 1);
         // min_cb_log2=3 matches test_sps()
         pic.init_metadata(3, qp);
         for s in pic.y_mut().iter_mut() {
@@ -834,7 +856,7 @@ mod tests {
     fn deblock_modifies_vertical_step_edge() {
         let sps = test_sps(16, 16);
         let pps = test_pps();
-        let mut pic = Picture::new(16, 16, 8);
+        let mut pic = Picture::new(16, 16, 8, 1);
         pic.init_metadata(3, 40);
         for y in 0..16u32 {
             for x in 0..16u32 {
@@ -859,7 +881,7 @@ mod tests {
     fn deblock_modifies_horizontal_step_edge() {
         let sps = test_sps(16, 16);
         let pps = test_pps();
-        let mut pic = Picture::new(16, 16, 8);
+        let mut pic = Picture::new(16, 16, 8, 1);
         pic.init_metadata(3, 40);
         for y in 0..16u32 {
             for x in 0..16u32 {
@@ -889,7 +911,7 @@ mod tests {
         // |p3-p0| + |q0-q3| must be < beta>>3, and |p0-q0| < (5*tc+1)>>1
         let sps = test_sps(16, 16);
         let pps = test_pps();
-        let mut pic = Picture::new(16, 16, 8);
+        let mut pic = Picture::new(16, 16, 8, 1);
         pic.init_metadata(3, 40);
         for y in 0..16u32 {
             for x in 0..16u32 {
@@ -913,7 +935,7 @@ mod tests {
     fn deblock_10bit_stays_in_range() {
         let sps = test_sps_10bit(16, 16);
         let pps = test_pps();
-        let mut pic = Picture::new(16, 16, 10);
+        let mut pic = Picture::new(16, 16, 10, 1);
         pic.init_metadata(3, 35);
         for y in 0..16u32 {
             for x in 0..16u32 {
@@ -941,7 +963,7 @@ mod tests {
     fn deblock_chroma_step_edge() {
         let sps = test_sps(16, 16);
         let pps = test_pps();
-        let mut pic = Picture::new(16, 16, 8);
+        let mut pic = Picture::new(16, 16, 8, 1);
         pic.init_metadata(3, 30);
         for s in pic.y_mut().iter_mut() {
             *s = 128;
@@ -1183,7 +1205,7 @@ mod tests {
     #[test]
     fn sao_10bit_band_offset() {
         let sps = test_sps_10bit(64, 64);
-        let mut pic = Picture::new(64, 64, 10);
+        let mut pic = Picture::new(64, 64, 10, 1);
         for s in pic.y_mut().iter_mut() {
             *s = 512;
         }

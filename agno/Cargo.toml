@@ -16,6 +16,7 @@ rayon = "1.11.0"
 tiny-skia = { version = "0.11", optional = true }
 ttf-parser = { version = "0.25", optional = true }
 miniz_oxide = { version = "0.8", optional = true }
+md5 = { version = "0.7", optional = true }
 # GPU dependencies (optional)
 agno-gpu-shared = { path = "../agno-gpu-shared", features = ["std"], optional = true }
 wgpu = { version = "23.0", features = ["spirv"], optional = true }
@@ -35,7 +36,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 jpeg = []
 png = ["dep:miniz_oxide"]
 webp = []
-pdf = ["dep:tiny-skia", "dep:ttf-parser", "dep:miniz_oxide"]
+pdf = ["dep:tiny-skia", "dep:ttf-parser", "dep:miniz_oxide", "dep:md5"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:agno-gpu-shared", "dep:spirv-builder"]
 cabac-trace = []  # Debug: log every CABAC decision for comparison with libde265
 default = ["gpu", "jpeg", "png", "webp", "pdf"]

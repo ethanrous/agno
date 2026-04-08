@@ -1,6 +1,7 @@
 mod cmap;
 mod color;
 mod content;
+mod crypt;
 pub mod document;
 mod encoding;
 mod font;

@@ -373,6 +373,32 @@ fn broken_heic_ipma_selects_correct_hvcc() {
     }
 }
 
+// --- 4:2:2 HEIC tests (Sony ILCE-7SM3, profile_idc=4 Rext) ---
+
+#[test]
+fn hevc_422_decodes_not_garbled() {
+    let img = load_agno_image_from_file(&test_data("sony422.heic")).unwrap();
+    assert!(img.width > 0 && img.height > 0);
+    assert_eq!(img.as_slice().len(), (img.width * img.height * 3) as usize);
+    eprintln!("sony422.heic: {}x{}", img.width, img.height);
+
+    // Verify the image is not all-green (the failure mode for broken 4:2:2)
+    let ratio = green_ratio(img.as_slice());
+    eprintln!("sony422.heic: green ratio: {:.1}%", ratio * 100.0);
+    assert!(
+        ratio < 0.5,
+        "Image is {:.1}% green-dominant — 4:2:2 decoding likely broken",
+        ratio * 100.0
+    );
+}
+
+#[test]
+fn hevc_422_correct_dimensions() {
+    let img = load_agno_image_from_file(&test_data("sony422.heic")).unwrap();
+    assert_eq!(img.width, 1664, "Expected width 1664");
+    assert_eq!(img.height, 1088, "Expected height 1088");
+}
+
 // --- failed2.heic tests ---
 
 #[test]

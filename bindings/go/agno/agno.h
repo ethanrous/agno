@@ -18,6 +18,17 @@ typedef struct {
 } AgnoImage;
 
 
+/**
+ * Result of an FFI call that returns an AgnoImage.
+ * On success: image is non-null, error is null.
+ * On failure: image is null, error is a malloc'd UTF-8 string.
+ */
+typedef struct {
+  AgnoImage *image;
+  uint8_t *error;
+  uintptr_t error_len;
+} AgnoResult;
+
 typedef struct {
   uint8_t *data;
   uintptr_t len;
@@ -35,13 +46,13 @@ typedef struct {
   uintptr_t len;
 } AgnoBuffer;
 
-AgnoImage *load_image_from_path(const char *path, uintptr_t len);
+AgnoResult load_image_from_path(const char *path, uintptr_t len);
 
 #if defined(AGNO_WEBP)
 void write_agno_image_to_webp(const char *path, uintptr_t len, AgnoImage *img);
 #endif
 
-AgnoImage *resize_image(AgnoImage *img, uintptr_t new_width, uintptr_t new_height);
+AgnoResult resize_image(AgnoImage *img, uintptr_t new_width, uintptr_t new_height);
 
 ExifData get_exif_value(const AgnoImage *img, uint16_t img_tag);
 
@@ -55,9 +66,8 @@ AgnoBuffer write_agno_image_to_jpeg_buffer(const AgnoImage *img, uint8_t quality
 /**
  * Load a specific page from a PDF file and return it as an AgnoImage.
  * `page_num` is 0-based. `max_width`/`max_height` of 0 uses default 2x scale.
- * Returns null on error.
  */
-AgnoImage *load_pdf_page(const char *path,
+AgnoResult load_pdf_page(const char *path,
                          uintptr_t len,
                          uintptr_t page_num,
                          uint32_t max_width,
@@ -67,6 +77,8 @@ AgnoImage *load_pdf_page(const char *path,
 void free_agno_buffer(AgnoBuffer buf);
 
 void free_agno_image(const AgnoImage *img);
+
+void free_agno_result(AgnoResult result);
 
 void init_agno(void);
 

@@ -17,6 +17,8 @@ pub struct PositionedGlyph<'a> {
     pub y: f64,
     pub char_code: u32,
     /// Advance width in user space (already scaled by text matrix).
+    /// Populated during layout for test assertions; no production consumer yet.
+    #[allow(dead_code)]
     pub width_user_space: f64,
     /// Effective font size in user space (Tf size * text matrix scale).
     pub font_size_user_space: f64,
@@ -166,7 +168,7 @@ pub fn layout_text<'a>(
                                 &mut glyphs,
                             );
                         } else if let Some(adj) = item.as_f64() {
-                            let dx = -(adj / 1000.0) * font_size;
+                            let dx = -(adj / 1000.0) * font_size * (horizontal_scaling / 100.0);
                             let advance = Matrix {
                                 a: 1.0,
                                 b: 0.0,
@@ -403,6 +405,35 @@ mod tests {
         assert!(line2_start.is_some());
         let line2_y = glyphs[line2_start.unwrap()].y;
         assert!((line2_y - 86.0).abs() < 0.01, "Expected 86, got {line2_y}");
+    }
+
+    #[test]
+    fn tj_array_respects_horizontal_scaling() {
+        // TJ numeric adjustment should be scaled by Th (horizontal_scaling / 100).
+        // PDF spec: tx = -(adj / 1000) * Tfs * Th
+        let stream = b"BT /F1 12 Tf 200 Tz 0 0 Td [(A) -500 (B)] TJ ET";
+        let text_ops = extract_text_ops(stream);
+        let text_op_refs: Vec<&Operator> = text_ops.iter().collect();
+
+        let state = default_state();
+        let fonts = make_fonts();
+        let glyphs = layout_text(&text_op_refs, &state, &fonts).unwrap();
+
+        assert_eq!(glyphs.len(), 2, "Expected 2 glyphs (A and B)");
+
+        // At Tz=200, th=2.0. The TJ adjustment of -500 means:
+        // dx = -(-500 / 1000) * 12 * 2.0 = 12.0 in text coords
+        // Glyph A advance at Tz=200: ((667/1000) * 12) * 2.0 = 16.008
+        // Total offset for B: 16.008 + 12.0 = 28.008
+        // Without Th on TJ: 16.008 + 6.0 = 22.008 — WRONG
+        let b_x = glyphs[1].x;
+        let expected_with_th = 28.008;
+        let wrong_without_th = 22.008;
+
+        assert!(
+            (b_x - expected_with_th).abs() < 0.1,
+            "B position {b_x} should be near {expected_with_th} (with Th), not {wrong_without_th} (without Th)"
+        );
     }
 
     #[test]

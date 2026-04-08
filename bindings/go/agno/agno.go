@@ -27,22 +27,41 @@ func init() {
 	C.init_agno()
 }
 
+// agnoResult extracts an *Image or error from a C.AgnoResult.
+// On error, frees the result's error string and returns a descriptive Go error.
+// On success, returns an *Image with a destructor finalizer.
+func agnoResult(r C.AgnoResult, fallback string) (*Image, error) {
+	if r.image == nil || r.image.width == 0 || r.image.height == 0 {
+		var msg string
+		if r.error != nil && r.error_len > 0 {
+			msg = C.GoStringN((*C.char)(unsafe.Pointer(r.error)), C.int(r.error_len))
+		}
+		// Free the entire result (error string + degenerate image pointer).
+		if r.image != nil {
+			C.free_agno_image(r.image)
+		}
+		C.free_agno_result(r)
+		if msg != "" {
+			return nil, fmt.Errorf("agno: %s", msg)
+		}
+		return nil, fmt.Errorf("agno: %s", fallback)
+	}
+
+	C.free_agno_result(r)
+	img := &Image{img: r.image}
+	runtime.SetFinalizer(img, func(i *Image) {
+		i.Close()
+	})
+	return img, nil
+}
+
 // Open loads an image from the given file path.
 func Open(path string) (*Image, error) {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
-	cImg := C.load_image_from_path(cPath, C.size_t(len(path)))
-	if cImg == nil || cImg.len == 0 || cImg.width == 0 || cImg.height == 0 {
-		return nil, fmt.Errorf("agno: failed to load image from %s", path)
-	}
-
-	img := &Image{img: cImg}
-	runtime.SetFinalizer(img, func(i *Image) {
-		i.Close()
-	})
-
-	return img, nil
+	r := C.load_image_from_path(cPath, C.uintptr_t(len(path)))
+	return agnoResult(r, "failed to load image from "+path)
 }
 
 // OpenPage loads a specific page from a multi-page file (e.g., PDF).
@@ -51,17 +70,8 @@ func OpenPage(path string, page int, maxWidth, maxHeight int) (*Image, error) {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
-	cImg := C.load_pdf_page(cPath, C.size_t(len(path)), C.size_t(page), C.uint(maxWidth), C.uint(maxHeight))
-	if cImg == nil || cImg.len == 0 || cImg.width == 0 || cImg.height == 0 {
-		return nil, fmt.Errorf("agno: failed to load page %d from %s", page, path)
-	}
-
-	img := &Image{img: cImg}
-	runtime.SetFinalizer(img, func(i *Image) {
-		i.Close()
-	})
-
-	return img, nil
+	r := C.load_pdf_page(cPath, C.uintptr_t(len(path)), C.uintptr_t(page), C.uint(maxWidth), C.uint(maxHeight))
+	return agnoResult(r, fmt.Sprintf("failed to load page %d from %s", page, path))
 }
 
 // Close releases image resources. Safe to call multiple times.
@@ -108,23 +118,14 @@ func (img *Image) Resize(scale float64) (*Image, error) {
 
 	// C.resize_image consumes the old pointer (Box::from_raw on Rust side).
 	// After this call, img.img is invalid.
-	newCImg := C.resize_image(img.img, C.size_t(newWidth), C.size_t(newHeight))
+	r := C.resize_image(img.img, C.uintptr_t(newWidth), C.uintptr_t(newHeight))
 
 	// Mark receiver as freed so finalizer doesn't double-free.
 	img.freed = true
 	img.img = nil
 	img.mu.Unlock()
 
-	if newCImg == nil {
-		return nil, fmt.Errorf("agno: resize failed")
-	}
-
-	newImg := &Image{img: newCImg}
-	runtime.SetFinalizer(newImg, func(i *Image) {
-		i.Close()
-	})
-
-	return newImg, nil
+	return agnoResult(r, "resize failed")
 }
 
 // WriteWebP writes the image as WebP to the given file path.

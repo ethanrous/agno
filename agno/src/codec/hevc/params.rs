@@ -243,26 +243,197 @@ pub fn parse_short_term_ref_pic_set(
 // Scaling list data (parse/skip)
 // ---------------------------------------------------------------------------
 
-fn parse_scaling_list_data(reader: &mut BitReader) -> Result<()> {
+/// Diagonal scan order for 4x4 blocks (H.265 Table 6-3).
+/// Each entry is the raster-order index corresponding to scan position i.
+pub const DIAG_SCAN_4X4: [usize; 16] = [0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15];
+
+/// Diagonal scan order for 8x8 blocks (H.265 Table 6-4).
+pub const DIAG_SCAN_8X8: [usize; 64] = [
+    0, 8, 1, 16, 9, 2, 24, 17, 10, 3, 32, 25, 18, 11, 4, 40, 33, 26, 19, 12, 5, 48, 41, 34, 27, 20,
+    13, 6, 56, 49, 42, 35, 28, 21, 14, 7, 57, 50, 43, 36, 29, 22, 15, 58, 51, 44, 37, 30, 23, 59,
+    52, 45, 38, 31, 60, 53, 46, 39, 61, 54, 47, 62, 55, 63,
+];
+
+/// H.265 Table 7-3: default intra 8x8 scaling list in diagonal scan order.
+pub const DEFAULT_8X8_INTRA_DIAG: [u8; 64] = [
+    16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 17, 16, 17, 16, 17, 18, 17, 18, 18, 17, 18, 21, 19, 20,
+    21, 20, 19, 21, 24, 22, 22, 24, 24, 22, 22, 24, 25, 25, 27, 30, 27, 25, 25, 29, 31, 35, 35, 31,
+    29, 36, 41, 44, 41, 36, 47, 54, 54, 47, 65, 70, 65, 88, 88, 115,
+];
+
+/// H.265 Table 7-4: default inter 8x8 scaling list in diagonal scan order.
+pub const DEFAULT_8X8_INTER_DIAG: [u8; 64] = [
+    16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 17, 17, 17, 17, 17, 18, 18, 18, 18, 18, 18, 20, 20, 20,
+    20, 20, 20, 20, 24, 24, 24, 24, 24, 24, 24, 24, 25, 25, 25, 25, 25, 25, 25, 28, 28, 28, 28, 28,
+    28, 33, 33, 33, 33, 33, 40, 40, 40, 40, 44, 44, 44, 50, 50, 55,
+];
+
+/// H.265 scaling list data structure holding all sizeId/matrixId combinations.
+/// All matrices are stored in raster (row-major) order.
+#[derive(Debug, Clone)]
+pub struct ScalingListData {
+    /// sizeId=0: 6 matrices of 16 coefficients (4x4)
+    pub matrices_4x4: [[u8; 16]; 6],
+    /// sizeId=1: 6 matrices of 64 coefficients (8x8)
+    pub matrices_8x8: [[u8; 64]; 6],
+    /// sizeId=2: 6 matrices of 64 coefficients (16x16, stored as 8x8 base)
+    pub matrices_16x16: [[u8; 64]; 6],
+    /// sizeId=3: 2 matrices of 64 coefficients (32x32, stored as 8x8 base)
+    pub matrices_32x32: [[u8; 64]; 2],
+    /// DC coefficients for 16x16 matrices (one per matrixId 0-5)
+    pub dc_coef_16x16: [u8; 6],
+    /// DC coefficients for 32x32 matrices (one per matrixId 0-1)
+    pub dc_coef_32x32: [u8; 2],
+}
+
+impl ScalingListData {
+    /// Convert a 4x4 array in diagonal scan order to raster order.
+    pub fn diag_to_raster_4x4(diag: &[u8; 16]) -> [u8; 16] {
+        let mut raster = [0u8; 16];
+        for (scan_idx, &raster_idx) in DIAG_SCAN_4X4.iter().enumerate() {
+            raster[raster_idx] = diag[scan_idx];
+        }
+        raster
+    }
+
+    /// Convert an 8x8 array in diagonal scan order to raster order.
+    pub fn diag_to_raster_8x8(diag: &[u8; 64]) -> [u8; 64] {
+        let mut raster = [0u8; 64];
+        for (scan_idx, &raster_idx) in DIAG_SCAN_8X8.iter().enumerate() {
+            raster[raster_idx] = diag[scan_idx];
+        }
+        raster
+    }
+
+    /// Construct the H.265 default scaling lists (H.265 7.4.5).
+    ///
+    /// - sizeId=0 (4x4): all matrices flat 16
+    /// - sizeId=1 (8x8): matrixId 0-2 = Table 7-3, matrixId 3-5 = Table 7-4
+    /// - sizeId=2 (16x16): same as 8x8
+    /// - sizeId=3 (32x32): matrixId 0 = intra, matrixId 1 = inter
+    /// - All DC coefficients default to 16
+    pub fn default_lists() -> Self {
+        let flat_4x4 = [16u8; 16];
+        let intra_8x8 = Self::diag_to_raster_8x8(&DEFAULT_8X8_INTRA_DIAG);
+        let inter_8x8 = Self::diag_to_raster_8x8(&DEFAULT_8X8_INTER_DIAG);
+
+        Self {
+            matrices_4x4: [flat_4x4; 6],
+            matrices_8x8: [
+                intra_8x8, intra_8x8, intra_8x8, inter_8x8, inter_8x8, inter_8x8,
+            ],
+            matrices_16x16: [
+                intra_8x8, intra_8x8, intra_8x8, inter_8x8, inter_8x8, inter_8x8,
+            ],
+            matrices_32x32: [intra_8x8, inter_8x8],
+            dc_coef_16x16: [16; 6],
+            dc_coef_32x32: [16; 2],
+        }
+    }
+
+    /// Look up the scaling factor for position (x, y) in a transform block.
+    ///
+    /// - `log2_size`: log2 of the transform block size (2=4x4, 3=8x8, 4=16x16, 5=32x32)
+    /// - `c_idx`: component index (0=luma, 1=Cb, 2=Cr). For I-slices, matrixId = c_idx.
+    pub fn scaling_value(&self, x: u32, y: u32, log2_size: u32, c_idx: u8) -> i32 {
+        let matrix_id = c_idx as usize;
+        match log2_size {
+            2 => {
+                // 4x4: direct lookup
+                let idx = (y * 4 + x) as usize;
+                self.matrices_4x4[matrix_id][idx] as i32
+            }
+            3 => {
+                // 8x8: direct lookup
+                let idx = (y * 8 + x) as usize;
+                self.matrices_8x8[matrix_id][idx] as i32
+            }
+            4 => {
+                // 16x16: upscale 8x8 by 2x2 replication, DC override at (0,0)
+                if x == 0 && y == 0 {
+                    return self.dc_coef_16x16[matrix_id] as i32;
+                }
+                let bx = (x / 2) as usize;
+                let by = (y / 2) as usize;
+                self.matrices_16x16[matrix_id][by * 8 + bx] as i32
+            }
+            5 => {
+                // 32x32: upscale 8x8 by 4x4 replication, DC override at (0,0)
+                // Only matrixId 0 (intra) and 1 (inter) exist for 32x32
+                let mid = matrix_id.min(1);
+                if x == 0 && y == 0 {
+                    return self.dc_coef_32x32[mid] as i32;
+                }
+                let bx = (x / 4) as usize;
+                let by = (y / 4) as usize;
+                self.matrices_32x32[mid][by * 8 + bx] as i32
+            }
+            _ => 16, // Fallback: flat scaling
+        }
+    }
+}
+
+fn parse_scaling_list_data(reader: &mut BitReader) -> Result<ScalingListData> {
+    let mut sl = ScalingListData::default_lists();
     for size_id in 0..4u8 {
-        let count = if size_id == 3 { 2 } else { 6 };
+        let count: usize = if size_id == 3 { 2 } else { 6 };
         for matrix_id in 0..count {
             let scaling_list_pred_mode_flag = reader.read_flag()?;
             if !scaling_list_pred_mode_flag {
-                let _pred_matrix_id_delta = reader.read_ue()?;
-            } else {
-                let coef_num = std::cmp::min(64, 1u32 << (4 + (size_id << 1)));
-                if size_id > 1 {
-                    let _scaling_list_dc_coef = reader.read_se()?;
+                let pred_matrix_id_delta = reader.read_ue()? as usize;
+                if pred_matrix_id_delta > 0 {
+                    ensure!(
+                        pred_matrix_id_delta <= matrix_id,
+                        "scaling_list_pred_matrix_id_delta {pred_matrix_id_delta} exceeds matrix_id {matrix_id}"
+                    );
+                    let src_id = matrix_id - pred_matrix_id_delta;
+                    match size_id {
+                        0 => sl.matrices_4x4[matrix_id] = sl.matrices_4x4[src_id],
+                        1 => sl.matrices_8x8[matrix_id] = sl.matrices_8x8[src_id],
+                        2 => {
+                            sl.matrices_16x16[matrix_id] = sl.matrices_16x16[src_id];
+                            sl.dc_coef_16x16[matrix_id] = sl.dc_coef_16x16[src_id];
+                        }
+                        3 => {
+                            sl.matrices_32x32[matrix_id] = sl.matrices_32x32[src_id];
+                            sl.dc_coef_32x32[matrix_id] = sl.dc_coef_32x32[src_id];
+                        }
+                        _ => {}
+                    }
                 }
-                for _ in 0..coef_num {
-                    let _scaling_list_delta_coef = reader.read_se()?;
+                // delta == 0: keep default values already in sl
+            } else {
+                let coef_num = std::cmp::min(64, 1u32 << (4 + (size_id << 1))) as usize;
+                let mut next_coef: u32 = 8;
+                if size_id > 1 {
+                    let dc_delta = reader.read_se()?;
+                    next_coef = (8i32 + dc_delta) as u32 & 0xFF;
+                    match size_id {
+                        2 => sl.dc_coef_16x16[matrix_id] = next_coef as u8,
+                        3 => sl.dc_coef_32x32[matrix_id] = next_coef as u8,
+                        _ => {}
+                    }
+                }
+                for i in 0..coef_num {
+                    let delta = reader.read_se()?;
+                    next_coef = ((next_coef as i32 + delta + 256) & 255) as u32;
+                    let raster = if size_id == 0 {
+                        DIAG_SCAN_4X4[i]
+                    } else {
+                        DIAG_SCAN_8X8[i]
+                    };
+                    match size_id {
+                        0 => sl.matrices_4x4[matrix_id][raster] = next_coef as u8,
+                        1 => sl.matrices_8x8[matrix_id][raster] = next_coef as u8,
+                        2 => sl.matrices_16x16[matrix_id][raster] = next_coef as u8,
+                        3 => sl.matrices_32x32[matrix_id][raster] = next_coef as u8,
+                        _ => {}
+                    }
                 }
             }
-            let _ = matrix_id;
         }
     }
-    Ok(())
+    Ok(sl)
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +528,7 @@ pub struct Sps {
     pub _max_transform_hierarchy_depth_inter: u32,
     pub max_transform_hierarchy_depth_intra: u32,
     pub scaling_list_enabled_flag: bool,
+    pub scaling_list: Option<ScalingListData>,
     pub _amp_enabled_flag: bool,
     pub sample_adaptive_offset_enabled_flag: bool,
     pub _pcm_enabled_flag: bool,
@@ -372,6 +544,17 @@ pub struct Sps {
     pub _sps_temporal_mvp_enabled_flag: bool,
     pub strong_intra_smoothing_enabled_flag: bool,
     pub _vui_parameters_present_flag: bool,
+    pub matrix_coefficients: u8,
+    // Range extension flags (profile_idc >= 4)
+    pub persistent_rice_adaptation_enabled_flag: bool,
+    pub cabac_bypass_alignment_enabled_flag: bool,
+    pub _transform_skip_rotation_enabled_flag: bool,
+    pub _transform_skip_context_enabled_flag: bool,
+    pub _implicit_rdpcm_enabled_flag: bool,
+    pub _explicit_rdpcm_enabled_flag: bool,
+    pub _extended_precision_processing_flag: bool,
+    pub _intra_smoothing_disabled_flag: bool,
+    pub _high_precision_offsets_enabled_flag: bool,
 }
 
 impl Sps {
@@ -482,13 +665,16 @@ impl Sps {
         let max_transform_hierarchy_depth_intra = reader.read_ue()?;
 
         let scaling_list_enabled_flag = reader.read_flag()?;
-        if scaling_list_enabled_flag {
+        let scaling_list = if scaling_list_enabled_flag {
             let sps_scaling_list_data_present_flag = reader.read_flag()?;
             if sps_scaling_list_data_present_flag {
-                tracing::warn!("SPS has custom scaling list data — currently discarded");
-                parse_scaling_list_data(reader)?;
+                Some(parse_scaling_list_data(reader)?)
+            } else {
+                Some(ScalingListData::default_lists())
             }
-        }
+        } else {
+            None
+        };
 
         let amp_enabled_flag = reader.read_flag()?;
         let sample_adaptive_offset_enabled_flag = reader.read_flag()?;
@@ -541,8 +727,42 @@ impl Sps {
         let strong_intra_smoothing_enabled_flag = reader.read_flag()?;
 
         let vui_parameters_present_flag = reader.read_flag()?;
-        // VUI parsing is not required for decoding still images.
-        // The flag is stored so callers know it was present.
+        let mut matrix_coefficients = 0u8;
+        if vui_parameters_present_flag {
+            matrix_coefficients = skip_vui(reader)?;
+        }
+
+        // Parse SPS range extension if present (profile_idc >= 4).
+        let mut persistent_rice_adaptation_enabled_flag = false;
+        let mut cabac_bypass_alignment_enabled_flag = false;
+        let mut transform_skip_rotation_enabled_flag = false;
+        let mut transform_skip_context_enabled_flag = false;
+        let mut implicit_rdpcm_enabled_flag = false;
+        let mut explicit_rdpcm_enabled_flag = false;
+        let mut extended_precision_processing_flag = false;
+        let mut intra_smoothing_disabled_flag = false;
+        let mut high_precision_offsets_enabled_flag = false;
+
+        if reader.bits_remaining() >= 10 {
+            let sps_extension_present_flag = reader.read_flag()?;
+            if sps_extension_present_flag {
+                let sps_range_extension_flag = reader.read_flag()?;
+                let _sps_multilayer_extension_flag = reader.read_flag()?;
+                let _sps_3d_extension_flag = reader.read_flag()?;
+                let _sps_extension_5bits = reader.read_bits(5)?;
+                if sps_range_extension_flag {
+                    transform_skip_rotation_enabled_flag = reader.read_flag()?;
+                    transform_skip_context_enabled_flag = reader.read_flag()?;
+                    implicit_rdpcm_enabled_flag = reader.read_flag()?;
+                    explicit_rdpcm_enabled_flag = reader.read_flag()?;
+                    extended_precision_processing_flag = reader.read_flag()?;
+                    intra_smoothing_disabled_flag = reader.read_flag()?;
+                    high_precision_offsets_enabled_flag = reader.read_flag()?;
+                    persistent_rice_adaptation_enabled_flag = reader.read_flag()?;
+                    cabac_bypass_alignment_enabled_flag = reader.read_flag()?;
+                }
+            }
+        }
 
         Ok(Self {
             _sps_video_parameter_set_id: sps_video_parameter_set_id,
@@ -572,6 +792,7 @@ impl Sps {
             _max_transform_hierarchy_depth_inter: max_transform_hierarchy_depth_inter,
             max_transform_hierarchy_depth_intra,
             scaling_list_enabled_flag,
+            scaling_list,
             _amp_enabled_flag: amp_enabled_flag,
             sample_adaptive_offset_enabled_flag,
             _pcm_enabled_flag: pcm_enabled_flag,
@@ -588,8 +809,141 @@ impl Sps {
             _sps_temporal_mvp_enabled_flag: sps_temporal_mvp_enabled_flag,
             strong_intra_smoothing_enabled_flag,
             _vui_parameters_present_flag: vui_parameters_present_flag,
+            matrix_coefficients,
+            persistent_rice_adaptation_enabled_flag,
+            cabac_bypass_alignment_enabled_flag,
+            _transform_skip_rotation_enabled_flag: transform_skip_rotation_enabled_flag,
+            _transform_skip_context_enabled_flag: transform_skip_context_enabled_flag,
+            _implicit_rdpcm_enabled_flag: implicit_rdpcm_enabled_flag,
+            _explicit_rdpcm_enabled_flag: explicit_rdpcm_enabled_flag,
+            _extended_precision_processing_flag: extended_precision_processing_flag,
+            _intra_smoothing_disabled_flag: intra_smoothing_disabled_flag,
+            _high_precision_offsets_enabled_flag: high_precision_offsets_enabled_flag,
         })
     }
+}
+
+/// Parse and skip VUI parameters (H.265 Annex E), returning the matrix_coefficients value.
+/// Returns 0 if colour_description is not present.
+fn skip_vui(r: &mut BitReader) -> Result<u8> {
+    let mut matrix_coefficients = 0u8;
+
+    // aspect_ratio_info_present_flag
+    if r.read_flag()? {
+        let aspect_ratio_idc = r.read_bits(8)?;
+        if aspect_ratio_idc == 255 {
+            r.skip_bits(32)?; // sar_width + sar_height
+        }
+    }
+    // overscan_info_present_flag
+    if r.read_flag()? {
+        r.skip_bits(1)?; // overscan_appropriate_flag
+    }
+    // video_signal_type_present_flag
+    if r.read_flag()? {
+        r.skip_bits(3 + 1)?; // video_format + video_full_range_flag
+        // colour_description_present_flag
+        if r.read_flag()? {
+            let _colour_primaries = r.read_bits(8)?;
+            let _transfer_characteristics = r.read_bits(8)?;
+            matrix_coefficients = r.read_bits(8)? as u8;
+        }
+    }
+    // chroma_loc_info_present_flag
+    if r.read_flag()? {
+        r.read_ue()?; // chroma_sample_loc_type_top_field
+        r.read_ue()?; // chroma_sample_loc_type_bottom_field
+    }
+    // neutral_chroma_indication_flag, field_seq_flag, frame_field_info_present_flag
+    r.skip_bits(3)?;
+    // default_display_window_flag
+    if r.read_flag()? {
+        r.read_ue()?; // def_disp_win_left_offset
+        r.read_ue()?; // def_disp_win_right_offset
+        r.read_ue()?; // def_disp_win_top_offset
+        r.read_ue()?; // def_disp_win_bottom_offset
+    }
+    // vui_timing_info_present_flag
+    if r.read_flag()? {
+        r.skip_bits(64)?; // num_units_in_tick + time_scale
+        // vui_poc_proportional_to_timing_flag
+        if r.read_flag()? {
+            r.read_ue()?; // vui_num_ticks_poc_diff_one_minus1
+        }
+        // vui_hrd_parameters_present_flag
+        if r.read_flag()? {
+            skip_hrd_parameters(r, true, 0)?;
+        }
+    }
+    // bitstream_restriction_flag
+    if r.read_flag()? {
+        r.skip_bits(3)?; // tiles_fixed_structure, mvs_over_pic_boundaries, restricted_ref_pic_lists
+        r.read_ue()?; // min_spatial_segmentation_idc
+        r.read_ue()?; // max_bytes_per_pic_denom
+        r.read_ue()?; // max_bits_per_min_cu_denom
+        r.read_ue()?; // log2_max_mv_length_horizontal
+        r.read_ue()?; // log2_max_mv_length_vertical
+    }
+
+    Ok(matrix_coefficients)
+}
+
+/// Skip HRD parameters (H.265 Annex E.2.2). Minimal implementation for VUI parsing.
+fn skip_hrd_parameters(
+    r: &mut BitReader,
+    common_inf_present: bool,
+    max_sub_layers: u32,
+) -> Result<()> {
+    let mut nal_hrd_present = false;
+    let mut vcl_hrd_present = false;
+    let mut sub_pic_hrd_present = false;
+    if common_inf_present {
+        nal_hrd_present = r.read_flag()?;
+        vcl_hrd_present = r.read_flag()?;
+        if nal_hrd_present || vcl_hrd_present {
+            sub_pic_hrd_present = r.read_flag()?;
+            if sub_pic_hrd_present {
+                r.skip_bits(8 + 5 + 5 + 4 + 5)?; // tick_divisor, du_cpb_removal, sub_pic_cpb_size, dpb_output_delay_du
+            }
+            r.skip_bits(4 + 4 + 4 + 5 + 5 + 5)?; // bit_rate_scale, cpb_size_scale, cpb_size_du_scale, initial/au/dpb delays
+        }
+    }
+    for i in 0..=max_sub_layers {
+        let fixed_pic_rate_general = r.read_flag()?;
+        let fixed_pic_rate_within = if !fixed_pic_rate_general {
+            r.read_flag()?
+        } else {
+            true
+        };
+        let mut low_delay_hrd = false;
+        if fixed_pic_rate_within {
+            r.read_ue()?; // elemental_duration_in_tc_minus1
+        } else {
+            low_delay_hrd = r.read_flag()?;
+        }
+        let cpb_cnt = if !low_delay_hrd { r.read_ue()? + 1 } else { 1 };
+        if nal_hrd_present {
+            skip_sub_layer_hrd(r, cpb_cnt, sub_pic_hrd_present)?;
+        }
+        if vcl_hrd_present {
+            skip_sub_layer_hrd(r, cpb_cnt, sub_pic_hrd_present)?;
+        }
+        let _ = i; // suppress unused variable
+    }
+    Ok(())
+}
+
+fn skip_sub_layer_hrd(r: &mut BitReader, cpb_cnt: u32, sub_pic_present: bool) -> Result<()> {
+    for _ in 0..cpb_cnt {
+        r.read_ue()?; // bit_rate_value_minus1
+        r.read_ue()?; // cpb_size_value_minus1
+        if sub_pic_present {
+            r.read_ue()?; // cpb_size_du_value_minus1
+            r.read_ue()?; // bit_rate_du_value_minus1
+        }
+        r.skip_bits(1)?; // cbr_flag
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +984,7 @@ pub struct Pps {
     pub pps_deblocking_filter_disabled_flag: bool,
     pub pps_beta_offset_div2: i32,
     pub pps_tc_offset_div2: i32,
-    pub _pps_scaling_list_data_present_flag: bool,
+    pub scaling_list: Option<ScalingListData>,
     pub _lists_modification_present_flag: bool,
     pub _log2_parallel_merge_level_minus2: u32,
     pub _slice_segment_header_extension_present_flag: bool,
@@ -709,9 +1063,11 @@ impl Pps {
         }
 
         let pps_scaling_list_data_present_flag = reader.read_flag()?;
-        if pps_scaling_list_data_present_flag {
-            parse_scaling_list_data(reader)?;
-        }
+        let scaling_list = if pps_scaling_list_data_present_flag {
+            Some(parse_scaling_list_data(reader)?)
+        } else {
+            None
+        };
 
         let lists_modification_present_flag = reader.read_flag()?;
         let log2_parallel_merge_level_minus2 = reader.read_ue()?;
@@ -750,7 +1106,7 @@ impl Pps {
             pps_deblocking_filter_disabled_flag,
             pps_beta_offset_div2,
             pps_tc_offset_div2,
-            _pps_scaling_list_data_present_flag: pps_scaling_list_data_present_flag,
+            scaling_list,
             _lists_modification_present_flag: lists_modification_present_flag,
             _log2_parallel_merge_level_minus2: log2_parallel_merge_level_minus2,
             _slice_segment_header_extension_present_flag:
@@ -848,6 +1204,7 @@ mod tests {
             _max_transform_hierarchy_depth_inter: 1,
             max_transform_hierarchy_depth_intra: 1,
             scaling_list_enabled_flag: false,
+            scaling_list: None,
             _amp_enabled_flag: true,
             sample_adaptive_offset_enabled_flag: true,
             _pcm_enabled_flag: false,
@@ -863,6 +1220,16 @@ mod tests {
             _sps_temporal_mvp_enabled_flag: true,
             strong_intra_smoothing_enabled_flag: true,
             _vui_parameters_present_flag: false,
+            matrix_coefficients: 0,
+            persistent_rice_adaptation_enabled_flag: false,
+            cabac_bypass_alignment_enabled_flag: false,
+            _transform_skip_rotation_enabled_flag: false,
+            _transform_skip_context_enabled_flag: false,
+            _implicit_rdpcm_enabled_flag: false,
+            _explicit_rdpcm_enabled_flag: false,
+            _extended_precision_processing_flag: false,
+            _intra_smoothing_disabled_flag: false,
+            _high_precision_offsets_enabled_flag: false,
         };
 
         assert_eq!(sps.ctb_log2_size(), 5);
@@ -1145,5 +1512,151 @@ mod tests {
         assert_eq!(sps.bit_depth_chroma, 10);
         assert_eq!(sps.pic_width_in_luma_samples, 3840);
         assert_eq!(sps.pic_height_in_luma_samples, 2160);
+    }
+}
+
+#[cfg(test)]
+mod scaling_list_tests {
+    use super::*;
+
+    /// Minimal bit-writer for constructing test bitstreams.
+    struct BitWriter {
+        bytes: Vec<u8>,
+        buf: u64,
+        buf_bits: u8,
+    }
+
+    impl BitWriter {
+        fn new() -> Self {
+            Self {
+                bytes: Vec::new(),
+                buf: 0,
+                buf_bits: 0,
+            }
+        }
+
+        fn write(&mut self, val: u64, n: u8) {
+            for i in (0..n).rev() {
+                self.buf = (self.buf << 1) | ((val >> i) & 1);
+                self.buf_bits += 1;
+                if self.buf_bits == 8 {
+                    self.bytes.push(self.buf as u8);
+                    self.buf = 0;
+                    self.buf_bits = 0;
+                }
+            }
+        }
+
+        fn write_ue(&mut self, val: u32) {
+            let code = val + 1;
+            let n = 32 - code.leading_zeros();
+            let leading_zeros = n - 1;
+            for _ in 0..leading_zeros {
+                self.write(0, 1);
+            }
+            self.write(code as u64, n as u8);
+        }
+
+        fn write_se(&mut self, val: i32) {
+            let ue_val = if val <= 0 {
+                (-val * 2) as u32
+            } else {
+                (val * 2 - 1) as u32
+            };
+            self.write_ue(ue_val);
+        }
+
+        fn finish(mut self) -> Vec<u8> {
+            if self.buf_bits > 0 {
+                self.bytes.push((self.buf << (8 - self.buf_bits)) as u8);
+            }
+            self.bytes
+        }
+    }
+
+    #[test]
+    fn default_scaling_list_4x4_is_flat_16() {
+        let sl = ScalingListData::default_lists();
+        for &v in &sl.matrices_4x4[0] {
+            assert_eq!(v, 16, "4x4 matrix[0] should be flat 16");
+        }
+    }
+
+    #[test]
+    fn default_scaling_list_8x8_intra_matches_table_7_3() {
+        let sl = ScalingListData::default_lists();
+        // First raster element: diagonal scan position 0 maps to raster index 0
+        assert_eq!(sl.matrices_8x8[0][0], 16, "first element should be 16");
+        // Last raster element: diagonal scan position 63 maps to raster index 63
+        assert_eq!(sl.matrices_8x8[0][63], 115, "last element should be 115");
+    }
+
+    #[test]
+    fn default_scaling_list_16x16_dc_is_16() {
+        let sl = ScalingListData::default_lists();
+        assert_eq!(sl.dc_coef_16x16[0], 16);
+    }
+
+    #[test]
+    fn default_scaling_list_32x32_dc_is_16() {
+        let sl = ScalingListData::default_lists();
+        assert_eq!(sl.dc_coef_32x32[0], 16);
+    }
+
+    #[test]
+    fn parse_custom_scaling_list_pred_mode_0_delta_0() {
+        // pred_mode_flag=0, delta=0 for all 20 matrices → should match defaults
+        let mut w = BitWriter::new();
+        for size_id in 0..4u8 {
+            let count: usize = if size_id == 3 { 2 } else { 6 };
+            for _ in 0..count {
+                w.write(0, 1); // scaling_list_pred_mode_flag = 0
+                w.write_ue(0); // pred_matrix_id_delta = 0
+            }
+        }
+        let data = w.finish();
+        let mut reader = BitReader::new(&data);
+        let sl = parse_scaling_list_data(&mut reader).unwrap();
+        let def = ScalingListData::default_lists();
+        assert_eq!(sl.matrices_4x4, def.matrices_4x4);
+        assert_eq!(sl.matrices_8x8, def.matrices_8x8);
+        assert_eq!(sl.dc_coef_16x16, def.dc_coef_16x16);
+    }
+
+    #[test]
+    fn parse_custom_scaling_list_pred_mode_1_explicit() {
+        // sizeId=0 matrixId=0: explicit with all delta=0 → all values = 8
+        // All other matrices: pred_mode_flag=0, delta=0 → defaults
+        let mut w = BitWriter::new();
+
+        // sizeId=0, matrixId=0: explicit
+        w.write(1, 1); // pred_mode_flag = 1
+        for _ in 0..16 {
+            w.write_se(0); // delta = 0 → value stays at 8
+        }
+        // sizeId=0, matrixId=1..5: default
+        for _ in 1..6 {
+            w.write(0, 1);
+            w.write_ue(0);
+        }
+        // sizeId=1..3: all default
+        for size_id in 1..4u8 {
+            let count: usize = if size_id == 3 { 2 } else { 6 };
+            for _ in 0..count {
+                w.write(0, 1);
+                w.write_ue(0);
+            }
+        }
+        let data = w.finish();
+        let mut reader = BitReader::new(&data);
+        let sl = parse_scaling_list_data(&mut reader).unwrap();
+        // matrixId=0 should have all values = 8
+        for i in 0..16 {
+            assert_eq!(sl.matrices_4x4[0][i], 8, "4x4[0][{i}] should be 8");
+        }
+        // matrixId=1 should still be default (flat 16)
+        for i in 0..16 {
+            assert_eq!(sl.matrices_4x4[1][i], 16, "4x4[1][{i}] should be 16");
+        }
     }
 }
