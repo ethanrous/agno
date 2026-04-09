@@ -1,4 +1,5 @@
 pub mod canon;
+pub mod gif;
 pub mod heic;
 #[allow(clippy::module_inception)]
 pub mod load;
@@ -7,6 +8,7 @@ pub mod pdf;
 pub mod sony;
 
 pub use canon::*;
+pub use gif::*;
 pub use heic::*;
 pub use load::*;
 pub use mov::*;

@@ -29,3 +29,4 @@ exclude = ["AgnoImage", "ExifContext", "Endian", "ExifValue", "CString", "MAX_CO
 "feature = jpeg" = "AGNO_JPEG"
 "feature = webp" = "AGNO_WEBP"
 "feature = pdf" = "AGNO_PDF"
+"feature = gif" = "AGNO_GIF"

@@ -30,13 +30,14 @@ spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu", optional = true 
 target = "x86_64-unknown-linux-musl"
 
 [dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 
 [features]
 jpeg = []
 png = ["dep:miniz_oxide"]
 webp = []
+gif = []
 pdf = ["dep:tiny-skia", "dep:ttf-parser", "dep:miniz_oxide", "dep:md5"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:agno-gpu-shared", "dep:spirv-builder"]
 cabac-trace = []  # Debug: log every CABAC decision for comparison with libde265
-default = ["gpu", "jpeg", "png", "webp", "pdf"]
+default = ["gpu", "jpeg", "png", "webp", "pdf", "gif"]

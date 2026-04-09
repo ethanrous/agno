@@ -17,6 +17,7 @@ pub enum ImageType {
     Jpeg,
     Png,
     Webp,
+    Gif,
     Pdf,
     Heic,
     QuickTimeMov,
@@ -34,6 +35,7 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
         [0xFF, 0xD8] => Ok(ImageType::Jpeg),
         [0x89, b'P'] => Ok(ImageType::Png),
         [b'R', b'I'] => Ok(ImageType::Webp),
+        [b'G', b'I'] if buf[2] == b'F' => Ok(ImageType::Gif),
         // [0x25, 0x50, 0x44, 0x46]
         [0x25, 0x50] => Ok(ImageType::Pdf),
         [b'I', b'I'] | [b'M', b'M'] => {
@@ -109,6 +111,15 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         ImageType::Webp => {
             Err("WebP support is not enabled. Please enable the 'webp' feature.".into())
         }
+        #[cfg(feature = "gif")]
+        ImageType::Gif => {
+            let file_data = std::fs::read(path)?;
+            super::load_gif_frame_from_bytes(&file_data, 0, exif)
+        }
+        #[cfg(not(feature = "gif"))]
+        ImageType::Gif => {
+            Err("GIF support is not enabled. Please enable the 'gif' feature.".into())
+        }
         #[cfg(feature = "pdf")]
         ImageType::Pdf => {
             let file_data = std::fs::read(path)?;
@@ -150,4 +161,41 @@ mod tests {
     }
 
     // sideways3.heic test removed: file does not exist in the test data directory
+
+    #[cfg(feature = "gif")]
+    #[test]
+    fn auto_load_gif_returns_frame_zero() {
+        // Build a tiny GIF on disk and load it via the public entry point.
+        use image::{Frame, RgbaImage, codecs::gif::GifEncoder};
+        use std::io::Cursor;
+
+        let mut rgba = RgbaImage::new(2, 1);
+        rgba.put_pixel(0, 0, image::Rgba([10, 20, 30, 255]));
+        rgba.put_pixel(1, 0, image::Rgba([200, 100, 50, 255]));
+
+        let mut bytes = Vec::new();
+        {
+            let mut enc = GifEncoder::new(Cursor::new(&mut bytes));
+            enc.encode_frame(Frame::new(rgba.clone())).unwrap();
+        }
+        let dir = std::env::temp_dir();
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!(
+            "agno_test_load_{}_{}.gif",
+            std::process::id(),
+            unique_suffix
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let img = load_agno_image_from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(img.width, 2);
+        assert_eq!(img.height, 1);
+        assert_eq!(img.page_count, 1);
+        assert_eq!(img.as_slice().len(), 2 * 1 * 3);
+
+        std::fs::remove_file(&path).ok();
+    }
 }

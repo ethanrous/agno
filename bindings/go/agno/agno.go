@@ -2,7 +2,7 @@
 package agno
 
 /*
-#cgo CFLAGS: -DAGNO_JPEG -DAGNO_WEBP -DAGNO_PDF
+#cgo CFLAGS: -DAGNO_JPEG -DAGNO_WEBP -DAGNO_PDF -DAGNO_GIF
 #cgo LDFLAGS: -lagno -lstdc++ -lm
 #cgo darwin LDFLAGS: -framework Metal -framework QuartzCore -framework CoreGraphics
 #include "agno.h"
@@ -64,13 +64,15 @@ func Open(path string) (*Image, error) {
 	return agnoResult(r, "failed to load image from "+path)
 }
 
-// OpenPage loads a specific page from a multi-page file (e.g., PDF).
-// page is 0-based. maxWidth/maxHeight of 0 uses default 2x scaling.
+// OpenPage loads a specific page (or frame) from a multi-page file (e.g., PDF, GIF).
+// page is 0-based. For PDFs, maxWidth/maxHeight of 0 uses default scaling; non-zero
+// values constrain the rendered page to fit within those dimensions. For GIFs,
+// maxWidth/maxHeight are ignored.
 func OpenPage(path string, page int, maxWidth, maxHeight int) (*Image, error) {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
-	r := C.load_pdf_page(cPath, C.uintptr_t(len(path)), C.uintptr_t(page), C.uint(maxWidth), C.uint(maxHeight))
+	r := C.load_image_page(cPath, C.uintptr_t(len(path)), C.uintptr_t(page), C.uint(maxWidth), C.uint(maxHeight))
 	return agnoResult(r, fmt.Sprintf("failed to load page %d from %s", page, path))
 }
 
