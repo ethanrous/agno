@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use super::content::Operator;
-use super::font::{ResolvedFont, char_width_u32};
+use super::font::{char_width_u32, ResolvedFont};
 use super::graphics::{GraphicsState, Matrix};
 
 /// Positioned glyph for rendering.
@@ -45,83 +45,75 @@ pub fn layout_text<'a>(
     let mut text_rendering_mode = state.text_rendering_mode;
 
     for op in ops {
-        match op.name.as_slice() {
-            b"Tf" => {
-                if op.operands.len() >= 2 {
-                    font_name = op.operands[0].as_name().unwrap_or_default();
-                    font_size = op.operands[1].as_f64().unwrap_or(12.0);
-                }
+        match (op.name.as_slice(), op.operands.len()) {
+            (b"Tf", 2..) => {
+                font_name = op.operands[0].as_name().unwrap_or_default();
+                font_size = op.operands[1].as_f64().unwrap_or(12.0);
             }
-            b"Tc" => {
+            (b"Tc", _) => {
                 char_spacing = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
             }
-            b"Tw" => {
+            (b"Tw", _) => {
                 word_spacing = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
             }
-            b"TL" => {
+            (b"TL", _) => {
                 text_leading = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
             }
-            b"Tz" => {
+            (b"Tz", _) => {
                 horizontal_scaling = op
                     .operands
                     .first()
                     .and_then(|o| o.as_f64())
                     .unwrap_or(100.0);
             }
-            b"Ts" => {
+            (b"Ts", _) => {
                 text_rise = op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
             }
-            b"Tr" => {
+            (b"Tr", _) => {
                 text_rendering_mode =
                     op.operands.first().and_then(|o| o.as_f64()).unwrap_or(0.0) as u8;
             }
-            b"Td" => {
-                if op.operands.len() >= 2 {
-                    let tx = op.operands[0].as_f64().unwrap_or(0.0);
-                    let ty = op.operands[1].as_f64().unwrap_or(0.0);
-                    let translate = Matrix {
-                        a: 1.0,
-                        b: 0.0,
-                        c: 0.0,
-                        d: 1.0,
-                        e: tx,
-                        f: ty,
-                    };
-                    tlm = translate.concat(&tlm);
-                    tm = tlm;
-                }
+            (b"Td", 2..) => {
+                let tx = op.operands[0].as_f64().unwrap_or(0.0);
+                let ty = op.operands[1].as_f64().unwrap_or(0.0);
+                let translate = Matrix {
+                    a: 1.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 1.0,
+                    e: tx,
+                    f: ty,
+                };
+                tlm = translate.concat(&tlm);
+                tm = tlm;
             }
-            b"TD" => {
-                if op.operands.len() >= 2 {
-                    let tx = op.operands[0].as_f64().unwrap_or(0.0);
-                    let ty = op.operands[1].as_f64().unwrap_or(0.0);
-                    text_leading = -ty;
-                    let translate = Matrix {
-                        a: 1.0,
-                        b: 0.0,
-                        c: 0.0,
-                        d: 1.0,
-                        e: tx,
-                        f: ty,
-                    };
-                    tlm = translate.concat(&tlm);
-                    tm = tlm;
-                }
+            (b"TD", 2..) => {
+                let tx = op.operands[0].as_f64().unwrap_or(0.0);
+                let ty = op.operands[1].as_f64().unwrap_or(0.0);
+                text_leading = -ty;
+                let translate = Matrix {
+                    a: 1.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 1.0,
+                    e: tx,
+                    f: ty,
+                };
+                tlm = translate.concat(&tlm);
+                tm = tlm;
             }
-            b"Tm" => {
-                if op.operands.len() >= 6 {
-                    tm = Matrix {
-                        a: op.operands[0].as_f64().unwrap_or(1.0),
-                        b: op.operands[1].as_f64().unwrap_or(0.0),
-                        c: op.operands[2].as_f64().unwrap_or(0.0),
-                        d: op.operands[3].as_f64().unwrap_or(1.0),
-                        e: op.operands[4].as_f64().unwrap_or(0.0),
-                        f: op.operands[5].as_f64().unwrap_or(0.0),
-                    };
-                    tlm = tm;
-                }
+            (b"Tm", 6..) => {
+                tm = Matrix {
+                    a: op.operands[0].as_f64().unwrap_or(1.0),
+                    b: op.operands[1].as_f64().unwrap_or(0.0),
+                    c: op.operands[2].as_f64().unwrap_or(0.0),
+                    d: op.operands[3].as_f64().unwrap_or(1.0),
+                    e: op.operands[4].as_f64().unwrap_or(0.0),
+                    f: op.operands[5].as_f64().unwrap_or(0.0),
+                };
+                tlm = tm;
             }
-            b"T*" => {
+            (b"T*", _) => {
                 let translate = Matrix {
                     a: 1.0,
                     b: 0.0,
@@ -133,7 +125,7 @@ pub fn layout_text<'a>(
                 tlm = translate.concat(&tlm);
                 tm = tlm;
             }
-            b"Tj" => {
+            (b"Tj", _) => {
                 if let Some(text) = op.operands.first().and_then(|o| o.as_string_bytes()) {
                     show_string(
                         text,
@@ -150,7 +142,7 @@ pub fn layout_text<'a>(
                     );
                 }
             }
-            b"TJ" => {
+            (b"TJ", _) => {
                 if let Some(arr) = op.operands.first().and_then(|o| o.as_array()) {
                     for item in arr {
                         if let Some(text) = item.as_string_bytes() {
@@ -182,7 +174,7 @@ pub fn layout_text<'a>(
                     }
                 }
             }
-            b"'" => {
+            (b"'", _) => {
                 let translate = Matrix {
                     a: 1.0,
                     b: 0.0,
@@ -209,35 +201,33 @@ pub fn layout_text<'a>(
                     );
                 }
             }
-            b"\"" => {
-                if op.operands.len() >= 3 {
-                    word_spacing = op.operands[0].as_f64().unwrap_or(0.0);
-                    char_spacing = op.operands[1].as_f64().unwrap_or(0.0);
-                    let translate = Matrix {
-                        a: 1.0,
-                        b: 0.0,
-                        c: 0.0,
-                        d: 1.0,
-                        e: 0.0,
-                        f: -text_leading,
-                    };
-                    tlm = translate.concat(&tlm);
-                    tm = tlm;
-                    if let Some(text) = op.operands[2].as_string_bytes() {
-                        show_string(
-                            text,
-                            &mut tm,
-                            font_name,
-                            font_size,
-                            char_spacing,
-                            word_spacing,
-                            horizontal_scaling,
-                            text_rise,
-                            text_rendering_mode,
-                            fonts,
-                            &mut glyphs,
-                        );
-                    }
+            (b"\"", 3..) => {
+                word_spacing = op.operands[0].as_f64().unwrap_or(0.0);
+                char_spacing = op.operands[1].as_f64().unwrap_or(0.0);
+                let translate = Matrix {
+                    a: 1.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 1.0,
+                    e: 0.0,
+                    f: -text_leading,
+                };
+                tlm = translate.concat(&tlm);
+                tm = tlm;
+                if let Some(text) = op.operands[2].as_string_bytes() {
+                    show_string(
+                        text,
+                        &mut tm,
+                        font_name,
+                        font_size,
+                        char_spacing,
+                        word_spacing,
+                        horizontal_scaling,
+                        text_rise,
+                        text_rendering_mode,
+                        fonts,
+                        &mut glyphs,
+                    );
                 }
             }
             _ => {}
@@ -320,7 +310,7 @@ fn show_string<'a>(
 #[cfg(test)]
 mod tests {
     use super::super::content::parse_content_stream;
-    use super::super::font::{Encoding, ResolvedFont, standard14_widths};
+    use super::super::font::{standard14_widths, Encoding, ResolvedFont};
     use super::super::graphics::GraphicsStateStack;
     use super::*;
 

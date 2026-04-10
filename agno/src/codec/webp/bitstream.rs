@@ -394,7 +394,9 @@ pub fn encode_vp8_frame(
     // Estimate prob_skip_false from skip flag statistics.
     let skip_count = skip_flags.iter().filter(|&&s| s).count();
     let prob_skip_false = if mb_count > 0 {
-        let p = ((mb_count - skip_count) * 255 + mb_count / 2) / mb_count;
+        let p = ((mb_count - skip_count) * 255 + mb_count / 2)
+            .checked_div(mb_count)
+            .unwrap_or(0);
         p.clamp(1, 255) as u8
     } else {
         255

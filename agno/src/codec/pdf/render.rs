@@ -160,12 +160,12 @@ fn downscale_pixmap(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pixmap, Box<
                 }
             }
 
-            if count > 0 {
+            if let Some(div) = count.checked_div(1) {
                 let di = (dy * dst_w + dx) as usize * 4;
-                dst_data[di] = (r_sum / count) as u8;
-                dst_data[di + 1] = (g_sum / count) as u8;
-                dst_data[di + 2] = (b_sum / count) as u8;
-                dst_data[di + 3] = (a_sum / count) as u8;
+                dst_data[di] = (r_sum / div) as u8;
+                dst_data[di + 1] = (g_sum / div) as u8;
+                dst_data[di + 2] = (b_sum / div) as u8;
+                dst_data[di + 3] = (a_sum / div) as u8;
             }
         }
     }
