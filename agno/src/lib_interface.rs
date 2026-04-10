@@ -5,9 +5,9 @@ use tracing::{debug, info, warn};
 #[cfg(feature = "webp")]
 use crate::sony_jpeg::write_webp_from_rgb8_writer;
 use crate::{
-    agno_image::{load::load_agno_image_from_file, scale_image, AgnoImage},
+    agno_image::{AgnoImage, load::load_agno_image_from_file, scale_image},
     exif::ExifData,
-    logging::{try_init, LogConfig},
+    logging::{LogConfig, try_init},
 };
 
 /// Result of an FFI call that returns an AgnoImage.
@@ -350,7 +350,7 @@ mod tests {
     #[cfg(all(feature = "gif", feature = "pdf"))]
     #[test]
     fn load_image_page_dispatches_by_format() {
-        use image::{codecs::gif::GifEncoder, Frame, RgbaImage};
+        use image::{Frame, RgbaImage, codecs::gif::GifEncoder};
         use std::ffi::CString as StdCString;
         use std::io::Cursor;
 

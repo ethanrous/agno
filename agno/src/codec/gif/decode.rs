@@ -573,7 +573,7 @@ mod tests {
 
     /// Build a 2x1 single-frame GIF using the `image` crate. Returns (bytes, expected_rgb).
     fn make_single_frame_gif() -> (Vec<u8>, Vec<u8>) {
-        use image::{codecs::gif::GifEncoder, Frame, RgbaImage};
+        use image::{Frame, RgbaImage, codecs::gif::GifEncoder};
         use std::io::Cursor;
 
         let mut rgba = RgbaImage::new(2, 1);
@@ -635,7 +635,7 @@ mod tests {
         buf.push(0xF7); // packed: GCT present, size = 7 → 256 entries → 768 bytes
         buf.push(0); // background
         buf.push(0); // aspect
-                     // No GCT bytes, no trailer — should error before getting to blocks.
+        // No GCT bytes, no trailer — should error before getting to blocks.
         assert!(gif_frame_count(&buf).is_err());
     }
 
@@ -698,11 +698,11 @@ mod tests {
         g.extend_from_slice(b"GIF89a");
         g.extend_from_slice(&2u16.to_le_bytes()); // width
         g.extend_from_slice(&1u16.to_le_bytes()); // height
-                                                  // packed: GCT present (bit7=1), color resolution irrelevant, GCT size=1 → 4 entries
+        // packed: GCT present (bit7=1), color resolution irrelevant, GCT size=1 → 4 entries
         g.push(0b1000_0001);
         g.push(0); // bg index = 0 (white)
         g.push(0); // aspect
-                   // GCT (4 entries × 3 bytes): white, red, green, black
+        // GCT (4 entries × 3 bytes): white, red, green, black
         g.extend_from_slice(&[255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 0]);
 
         // GCE for frame 0: extension introducer 0x21, label 0xF9, block size 4,
