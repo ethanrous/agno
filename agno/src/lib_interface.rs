@@ -213,11 +213,16 @@ pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) 
     }
 }
 
-/// Load a specific page from a PDF file and return it as an AgnoImage.
-/// `page_num` is 0-based. `max_width`/`max_height` of 0 uses default 2x scale.
-#[cfg(feature = "pdf")]
+/// Load a specific page (or frame) from a multi-page file and return it as an AgnoImage.
+///
+/// Supported formats: PDF (`%PDF-` magic), GIF (`GIF` magic).
+///
+/// `page_num` is 0-based. For PDFs, `max_width`/`max_height` of 0 uses default scale;
+/// non-zero values constrain the rendered output to fit within those dimensions.
+/// For GIFs, `max_width`/`max_height` are ignored (raster, no scale-up at decode).
+#[cfg(any(feature = "pdf", feature = "gif"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn load_pdf_page(
+pub extern "C" fn load_image_page(
     path: *const c_char,
     len: usize,
     page_num: usize,
@@ -228,23 +233,52 @@ pub extern "C" fn load_pdf_page(
         Ok(p) => p,
         Err(e) => return make_error_result(e.to_string()),
     };
+    let path_str = wrapped_path.as_str();
     let max_dims = if max_width > 0 && max_height > 0 {
         Some((max_width, max_height))
     } else {
         None
     };
 
-    let data: Result<Vec<u8>, Box<dyn std::error::Error>> =
-        std::fs::read(wrapped_path.as_str()).map_err(|e| e.into());
+    let data = match std::fs::read(path_str) {
+        Ok(d) => d,
+        Err(e) => return make_error_result(format!("Failed to read {path_str}: {e}")),
+    };
 
-    into_result!(data.and_then(|d| {
-        crate::agno_image::load::load_pdf_page_from_bytes(
-            &d,
-            page_num,
-            max_dims,
-            crate::exif::ExifContext::default(),
-        )
-    }))
+    if data.len() >= 5 && &data[..5] == b"%PDF-" {
+        #[cfg(feature = "pdf")]
+        {
+            return into_result!(crate::agno_image::load::load_pdf_page_from_bytes(
+                &data,
+                page_num,
+                max_dims,
+                crate::exif::ExifContext::default(),
+            ));
+        }
+        #[cfg(not(feature = "pdf"))]
+        {
+            let _ = max_dims;
+            return make_error_result("PDF support is not enabled".to_string());
+        }
+    }
+
+    if data.len() >= 6 && (&data[..6] == b"GIF87a" || &data[..6] == b"GIF89a") {
+        #[cfg(feature = "gif")]
+        {
+            return into_result!(crate::agno_image::load::load_gif_frame_from_bytes(
+                &data,
+                page_num,
+                crate::exif::ExifContext::default(),
+            ));
+        }
+        #[cfg(not(feature = "gif"))]
+        {
+            return make_error_result("GIF support is not enabled".to_string());
+        }
+    }
+
+    let _ = max_dims;
+    make_error_result("load_image_page: file is not a recognized multi-page format".to_string())
 }
 
 #[unsafe(no_mangle)]
@@ -311,5 +345,48 @@ mod tests {
         unsafe {
             let _ = Box::from_raw(r.image);
         }
+    }
+
+    #[cfg(all(feature = "gif", feature = "pdf"))]
+    #[test]
+    fn load_image_page_dispatches_by_format() {
+        use image::{Frame, RgbaImage, codecs::gif::GifEncoder};
+        use std::ffi::CString as StdCString;
+        use std::io::Cursor;
+
+        // Build a 2-frame GIF
+        let mut bytes = Vec::new();
+        {
+            let mut enc = GifEncoder::new(Cursor::new(&mut bytes));
+            for _ in 0..2 {
+                let mut rgba = RgbaImage::new(1, 1);
+                rgba.put_pixel(0, 0, image::Rgba([10, 20, 30, 255]));
+                enc.encode_frame(Frame::new(rgba)).unwrap();
+            }
+        }
+        let dir = std::env::temp_dir();
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!(
+            "agno_ffi_dispatch_{}_{}.gif",
+            std::process::id(),
+            unique_suffix
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let path_str = path.to_str().unwrap();
+        let c_path = StdCString::new(path_str).unwrap();
+
+        let result = load_image_page(c_path.as_ptr(), path_str.len(), 1, 0, 0);
+        assert!(!result.image.is_null(), "expected image, got null");
+        assert!(result.error.is_null(), "expected no error");
+        unsafe {
+            let img = &*result.image;
+            assert_eq!(img.page_count, 2, "expected page_count=2 for 2-frame gif");
+            let _ = Box::from_raw(result.image);
+        }
+        free_agno_result(result);
+        std::fs::remove_file(&path).ok();
     }
 }

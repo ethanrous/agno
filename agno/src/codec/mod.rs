@@ -1,3 +1,5 @@
+#[cfg(feature = "gif")]
+pub mod gif;
 pub mod heif;
 pub mod hevc;
 pub mod isobmff;

@@ -62,16 +62,21 @@ GpsCoordinates get_gps_coordinates(const AgnoImage *img);
 AgnoBuffer write_agno_image_to_jpeg_buffer(const AgnoImage *img, uint8_t quality);
 #endif
 
-#if defined(AGNO_PDF)
+#if (defined(AGNO_PDF) || defined(AGNO_GIF))
 /**
- * Load a specific page from a PDF file and return it as an AgnoImage.
- * `page_num` is 0-based. `max_width`/`max_height` of 0 uses default 2x scale.
+ * Load a specific page (or frame) from a multi-page file and return it as an AgnoImage.
+ *
+ * Supported formats: PDF (`%PDF-` magic), GIF (`GIF` magic).
+ *
+ * `page_num` is 0-based. For PDFs, `max_width`/`max_height` of 0 uses default scale;
+ * non-zero values constrain the rendered output to fit within those dimensions.
+ * For GIFs, `max_width`/`max_height` are ignored (raster, no scale-up at decode).
  */
-AgnoResult load_pdf_page(const char *path,
-                         uintptr_t len,
-                         uintptr_t page_num,
-                         uint32_t max_width,
-                         uint32_t max_height);
+AgnoResult load_image_page(const char *path,
+                           uintptr_t len,
+                           uintptr_t page_num,
+                           uint32_t max_width,
+                           uint32_t max_height);
 #endif
 
 void free_agno_buffer(AgnoBuffer buf);
