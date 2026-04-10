@@ -19,6 +19,9 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Install rustfmt and clippy
+        run: rustup component add rustfmt clippy
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
