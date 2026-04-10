@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use super::content::Operator;
-use super::font::{char_width_u32, ResolvedFont};
+use super::font::{ResolvedFont, char_width_u32};
 use super::graphics::{GraphicsState, Matrix};
 
 /// Positioned glyph for rendering.
@@ -310,7 +310,7 @@ fn show_string<'a>(
 #[cfg(test)]
 mod tests {
     use super::super::content::parse_content_stream;
-    use super::super::font::{standard14_widths, Encoding, ResolvedFont};
+    use super::super::font::{Encoding, ResolvedFont, standard14_widths};
     use super::super::graphics::GraphicsStateStack;
     use super::*;
 
