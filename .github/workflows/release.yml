@@ -3,10 +3,6 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version (e.g. 0.0.6)"
-        required: true
-        type: string
       create_release:
         description: "Create git tags and GitHub release"
         required: true
@@ -18,9 +14,40 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  AGNO_BUILD_VERSION: ${{ steps.version.outputs.tag }}
 
 jobs:
+  version:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve semantic version
+        id: version
+        run: |
+          # Read baseline major.minor from VERSION file
+          BASELINE=$(cat VERSION 2>/dev/null || echo "0.1")
+
+          # Get all tags, sorted by version (latest first)
+          LATEST_TAG=$(git tag --sort=-v:refname | head -n 1)
+
+          if [[ "$LATEST_TAG" == v$BASELINE.* ]]; then
+            # Same major.minor - increment patch
+            PATCH=${LATEST_TAG#v$BASELINE.}
+            NEW_PATCH=$((PATCH + 1))
+            echo "tag=v${BASELINE}.${NEW_PATCH}" >> "$GITHUB_OUTPUT"
+          else
+            # Different major.minor or no tags - start at v0.0.1 (or use VERSION)
+            echo "tag=v$BASELINE.0" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: version
     name: Build ${{ matrix.output.label }} (${{ matrix.target.platform }}${{ matrix.gpu.suffix }})
     runs-on: ${{ matrix.target.runner }}
     strategy:
@@ -37,10 +64,10 @@ jobs:
             platform: macos-aarch64
         gpu:
           - enabled: true
-            features: "gpu,jpeg,png,webp,pdf"
+            features: "gpu,jpeg,png,webp,pdf,gif"
             suffix: "-gpu"
           - enabled: false
-            features: "jpeg,png,webp,pdf"
+            features: "jpeg,png,webp,pdf,gif"
             suffix: ""
         output:
           - label: library
@@ -77,6 +104,7 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ matrix.target.triple }}
           AGNO_FEATURES: ${{ matrix.gpu.features }}
+          AGNO_BUILD_VERSION: ${{ needs.version.outputs.tag }}
         run: |
           if [ "$TARGET_TRIPLE" = "aarch64-unknown-linux-gnu" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
@@ -94,26 +122,37 @@ jobs:
   release:
     name: Create Release
     if: inputs.create_release
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
       - name: Resolve version tag
         env:
-          RAW_VERSION: ${{ inputs.version }}
+          GO_TAG: bindings/go/agno/${{ needs.version.outputs.tag }}
         run: |
-          # Prepend v if missing
-          TAG="${RAW_VERSION#v}"
-          TAG="v${TAG}"
-          echo "TAG=${TAG}" >> "$GITHUB_ENV"
-          echo "GO_TAG=bindings/go/agno/${TAG}" >> "$GITHUB_ENV"
+          echo "GO_TAG=${GO_TAG}" >> "$GITHUB_ENV"
 
       - name: Create and push tags
         run: |
-          git tag "$TAG"
-          git tag "$GO_TAG"
-          git push origin "$TAG" "$GO_TAG"
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          
+          for TAG in "${{ env.AGNO_BUILD_VERSION }}" "$GO_TAG"; do
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              TAG_COMMIT=$(git rev-parse "$TAG")
+              if [ "$TAG_COMMIT" = "$CURRENT_COMMIT" ]; then
+                echo "Tag $TAG already exists at current commit, skipping"
+              else
+                echo "ERROR: Tag $TAG exists but points to a different commit"
+                exit 1
+              fi
+            else
+              echo "Creating tag $TAG"
+              git tag "$TAG"
+            fi
+          done
+          
+          git push origin "${{ env.AGNO_BUILD_VERSION }}" "$GO_TAG"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -133,6 +172,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$TAG" release/* \
-            --title "$TAG" \
+          gh release create "${{ env.AGNO_BUILD_VERSION }}" release/* \
+            --title "${{ env.AGNO_BUILD_VERSION }}" \
             --generate-notes

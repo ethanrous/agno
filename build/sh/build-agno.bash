@@ -37,7 +37,7 @@ rustup target add "${TARGET_TRIPLE}" 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # 2) Build the static lib
 # ---------------------------------------------------------------------------
-AGNO_FEATURES="${AGNO_FEATURES:-gpu,jpeg,png,webp,pdf}"
+AGNO_FEATURES="${AGNO_FEATURES:-gpu,jpeg,png,webp,pdf,gif}"
 
 rm -f "target/${TARGET_TRIPLE}/release/libagno.a"
 

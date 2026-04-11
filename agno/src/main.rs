@@ -7,6 +7,8 @@ use agno::agno_image::transform::scale_image;
 use agno::exif::{ExifContext, ExifValue};
 use agno::logging::{LogConfig, init};
 
+const AGNO_BUILD_VERSION: Option<&str> = option_env!("AGNO_BUILD_VERSION");
+
 fn main() -> Result<(), Box<dyn Error>> {
     init(LogConfig::cli());
     let args: Vec<String> = env::args().collect();
@@ -19,6 +21,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!(
             "  resize <input> <width> <height> <output> Resize image to specified dimensions"
         );
+        eprintln!("  --version                                Print version information");
         return Ok(());
     }
 
@@ -26,6 +29,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "exif" => cmd_exif(&args[2..]),
         "convert" => cmd_convert(&args[2..]),
         "resize" => cmd_resize(&args[2..]),
+        "--version" => {
+            println!("AGNO {}", AGNO_BUILD_VERSION.unwrap_or("devel"));
+            Ok(())
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             Err("Unknown command".into())

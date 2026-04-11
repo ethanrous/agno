@@ -36,4 +36,7 @@ fn main() {
         // Set environment variable for include_bytes! in GPU modules
         println!("cargo:rustc-env=GPU_KERNELS_SPV_PATH={}", dest.display());
     }
+
+    // Rerun if build version changes so binaries reflect the current tag
+    println!("cargo:rerun-if-env-changed=AGNO_BUILD_VERSION");
 }
