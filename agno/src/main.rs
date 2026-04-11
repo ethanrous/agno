@@ -5,7 +5,7 @@ use std::fs::File;
 use agno::agno_image::load::load_agno_image_from_file;
 use agno::agno_image::transform::scale_image;
 use agno::exif::{ExifContext, ExifValue};
-use agno::logging::{init, LogConfig};
+use agno::logging::{LogConfig, init};
 
 const AGNO_BUILD_VERSION: Option<&str> = option_env!("AGNO_BUILD_VERSION");
 
