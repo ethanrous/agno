@@ -135,8 +135,23 @@ jobs:
 
       - name: Create and push tags
         run: |
-          git tag "${{ env.AGNO_BUILD_VERSION }}"
-          git tag "$GO_TAG"
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          
+          for TAG in "${{ env.AGNO_BUILD_VERSION }}" "$GO_TAG"; do
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              TAG_COMMIT=$(git rev-parse "$TAG")
+              if [ "$TAG_COMMIT" = "$CURRENT_COMMIT" ]; then
+                echo "Tag $TAG already exists at current commit, skipping"
+              else
+                echo "ERROR: Tag $TAG exists but points to a different commit"
+                exit 1
+              fi
+            else
+              echo "Creating tag $TAG"
+              git tag "$TAG"
+            fi
+          done
+          
           git push origin "${{ env.AGNO_BUILD_VERSION }}" "$GO_TAG"
 
       - name: Download all artifacts

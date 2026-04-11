@@ -5,7 +5,7 @@ use std::fs::File;
 use agno::agno_image::load::load_agno_image_from_file;
 use agno::agno_image::transform::scale_image;
 use agno::exif::{ExifContext, ExifValue};
-use agno::logging::{LogConfig, init};
+use agno::logging::{init, LogConfig};
 
 const AGNO_BUILD_VERSION: Option<&str> = option_env!("AGNO_BUILD_VERSION");
 
@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!(
             "  resize <input> <width> <height> <output> Resize image to specified dimensions"
         );
+        eprintln!("  --version                                Print version information");
         return Ok(());
     }
 
