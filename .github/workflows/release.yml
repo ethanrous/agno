@@ -3,10 +3,6 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version (e.g. 0.0.6)"
-        required: true
-        type: string
       create_release:
         description: "Create git tags and GitHub release"
         required: true
@@ -18,6 +14,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  AGNO_BUILD_VERSION: v0.0.${{ github.run_number }}
 
 jobs:
   build:
@@ -37,10 +34,10 @@ jobs:
             platform: macos-aarch64
         gpu:
           - enabled: true
-            features: "gpu,jpeg,png,webp,pdf"
+            features: "gpu,jpeg,png,webp,pdf,gif"
             suffix: "-gpu"
           - enabled: false
-            features: "jpeg,png,webp,pdf"
+            features: "jpeg,png,webp,pdf,gif"
             suffix: ""
         output:
           - label: library
@@ -77,6 +74,7 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ matrix.target.triple }}
           AGNO_FEATURES: ${{ matrix.gpu.features }}
+          AGNO_BUILD_VERSION: ${{ env.AGNO_BUILD_VERSION }}
         run: |
           if [ "$TARGET_TRIPLE" = "aarch64-unknown-linux-gnu" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
@@ -101,19 +99,15 @@ jobs:
 
       - name: Resolve version tag
         env:
-          RAW_VERSION: ${{ inputs.version }}
+          GO_TAG: bindings/go/agno/${{ env.AGNO_BUILD_VERSION }}
         run: |
-          # Prepend v if missing
-          TAG="${RAW_VERSION#v}"
-          TAG="v${TAG}"
-          echo "TAG=${TAG}" >> "$GITHUB_ENV"
-          echo "GO_TAG=bindings/go/agno/${TAG}" >> "$GITHUB_ENV"
+          echo "GO_TAG=${GO_TAG}" >> "$GITHUB_ENV"
 
       - name: Create and push tags
         run: |
-          git tag "$TAG"
+          git tag "${{ env.AGNO_BUILD_VERSION }}"
           git tag "$GO_TAG"
-          git push origin "$TAG" "$GO_TAG"
+          git push origin "${{ env.AGNO_BUILD_VERSION }}" "$GO_TAG"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -133,6 +127,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$TAG" release/* \
-            --title "$TAG" \
+          gh release create "${{ env.AGNO_BUILD_VERSION }}" release/* \
+            --title "${{ env.AGNO_BUILD_VERSION }}" \
             --generate-notes
