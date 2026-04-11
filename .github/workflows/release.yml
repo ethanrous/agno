@@ -14,10 +14,40 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  AGNO_BUILD_VERSION: v0.0.${{ github.run_number }}
+  AGNO_BUILD_VERSION: ${{ steps.version.outputs.tag }}
 
 jobs:
+  version:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve semantic version
+        id: version
+        run: |
+          # Read baseline major.minor from VERSION file
+          BASELINE=$(cat VERSION 2>/dev/null || echo "0.1")
+
+          # Get all tags, sorted by version (latest first)
+          LATEST_TAG=$(git tag --sort=-v:refname | head -n 1)
+
+          if [[ "$LATEST_TAG" == v$BASELINE.* ]]; then
+            # Same major.minor - increment patch
+            PATCH=${LATEST_TAG#v$BASELINE.}
+            NEW_PATCH=$((PATCH + 1))
+            echo "tag=v${BASELINE}.${NEW_PATCH}" >> "$GITHUB_OUTPUT"
+          else
+            # Different major.minor or no tags - start at v0.0.1 (or use VERSION)
+            echo "tag=v$BASELINE.0" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: version
     name: Build ${{ matrix.output.label }} (${{ matrix.target.platform }}${{ matrix.gpu.suffix }})
     runs-on: ${{ matrix.target.runner }}
     strategy:
@@ -74,7 +104,7 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ matrix.target.triple }}
           AGNO_FEATURES: ${{ matrix.gpu.features }}
-          AGNO_BUILD_VERSION: ${{ env.AGNO_BUILD_VERSION }}
+          AGNO_BUILD_VERSION: ${{ needs.version.outputs.tag }}
         run: |
           if [ "$TARGET_TRIPLE" = "aarch64-unknown-linux-gnu" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
@@ -92,14 +122,14 @@ jobs:
   release:
     name: Create Release
     if: inputs.create_release
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
       - name: Resolve version tag
         env:
-          GO_TAG: bindings/go/agno/${{ env.AGNO_BUILD_VERSION }}
+          GO_TAG: bindings/go/agno/${{ needs.version.outputs.tag }}
         run: |
           echo "GO_TAG=${GO_TAG}" >> "$GITHUB_ENV"
 
