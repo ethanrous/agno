@@ -14,7 +14,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  AGNO_BUILD_VERSION: ${{ steps.version.outputs.tag }}
 
 jobs:
   version:
@@ -124,6 +123,8 @@ jobs:
     if: inputs.create_release
     needs: [version, build]
     runs-on: ubuntu-latest
+    env:
+      AGNO_BUILD_VERSION: ${{ needs.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
 
