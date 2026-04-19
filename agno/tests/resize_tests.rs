@@ -27,7 +27,7 @@ fn gpu_resize_produces_correct_dimensions() {
 
     #[cfg(feature = "gpu")]
     {
-        if let Some(result) = agno::resize_gpu::resize_gpu(&rgb, w, h, target_w, target_h) {
+        if let Some(result) = agno::resize_gpu::resize_gpu(&rgb, w, h, target_w, target_h, 3) {
             assert_eq!(
                 result.len(),
                 (target_w * target_h * 3) as usize,
@@ -94,7 +94,7 @@ fn gpu_resize_returns_none_for_oversized_input() {
         let h = 1u32;
 
         // Empty slice: the size guard fires before the slice is read.
-        let result = agno::resize_gpu::resize_gpu(&[], w, h, 1, 1);
+        let result = agno::resize_gpu::resize_gpu(&[], w, h, 1, 1, 3);
         assert!(
             result.is_none(),
             "Expected None for oversized input ({} bytes > {} limit), got Some",
@@ -107,6 +107,81 @@ fn gpu_resize_returns_none_for_oversized_input() {
             max_binding / 1024 / 1024
         );
     }
+}
+
+#[test]
+fn no_stretch_rgb_pillarbox_preserves_square_source() {
+    use agno::agno_image::AgnoImage;
+    use agno::agno_image::transform::{PadColor, scale_image_no_stretch};
+    use agno::exif::ExifContext;
+
+    let src: Vec<u8> = vec![255, 0, 0].repeat(16);
+    let img = AgnoImage::new(src, 4, 4, ExifContext::default());
+
+    let out = scale_image_no_stretch(img, 12, 4, PadColor::Rgb([0, 255, 0])).expect("resize");
+    assert_eq!((out.width, out.height, out.channels), (12, 4, 3));
+
+    let data = out.as_slice();
+    for y in 0..4 {
+        for x in 0..4 {
+            let off = (y * 12 + x) * 3;
+            assert_eq!(&data[off..off + 3], &[0, 255, 0]);
+        }
+        for x in 4..8 {
+            let off = (y * 12 + x) * 3;
+            assert_eq!(&data[off..off + 3], &[255, 0, 0]);
+        }
+        for x in 8..12 {
+            let off = (y * 12 + x) * 3;
+            assert_eq!(&data[off..off + 3], &[0, 255, 0]);
+        }
+    }
+    AgnoImage::free(&out);
+}
+
+#[test]
+fn no_stretch_promotes_rgb_source_to_rgba_when_pad_has_alpha() {
+    use agno::agno_image::AgnoImage;
+    use agno::agno_image::transform::{PadColor, scale_image_no_stretch};
+    use agno::exif::ExifContext;
+
+    let src: Vec<u8> = vec![255, 0, 0].repeat(16);
+    let img = AgnoImage::new(src, 4, 4, ExifContext::default());
+
+    let out = scale_image_no_stretch(img, 12, 4, PadColor::Rgba([0, 0, 0, 0])).expect("resize");
+    assert_eq!((out.width, out.height, out.channels), (12, 4, 4));
+
+    let data = out.as_slice();
+    assert_eq!(&data[0..4], &[0, 0, 0, 0]);
+    let off = 4 * 4;
+    assert_eq!(&data[off..off + 4], &[255, 0, 0, 255]);
+    AgnoImage::free(&out);
+}
+
+#[test]
+fn no_stretch_rgba_source_keeps_source_alpha() {
+    use agno::agno_image::AgnoImage;
+    use agno::agno_image::transform::{PadColor, scale_image_no_stretch};
+    use agno::exif::ExifContext;
+
+    let src: Vec<u8> = vec![10, 20, 30, 200].repeat(16);
+    let img = AgnoImage::new_with_channels(src, 4, 4, 4, ExifContext::default());
+
+    let out = scale_image_no_stretch(img, 12, 4, PadColor::Rgba([0, 0, 0, 0])).expect("resize");
+    assert_eq!(out.channels, 4);
+
+    let off = 4 * 4;
+    let data = out.as_slice();
+    for i in 0..4 {
+        let diff = (data[off + i] as i32 - [10, 20, 30, 200][i] as i32).unsigned_abs();
+        assert!(
+            diff <= 1,
+            "channel {i}: got {}, want {}",
+            data[off + i],
+            [10, 20, 30, 200][i]
+        );
+    }
+    AgnoImage::free(&out);
 }
 
 #[test]
@@ -140,7 +215,7 @@ fn resize_timing_comparison() {
         let gpu_start = std::time::Instant::now();
         let mut gpu_succeeded = false;
         for _ in 0..iterations {
-            if agno::resize_gpu::resize_gpu(&rgb, w, h, target_w, target_h).is_some() {
+            if agno::resize_gpu::resize_gpu(&rgb, w, h, target_w, target_h, 3).is_some() {
                 gpu_succeeded = true;
             }
         }

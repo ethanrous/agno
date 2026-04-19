@@ -28,14 +28,19 @@ fn get_resize_pipelines(ctx: &'static GpuContext) -> &'static (GpuPipeline, GpuP
 /// GPU-accelerated image resize using Lanczos3 filter.
 ///
 /// Takes RGB8 pixel data and resizes using a two-pass separable filter.
-/// Returns None if GPU is unavailable, allowing fallback to CPU.
+/// Returns None if GPU is unavailable or `channels != 3`, allowing fallback to CPU.
 pub fn resize_gpu(
     rgb_input: &[u8],
     src_width: u32,
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
+    channels: u32,
 ) -> Option<Vec<u8>> {
+    if channels != 3 {
+        // GPU kernel assumes RGB packing; RGBA goes through the CPU path.
+        return None;
+    }
     let ctx = GpuContext::get()?;
 
     // Guard: all three storage buffers (input, horizontal output, vertical output) must fit
