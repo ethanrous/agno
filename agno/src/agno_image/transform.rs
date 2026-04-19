@@ -9,6 +9,23 @@ use crate::{
     sony_decoder::Dimensions,
 };
 
+/// Largest `(w, h)` that preserves source aspect ratio and fits inside `(dst_w, dst_h)`.
+/// Clamped to ≥1 pixel per axis; never exceeds the target.
+pub(crate) fn compute_fit_dims(
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> (u32, u32) {
+    if src_w == 0 || src_h == 0 {
+        return (dst_w.max(1), dst_h.max(1));
+    }
+    let scale = (dst_w as f64 / src_w as f64).min(dst_h as f64 / src_h as f64);
+    let inner_w = ((src_w as f64 * scale).round() as u32).max(1).min(dst_w);
+    let inner_h = ((src_h as f64 * scale).round() as u32).max(1).min(dst_h);
+    (inner_w, inner_h)
+}
+
 pub fn scale_image(
     a_img: AgnoImage,
     new_width: u32,
@@ -103,4 +120,46 @@ pub fn auto_rotate_image(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_dims_square_into_wider_box_pillarboxes() {
+        let (iw, ih) = compute_fit_dims(512, 512, 1024, 512);
+        assert_eq!((iw, ih), (512, 512));
+    }
+
+    #[test]
+    fn fit_dims_wide_into_square_letterboxes() {
+        let (iw, ih) = compute_fit_dims(1000, 500, 400, 400);
+        assert_eq!((iw, ih), (400, 200));
+    }
+
+    #[test]
+    fn fit_dims_identity_when_target_matches_source() {
+        let (iw, ih) = compute_fit_dims(800, 600, 800, 600);
+        assert_eq!((iw, ih), (800, 600));
+    }
+
+    #[test]
+    fn fit_dims_upscale_uniformly() {
+        let (iw, ih) = compute_fit_dims(512, 512, 2048, 2048);
+        assert_eq!((iw, ih), (2048, 2048));
+    }
+
+    #[test]
+    fn fit_dims_clamps_to_minimum_one_pixel() {
+        let (iw, ih) = compute_fit_dims(1000, 1, 100, 100);
+        assert_eq!(iw, 100);
+        assert!(ih >= 1);
+    }
+
+    #[test]
+    fn fit_dims_never_exceeds_target() {
+        let (iw, ih) = compute_fit_dims(1001, 501, 400, 400);
+        assert!(iw <= 400 && ih <= 400);
+    }
 }
