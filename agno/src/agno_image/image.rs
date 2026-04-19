@@ -90,7 +90,8 @@ impl AgnoImage {
             output_height: self.height as usize,
         };
         let data = self.as_slice().to_vec();
-        let rotated = super::auto_rotate_image(&mut self.exif, &data, &mut dims)?;
+        let channels = 3usize; // replaced in Task 3 with self.channels
+        let rotated = super::auto_rotate_image(&mut self.exif, &data, &mut dims, channels)?;
 
         unsafe {
             if !self.data.is_null() {

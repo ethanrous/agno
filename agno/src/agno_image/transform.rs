@@ -67,6 +67,7 @@ pub fn scale_image(
         a_img.height as usize,
         new_width as usize,
         new_height as usize,
+        3,
     );
     let exif = a_img.exif.clone();
     AgnoImage::free(&a_img);
@@ -82,6 +83,7 @@ pub fn auto_rotate_image(
     ctx: &mut ExifContext,
     rgb: &[u8],
     dims: &mut Dimensions,
+    channels: usize,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let orientation = match ctx.get_tag_value(ORIENTATION) {
         Some(ExifValue::Short(v)) if !v.is_empty() => v[0] as u8,
@@ -93,23 +95,23 @@ pub fn auto_rotate_image(
 
     let result = match orientation {
         1 => rgb.to_vec(),
-        2 => ops::flip_horizontal(rgb, w, h),
-        3 => ops::rotate180(rgb, w, h),
-        4 => ops::flip_vertical(rgb, w, h),
+        2 => ops::flip_horizontal(rgb, w, h, channels),
+        3 => ops::rotate180(rgb, w, h, channels),
+        4 => ops::flip_vertical(rgb, w, h, channels),
         5 => {
-            let (rotated, _, _) = ops::rotate270(rgb, w, h);
-            ops::flip_horizontal(&rotated, h, w)
+            let (rotated, _, _) = ops::rotate270(rgb, w, h, channels);
+            ops::flip_horizontal(&rotated, h, w, channels)
         }
         6 => {
-            let (rotated, _, _) = ops::rotate90(rgb, w, h);
+            let (rotated, _, _) = ops::rotate90(rgb, w, h, channels);
             rotated
         }
         7 => {
-            let (rotated, _, _) = ops::rotate90(rgb, w, h);
-            ops::flip_horizontal(&rotated, h, w)
+            let (rotated, _, _) = ops::rotate90(rgb, w, h, channels);
+            ops::flip_horizontal(&rotated, h, w, channels)
         }
         8 => {
-            let (rotated, _, _) = ops::rotate270(rgb, w, h);
+            let (rotated, _, _) = ops::rotate270(rgb, w, h, channels);
             rotated
         }
         _ => rgb.to_vec(),

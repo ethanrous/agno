@@ -59,6 +59,7 @@ fn cpu_resize_produces_correct_dimensions() {
         h as usize,
         target_w as usize,
         target_h as usize,
+        3,
     );
     assert_eq!(result.len(), (target_w * target_h * 3) as usize);
 }
@@ -124,6 +125,7 @@ fn resize_timing_comparison() {
             h as usize,
             target_w as usize,
             target_h as usize,
+            3,
         );
     }
     let cpu_ms = cpu_start.elapsed().as_millis() / iterations;
