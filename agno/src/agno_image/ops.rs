@@ -224,6 +224,51 @@ fn resize_vertical(
     out
 }
 
+/// Compose `src` centered inside a `dst_w × dst_h` buffer pre-filled with `pad`.
+/// `channels` = 3 or 4; `pad.len()` must equal `channels`. Requires
+/// `src_w ≤ dst_w` and `src_h ≤ dst_h`.
+pub fn pad_center(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    pad: &[u8],
+    channels: usize,
+) -> Vec<u8> {
+    assert!(
+        src_w <= dst_w && src_h <= dst_h,
+        "pad_center: src larger than dst"
+    );
+    assert_eq!(
+        src.len(),
+        src_w * src_h * channels,
+        "pad_center: src length mismatch"
+    );
+    assert_eq!(
+        pad.len(),
+        channels,
+        "pad_center: pad color length must equal channels"
+    );
+
+    let mut out = Vec::with_capacity(dst_w * dst_h * channels);
+    for _ in 0..(dst_w * dst_h) {
+        out.extend_from_slice(pad);
+    }
+
+    let x_offset = (dst_w - src_w) / 2;
+    let y_offset = (dst_h - src_h) / 2;
+    let src_row_bytes = src_w * channels;
+    let dst_row_bytes = dst_w * channels;
+
+    for row in 0..src_h {
+        let s = row * src_row_bytes;
+        let d = (y_offset + row) * dst_row_bytes + x_offset * channels;
+        out[d..d + src_row_bytes].copy_from_slice(&src[s..s + src_row_bytes]);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,5 +494,44 @@ mod tests {
                 assert!(diff <= 1, "channel {i}: got {got}, want {want}");
             }
         }
+    }
+
+    #[test]
+    fn pad_center_rgb_fills_corners_with_pad_color() {
+        let src: Vec<u8> = vec![255, 0, 0].repeat(4);
+        let out = pad_center(&src, 2, 2, 4, 4, &[0, 255, 0], 3);
+        assert_eq!(out.len(), 4 * 4 * 3);
+        assert_eq!(pixel_at(&out, 4, 0, 0, 3), vec![0, 255, 0]);
+        assert_eq!(pixel_at(&out, 4, 3, 3, 3), vec![0, 255, 0]);
+        assert_eq!(pixel_at(&out, 4, 1, 1, 3), vec![255, 0, 0]);
+        assert_eq!(pixel_at(&out, 4, 2, 2, 3), vec![255, 0, 0]);
+    }
+
+    #[test]
+    fn pad_center_rgba_carries_alpha_in_pad_region() {
+        let src: Vec<u8> = vec![255, 0, 0, 255].repeat(4);
+        let out = pad_center(&src, 2, 2, 4, 4, &[0, 0, 0, 0], 4);
+        assert_eq!(out.len(), 4 * 4 * 4);
+        assert_eq!(pixel_at(&out, 4, 0, 0, 4), vec![0, 0, 0, 0]);
+        assert_eq!(pixel_at(&out, 4, 3, 0, 4), vec![0, 0, 0, 0]);
+        assert_eq!(pixel_at(&out, 4, 1, 1, 4), vec![255, 0, 0, 255]);
+        assert_eq!(pixel_at(&out, 4, 2, 2, 4), vec![255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn pad_center_identity_when_dims_match() {
+        let src = make_test_image(3, 2);
+        let out = pad_center(&src, 3, 2, 3, 2, &[0, 0, 0], 3);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn pad_center_odd_offsets_use_floor_division_rgb() {
+        let src = vec![200, 100, 50];
+        let out = pad_center(&src, 1, 1, 4, 1, &[10, 20, 30], 3);
+        assert_eq!(pixel_at(&out, 4, 0, 0, 3), vec![10, 20, 30]);
+        assert_eq!(pixel_at(&out, 4, 1, 0, 3), vec![200, 100, 50]);
+        assert_eq!(pixel_at(&out, 4, 2, 0, 3), vec![10, 20, 30]);
+        assert_eq!(pixel_at(&out, 4, 3, 0, 3), vec![10, 20, 30]);
     }
 }
