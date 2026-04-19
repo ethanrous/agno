@@ -9,22 +9,46 @@ use agno::logging::{LogConfig, init};
 
 const AGNO_BUILD_VERSION: Option<&str> = option_env!("AGNO_BUILD_VERSION");
 
+fn usage_text(prog: &str) -> String {
+    format!(
+        "Usage: {prog} <command> [args...]
+
+Commands:
+  exif <file>                Print EXIF metadata for an image file.
+
+  convert [options] <input> <output>
+                             Convert an image between formats. Output format
+                             is selected by the <output> file extension.
+    Options:
+      --page SPEC            Page selection for PDF/GIF inputs (default: 1).
+                             SPEC examples: 2, 1-3, 1,3,5, all.
+                             Multiple pages are stacked vertically.
+      --all-pages            Shorthand for --page all.
+
+  resize [options] <input> <width> <height> <output>
+                             Resize an image to <width>x<height>.
+    Options:
+      --no-stretch           Preserve aspect ratio. The result is centered
+                             and padded (or center-cropped) to fit the
+                             requested size without stretching.
+      --pad-color RRGGBB|RRGGBBAA
+                             Padding color used with --no-stretch. Accepts
+                             6 hex digits (RGB) or 8 (RGBA), with optional
+                             '#' or '0x' prefix. Default: ffffff (white).
+
+Global options:
+  -h, --help                 Print this help message.
+  --version                  Print version information.
+"
+    )
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     init(LogConfig::cli());
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: {} <command> [args...]", args[0]);
-        eprintln!("Commands:");
-        eprintln!("  exif <file>                              Print EXIF data for a file");
-        eprintln!("  convert <input> <output>                 Convert image between formats");
-        eprintln!(
-            "  resize [--no-stretch] [--pad-color RRGGBB|RRGGBBAA] <input> <width> <height> <output>"
-        );
-        eprintln!(
-            "                                           Resize image; --no-stretch preserves aspect ratio and pads"
-        );
-        eprintln!("  --version                                Print version information");
+        eprint!("{}", usage_text(&args[0]));
         return Ok(());
     }
 
@@ -32,12 +56,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         "exif" => cmd_exif(&args[2..]),
         "convert" => cmd_convert(&args[2..]),
         "resize" => cmd_resize(&args[2..]),
+        "-h" | "--help" => {
+            print!("{}", usage_text(&args[0]));
+            Ok(())
+        }
         "--version" => {
             println!("AGNO {}", AGNO_BUILD_VERSION.unwrap_or("devel"));
             Ok(())
         }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
+            eprint!("{}", usage_text(&args[0]));
             Err("Unknown command".into())
         }
     }
@@ -558,5 +587,23 @@ mod tests {
     fn parse_pad_color_rejects_non_hex() {
         assert!(parse_pad_color("zzzzzz").is_err());
         assert!(parse_pad_color("zzzzzzzz").is_err());
+    }
+
+    #[test]
+    fn usage_text_lists_commands_and_options() {
+        let text = usage_text("agno");
+        assert!(text.starts_with("Usage: agno"));
+        for needle in [
+            "exif",
+            "convert",
+            "resize",
+            "--page",
+            "--no-stretch",
+            "--pad-color",
+            "-h, --help",
+            "--version",
+        ] {
+            assert!(text.contains(needle), "usage text missing {needle:?}");
+        }
     }
 }
