@@ -39,6 +39,8 @@ pub fn scale_image(
         "Scaling image"
     );
 
+    let ch = a_img.channels;
+
     // Try GPU resize first if available
     #[cfg(feature = "gpu")]
     if let Some(resized) = crate::resize_gpu::resize_gpu(
@@ -51,10 +53,11 @@ pub fn scale_image(
         debug!("GPU resize complete");
         let exif = a_img.exif.clone();
         AgnoImage::free(&a_img);
-        return Ok(AgnoImage::new(
+        return Ok(AgnoImage::new_with_channels(
             resized,
             new_width as u64,
             new_height as u64,
+            ch,
             exif,
         ));
     }
@@ -67,14 +70,15 @@ pub fn scale_image(
         a_img.height as usize,
         new_width as usize,
         new_height as usize,
-        3,
+        ch as usize,
     );
     let exif = a_img.exif.clone();
     AgnoImage::free(&a_img);
-    Ok(AgnoImage::new(
+    Ok(AgnoImage::new_with_channels(
         resized,
         new_width as u64,
         new_height as u64,
+        ch,
         exif,
     ))
 }

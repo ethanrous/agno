@@ -34,10 +34,12 @@ All FFI-visible types must be `#[repr(C)]`:
 ```rust
 #[repr(C)]
 pub struct AgnoImage {
-    data: *mut c_uchar,   // RGB8 pixel data
+    data: *mut c_uchar,   // RGB8 or RGBA8 pixel data (see channels)
     len: usize,
     pub width: u64,
     pub height: u64,
+    pub page_count: u64,
+    pub channels: u8,     // 3 = RGB, 4 = RGBA
     pub exif: ExifContext,
 }
 ```
@@ -45,6 +47,11 @@ pub struct AgnoImage {
 - Field order matters — it must match the Go CGO declarations exactly
 - Use `c_uchar`, `c_void`, `usize` — not Rust-specific types
 - No `String`, `Vec`, `Option`, or enums across FFI boundary
+
+**Breaking change (2026-04-18):** `channels: u8` was added between `page_count`
+and `exif`. RGB images report `channels = 3`; RGBA images (from PNGs with
+alpha) report `channels = 4`. `AgnoImage.data` has `width * height * channels`
+bytes. Weblens CGO bindings must declare the new field in the same position.
 
 ## Function Conventions
 

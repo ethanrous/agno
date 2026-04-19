@@ -389,4 +389,26 @@ mod tests {
         free_agno_result(result);
         std::fs::remove_file(&path).ok();
     }
+
+    #[test]
+    fn agno_image_new_defaults_to_3_channels() {
+        let img = AgnoImage::new(vec![0u8; 3], 1, 1, crate::exif::ExifContext::default());
+        assert_eq!(img.channels, 3);
+        AgnoImage::free(&img);
+    }
+
+    #[test]
+    fn agno_image_new_with_channels_rgba() {
+        let img = AgnoImage::new_with_channels(
+            vec![0u8; 4],
+            1,
+            1,
+            4,
+            crate::exif::ExifContext::default(),
+        );
+        assert_eq!(img.channels, 4);
+        assert_eq!(img.width, 1);
+        assert_eq!(img.height, 1);
+        AgnoImage::free(&img);
+    }
 }

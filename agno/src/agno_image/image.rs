@@ -12,14 +12,26 @@ pub struct AgnoImage {
     pub width: u64,
     pub height: u64,
     pub page_count: u64,
+    pub channels: u8,
 
     pub exif: ExifContext,
 }
 
 impl AgnoImage {
     pub fn new(data: Vec<u8>, width: u64, height: u64, exif_ctx: ExifContext) -> Self {
-        let pixels_rgb = unsafe { libc::malloc((width * height * 3) as usize) as *mut c_uchar };
-        if pixels_rgb.is_null() {
+        Self::new_with_channels(data, width, height, 3, exif_ctx)
+    }
+
+    pub fn new_with_channels(
+        data: Vec<u8>,
+        width: u64,
+        height: u64,
+        channels: u8,
+        exif_ctx: ExifContext,
+    ) -> Self {
+        let byte_count = (width * height * channels as u64) as usize;
+        let pixels = unsafe { libc::malloc(byte_count) as *mut c_uchar };
+        if pixels.is_null() {
             return AgnoImage {
                 data: null_mut(),
                 exif: exif_ctx,
@@ -27,20 +39,22 @@ impl AgnoImage {
                 height: 0,
                 width: 0,
                 page_count: 1,
+                channels,
             };
         }
 
         unsafe {
-            pixels_rgb.copy_from_nonoverlapping(data.as_ptr(), data.len());
+            pixels.copy_from_nonoverlapping(data.as_ptr(), data.len());
         }
 
         AgnoImage {
-            data: pixels_rgb,
+            data: pixels,
             exif: exif_ctx,
             len: data.len(),
             height,
             width,
             page_count: 1,
+            channels,
         }
     }
 
@@ -90,7 +104,7 @@ impl AgnoImage {
             output_height: self.height as usize,
         };
         let data = self.as_slice().to_vec();
-        let channels = 3usize; // replaced in Task 3 with self.channels
+        let channels = self.channels as usize;
         let rotated = super::auto_rotate_image(&mut self.exif, &data, &mut dims, channels)?;
 
         unsafe {
