@@ -779,3 +779,38 @@ fn make_pdf_with_checkbox() -> Vec<u8> {
     .unwrap();
     pdf
 }
+
+// --- PNG Tests ---
+
+#[cfg(feature = "png")]
+#[test]
+fn png_rgb_roundtrip_exact() {
+    use agno::codec::png::{decode_png, encode_png};
+    let src: Vec<u8> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+    let encoded = encode_png(&src, 2, 2, 3).expect("encode");
+    let (decoded, w, h, channels) = decode_png(&encoded).expect("decode");
+    assert_eq!((w, h, channels), (2, 2, 3));
+    assert_eq!(decoded, src, "PNG is lossless for RGB");
+}
+
+#[cfg(feature = "png")]
+#[test]
+fn png_rgba_roundtrip_exact() {
+    use agno::codec::png::{decode_png, encode_png};
+    let src: Vec<u8> = vec![
+        10, 20, 30, 255, 40, 50, 60, 128, 70, 80, 90, 64, 100, 110, 120, 0,
+    ];
+    let encoded = encode_png(&src, 2, 2, 4).expect("encode");
+    let (decoded, w, h, channels) = decode_png(&encoded).expect("decode");
+    assert_eq!((w, h, channels), (2, 2, 4));
+    assert_eq!(decoded, src, "PNG is lossless for RGBA");
+}
+
+#[cfg(feature = "png")]
+#[test]
+fn png_encoder_rejects_bad_channels() {
+    use agno::codec::png::encode_png;
+    let src = vec![0u8; 4];
+    assert!(encode_png(&src, 1, 1, 2).is_err(), "channels=2 not supported");
+    assert!(encode_png(&src, 1, 1, 5).is_err(), "channels=5 not supported");
+}
