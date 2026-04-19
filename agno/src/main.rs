@@ -19,7 +19,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("  exif <file>                              Print EXIF data for a file");
         eprintln!("  convert <input> <output>                 Convert image between formats");
         eprintln!(
-            "  resize <input> <width> <height> <output> Resize image to specified dimensions"
+            "  resize [--no-stretch] [--pad-color RRGGBB|RRGGBBAA] <input> <width> <height> <output>"
+        );
+        eprintln!(
+            "                                           Resize image; --no-stretch preserves aspect ratio and pads"
         );
         eprintln!("  --version                                Print version information");
         return Ok(());
@@ -444,29 +447,66 @@ fn parse_pad_color(s: &str) -> Result<PadColor, Box<dyn Error>> {
 
 #[cfg(feature = "jpeg")]
 fn cmd_resize(args: &[String]) -> Result<(), Box<dyn Error>> {
-    if args.len() < 4 {
-        eprintln!("Usage: agno resize <input> <width> <height> <output>");
+    use agno::agno_image::transform::scale_image_no_stretch;
+
+    let mut no_stretch = false;
+    let mut pad_color: PadColor = PadColor::Rgb([255, 255, 255]);
+    let mut positional: Vec<&str> = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--no-stretch" => no_stretch = true,
+            "--pad-color" => {
+                i += 1;
+                let val = args.get(i).ok_or("--pad-color requires a value")?;
+                pad_color = parse_pad_color(val)?;
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("Unknown flag: {other}").into());
+            }
+            other => positional.push(other),
+        }
+        i += 1;
+    }
+
+    if positional.len() < 4 {
+        eprintln!(
+            "Usage: agno resize [--no-stretch] [--pad-color RRGGBB|RRGGBBAA] <input> <width> <height> <output>"
+        );
         return Err("Missing arguments".into());
     }
 
-    let input_path = &args[0];
-    let width: u32 = args[1].parse().map_err(|_| "Invalid width")?;
-    let height: u32 = args[2].parse().map_err(|_| "Invalid height")?;
-    let output_path = &args[3];
+    let input_path = positional[0];
+    let width: u32 = positional[1].parse().map_err(|_| "Invalid width")?;
+    let height: u32 = positional[2].parse().map_err(|_| "Invalid height")?;
+    let output_path = positional[3];
 
-    // Load image (auto-detects format)
     let img = load_agno_image_from_file(input_path)?;
 
-    // Scale using GPU-accelerated resize (with CPU fallback)
-    let resized = scale_image(img, width, height)?;
+    let resized = if no_stretch {
+        scale_image_no_stretch(img, width, height, pad_color)?
+    } else {
+        scale_image(img, width, height)?
+    };
 
-    // Write output as JPEG
-    resized.to_jpeg_file(100, output_path)?;
+    resized.write_to_file(output_path, 100)?;
 
-    println!(
-        "Resized {} ({}x{}) -> {}",
-        input_path, width, height, output_path
-    );
+    if no_stretch {
+        let pad_hex = match pad_color {
+            PadColor::Rgb([r, g, b]) => format!("{:02x}{:02x}{:02x}", r, g, b),
+            PadColor::Rgba([r, g, b, a]) => format!("{:02x}{:02x}{:02x}{:02x}", r, g, b, a),
+        };
+        println!(
+            "Resized {} ({}x{}, no-stretch, pad #{}) -> {}",
+            input_path, width, height, pad_hex, output_path
+        );
+    } else {
+        println!(
+            "Resized {} ({}x{}) -> {}",
+            input_path, width, height, output_path
+        );
+    }
     Ok(())
 }
 
