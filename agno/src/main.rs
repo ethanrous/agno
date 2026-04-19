@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fs::File;
 
 use agno::agno_image::load::load_agno_image_from_file;
-use agno::agno_image::transform::scale_image;
+use agno::agno_image::transform::{PadColor, scale_image};
 use agno::exif::{ExifContext, ExifValue};
 use agno::logging::{LogConfig, init};
 
@@ -405,6 +405,43 @@ fn cmd_convert(_args: &[String]) -> Result<(), Box<dyn Error>> {
     Err("Convert command requires the 'jpeg' feature.".into())
 }
 
+/// Parse a hex color of 6 (`RRGGBB`) or 8 (`RRGGBBAA`) digits, with optional
+/// `0x` / `#` prefix. Returns `PadColor::Rgb` or `PadColor::Rgba` accordingly.
+fn parse_pad_color(s: &str) -> Result<PadColor, Box<dyn Error>> {
+    let trimmed = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .or_else(|| s.strip_prefix('#'))
+        .unwrap_or(s);
+    match trimmed.len() {
+        6 => {
+            let r = u8::from_str_radix(&trimmed[0..2], 16)
+                .map_err(|_| format!("--pad-color: invalid hex in {:?}", s))?;
+            let g = u8::from_str_radix(&trimmed[2..4], 16)
+                .map_err(|_| format!("--pad-color: invalid hex in {:?}", s))?;
+            let b = u8::from_str_radix(&trimmed[4..6], 16)
+                .map_err(|_| format!("--pad-color: invalid hex in {:?}", s))?;
+            Ok(PadColor::Rgb([r, g, b]))
+        }
+        8 => {
+            let r = u8::from_str_radix(&trimmed[0..2], 16)
+                .map_err(|_| format!("--pad-color: invalid hex in {:?}", s))?;
+            let g = u8::from_str_radix(&trimmed[2..4], 16)
+                .map_err(|_| format!("--pad-color: invalid hex in {:?}", s))?;
+            let b = u8::from_str_radix(&trimmed[4..6], 16)
+                .map_err(|_| format!("--pad-color: invalid hex in {:?}", s))?;
+            let a = u8::from_str_radix(&trimmed[6..8], 16)
+                .map_err(|_| format!("--pad-color: invalid hex in {:?}", s))?;
+            Ok(PadColor::Rgba([r, g, b, a]))
+        }
+        n => Err(format!(
+            "--pad-color expects 6 (RRGGBB) or 8 (RRGGBBAA) hex digits, got {n} in {:?}",
+            s
+        )
+        .into()),
+    }
+}
+
 #[cfg(feature = "jpeg")]
 fn cmd_resize(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.len() < 4 {
@@ -436,4 +473,50 @@ fn cmd_resize(args: &[String]) -> Result<(), Box<dyn Error>> {
 #[cfg(not(feature = "jpeg"))]
 fn cmd_resize(_args: &[String]) -> Result<(), Box<dyn Error>> {
     Err("Resize command requires the 'jpeg' feature.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pad_color_6_digits_returns_rgb() {
+        match parse_pad_color("ff8800").unwrap() {
+            PadColor::Rgb(b) => assert_eq!(b, [0xFF, 0x88, 0x00]),
+            _ => panic!("expected Rgb variant"),
+        }
+    }
+
+    #[test]
+    fn parse_pad_color_8_digits_returns_rgba() {
+        match parse_pad_color("ff880080").unwrap() {
+            PadColor::Rgba(b) => assert_eq!(b, [0xFF, 0x88, 0x00, 0x80]),
+            _ => panic!("expected Rgba variant"),
+        }
+    }
+
+    #[test]
+    fn parse_pad_color_accepts_hash_and_0x_prefix() {
+        assert!(matches!(
+            parse_pad_color("#000000").unwrap(),
+            PadColor::Rgb([0, 0, 0])
+        ));
+        assert!(matches!(
+            parse_pad_color("0xffffffff").unwrap(),
+            PadColor::Rgba([0xFF, 0xFF, 0xFF, 0xFF])
+        ));
+    }
+
+    #[test]
+    fn parse_pad_color_rejects_bad_length() {
+        assert!(parse_pad_color("abc").is_err());
+        assert!(parse_pad_color("abcdefg").is_err());
+        assert!(parse_pad_color("abcdefghi").is_err());
+    }
+
+    #[test]
+    fn parse_pad_color_rejects_non_hex() {
+        assert!(parse_pad_color("zzzzzz").is_err());
+        assert!(parse_pad_color("zzzzzzzz").is_err());
+    }
 }
