@@ -129,8 +129,22 @@ impl AgnoImage {
     #[cfg(feature = "jpeg")]
     #[allow(dead_code)]
     pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
+        let rgb_bytes: Vec<u8>;
+        let rgb_slice: &[u8] = if self.channels == 3 {
+            self.as_slice()
+        } else {
+            let src = self.as_slice();
+            let pixel_count = (self.width * self.height) as usize;
+            rgb_bytes = (0..pixel_count)
+                .flat_map(|i| {
+                    let off = i * self.channels as usize;
+                    [src[off], src[off + 1], src[off + 2]]
+                })
+                .collect();
+            &rgb_bytes
+        };
         crate::codec::jpeg::encode_jpeg(
-            self.as_slice(),
+            rgb_slice,
             self.width as u32,
             self.height as u32,
             quality,
@@ -149,11 +163,36 @@ impl AgnoImage {
     #[cfg(feature = "webp")]
     #[allow(dead_code)]
     pub fn to_webp(&self, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
+        let rgb_bytes: Vec<u8>;
+        let rgb_slice: &[u8] = if self.channels == 3 {
+            self.as_slice()
+        } else {
+            let src = self.as_slice();
+            let pixel_count = (self.width * self.height) as usize;
+            rgb_bytes = (0..pixel_count)
+                .flat_map(|i| {
+                    let off = i * self.channels as usize;
+                    [src[off], src[off + 1], src[off + 2]]
+                })
+                .collect();
+            &rgb_bytes
+        };
         crate::codec::webp::encode_webp(
-            self.as_slice(),
+            rgb_slice,
             self.width as u32,
             self.height as u32,
             quality,
+        )
+    }
+
+    #[cfg(feature = "png")]
+    #[allow(dead_code)]
+    pub fn to_png(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+        crate::codec::png::encode_png(
+            self.as_slice(),
+            self.width as u32,
+            self.height as u32,
+            self.channels,
         )
     }
 
@@ -169,6 +208,8 @@ impl AgnoImage {
 
     fn encode_for_ext(&self, ext: &str, quality: u8) -> Result<Vec<u8>, Box<dyn Error>> {
         match ext {
+            #[cfg(feature = "png")]
+            "png" => self.to_png(),
             #[cfg(feature = "webp")]
             "webp" => self.to_webp(quality),
             #[cfg(feature = "jpeg")]

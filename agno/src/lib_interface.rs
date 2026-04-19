@@ -411,4 +411,24 @@ mod tests {
         assert_eq!(img.height, 1);
         AgnoImage::free(&img);
     }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn agno_image_to_png_round_trips_rgba() {
+        use crate::codec::png::decode_png;
+
+        let pixels = vec![10u8, 20, 30, 128, 40, 50, 60, 64];
+        let img = AgnoImage::new_with_channels(
+            pixels.clone(),
+            2,
+            1,
+            4,
+            crate::exif::ExifContext::default(),
+        );
+        let encoded = img.to_png().expect("encode");
+        let (decoded, w, h, channels) = decode_png(&encoded).expect("decode");
+        assert_eq!((w, h, channels), (2, 1, 4));
+        assert_eq!(decoded, pixels);
+        AgnoImage::free(&img);
+    }
 }
