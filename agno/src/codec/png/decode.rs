@@ -17,6 +17,7 @@ struct IhdrInfo {
 ///
 /// Supports color types 0 (Grayscale), 2 (RGB), 3 (Indexed), 4 (Gray+Alpha),
 /// and 6 (RGBA) at 1/2/4/8/16-bit depths. Non-interlaced only.
+#[allow(clippy::type_complexity)]
 pub fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32, u8), Box<dyn Error>> {
     if data.len() < 8 || data[..8] != PNG_SIGNATURE {
         return Err("Not a valid PNG file".into());

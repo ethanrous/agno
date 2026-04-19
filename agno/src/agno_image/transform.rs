@@ -11,12 +11,7 @@ use crate::{
 
 /// Largest `(w, h)` that preserves source aspect ratio and fits inside `(dst_w, dst_h)`.
 /// Clamped to ≥1 pixel per axis; never exceeds the target.
-pub(crate) fn compute_fit_dims(
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-) -> (u32, u32) {
+pub(crate) fn compute_fit_dims(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32) {
     if src_w == 0 || src_h == 0 {
         return (dst_w.max(1), dst_h.max(1));
     }

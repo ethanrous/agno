@@ -811,6 +811,12 @@ fn png_rgba_roundtrip_exact() {
 fn png_encoder_rejects_bad_channels() {
     use agno::codec::png::encode_png;
     let src = vec![0u8; 4];
-    assert!(encode_png(&src, 1, 1, 2).is_err(), "channels=2 not supported");
-    assert!(encode_png(&src, 1, 1, 5).is_err(), "channels=5 not supported");
+    assert!(
+        encode_png(&src, 1, 1, 2).is_err(),
+        "channels=2 not supported"
+    );
+    assert!(
+        encode_png(&src, 1, 1, 5).is_err(),
+        "channels=5 not supported"
+    );
 }

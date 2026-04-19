@@ -143,12 +143,7 @@ impl AgnoImage {
                 .collect();
             &rgb_bytes
         };
-        crate::codec::jpeg::encode_jpeg(
-            rgb_slice,
-            self.width as u32,
-            self.height as u32,
-            quality,
-        )
+        crate::codec::jpeg::encode_jpeg(rgb_slice, self.width as u32, self.height as u32, quality)
     }
 
     #[cfg(feature = "jpeg")]
@@ -177,12 +172,7 @@ impl AgnoImage {
                 .collect();
             &rgb_bytes
         };
-        crate::codec::webp::encode_webp(
-            rgb_slice,
-            self.width as u32,
-            self.height as u32,
-            quality,
-        )
+        crate::codec::webp::encode_webp(rgb_slice, self.width as u32, self.height as u32, quality)
     }
 
     #[cfg(feature = "png")]
