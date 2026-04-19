@@ -94,8 +94,14 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         #[cfg(feature = "png")]
         ImageType::Png => {
             let file_data = std::fs::read(path)?;
-            let (rgb, width, height) = crate::codec::png::decode_png(&file_data)?;
-            Ok(AgnoImage::new(rgb, width as u64, height as u64, exif))
+            let (pixels, width, height, channels) = crate::codec::png::decode_png(&file_data)?;
+            Ok(AgnoImage::new_with_channels(
+                pixels,
+                width as u64,
+                height as u64,
+                channels,
+                exif,
+            ))
         }
         #[cfg(not(feature = "png"))]
         ImageType::Png => {

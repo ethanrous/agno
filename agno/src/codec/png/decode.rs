@@ -10,11 +10,14 @@ struct IhdrInfo {
     interlace: u8,
 }
 
-/// Decode a PNG file from raw bytes, returning (rgb8_data, width, height).
+/// Decode a PNG file from raw bytes, returning (pixel_data, width, height, channels).
+///
+/// `channels` is 3 for RGB output, 4 for RGBA. RGBA is emitted when the source
+/// color type is 4 (Gray+Alpha) or 6 (RGBA); otherwise RGB is emitted.
 ///
 /// Supports color types 0 (Grayscale), 2 (RGB), 3 (Indexed), 4 (Gray+Alpha),
 /// and 6 (RGBA) at 1/2/4/8/16-bit depths. Non-interlaced only.
-pub fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
+pub fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32, u8), Box<dyn Error>> {
     if data.len() < 8 || data[..8] != PNG_SIGNATURE {
         return Err("Not a valid PNG file".into());
     }
@@ -84,9 +87,14 @@ pub fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
 
     let raw_pixels = reconstruct_filters(&decompressed, &ihdr)?;
 
-    let rgb = to_rgb8(&raw_pixels, &ihdr, &palette)?;
+    let has_alpha = matches!(ihdr.color_type, 4 | 6);
+    let (pixels, channels) = if has_alpha {
+        (to_rgba8(&raw_pixels, &ihdr)?, 4u8)
+    } else {
+        (to_rgb8(&raw_pixels, &ihdr, &palette)?, 3u8)
+    };
 
-    Ok((rgb, ihdr.width, ihdr.height))
+    Ok((pixels, ihdr.width, ihdr.height, channels))
 }
 
 fn read_u32_be(data: &[u8], offset: usize) -> u32 {
@@ -379,6 +387,62 @@ fn to_rgb8(raw: &[u8], ihdr: &IhdrInfo, palette: &[u8]) -> Result<Vec<u8>, Box<d
     Ok(rgb)
 }
 
+fn to_rgba8(raw: &[u8], ihdr: &IhdrInfo) -> Result<Vec<u8>, Box<dyn Error>> {
+    let w = ihdr.width as usize;
+    let h = ihdr.height as usize;
+    let pixel_count = w * h;
+    let mut rgba = vec![0u8; pixel_count * 4];
+
+    match (ihdr.color_type, ihdr.bit_depth) {
+        // Gray+Alpha 8-bit → expand gray to RGB, keep alpha
+        (4, 8) => {
+            for i in 0..pixel_count {
+                let g = raw[i * 2];
+                let a = raw[i * 2 + 1];
+                rgba[i * 4] = g;
+                rgba[i * 4 + 1] = g;
+                rgba[i * 4 + 2] = g;
+                rgba[i * 4 + 3] = a;
+            }
+        }
+        // Gray+Alpha 16-bit → take high byte of each
+        (4, 16) => {
+            for i in 0..pixel_count {
+                let g = raw[i * 4];
+                let a = raw[i * 4 + 2];
+                rgba[i * 4] = g;
+                rgba[i * 4 + 1] = g;
+                rgba[i * 4 + 2] = g;
+                rgba[i * 4 + 3] = a;
+            }
+        }
+        // RGBA 8-bit: direct copy
+        (6, 8) => {
+            if raw.len() < pixel_count * 4 {
+                return Err("Raw data too short for RGBA8".into());
+            }
+            rgba.copy_from_slice(&raw[..pixel_count * 4]);
+        }
+        // RGBA 16-bit: take high byte of each channel
+        (6, 16) => {
+            for i in 0..pixel_count {
+                rgba[i * 4] = raw[i * 8];
+                rgba[i * 4 + 1] = raw[i * 8 + 2];
+                rgba[i * 4 + 2] = raw[i * 8 + 4];
+                rgba[i * 4 + 3] = raw[i * 8 + 6];
+            }
+        }
+        _ => {
+            return Err(format!(
+                "to_rgba8 called with non-alpha color_type/bit_depth: {}/{}",
+                ihdr.color_type, ihdr.bit_depth
+            )
+            .into());
+        }
+    }
+    Ok(rgba)
+}
+
 /// Unpack sub-byte grayscale (1, 2, or 4 bit) pixels and scale to 0-255.
 fn unpack_subbyte_grayscale(
     raw: &[u8],
@@ -615,7 +679,7 @@ mod tests {
         let palette: &[u8] = &[];
         let png = build_minimal_png(1, 1, 8, 2, palette, &compressed);
 
-        let (rgb, w, h) = decode_png(&png).unwrap();
+        let (rgb, w, h, _channels) = decode_png(&png).unwrap();
         assert_eq!(w, 1);
         assert_eq!(h, 1);
         assert_eq!(rgb, vec![255, 0, 128]);
@@ -630,34 +694,42 @@ mod tests {
         let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&scanline, 6);
         let png = build_minimal_png(2, 1, 8, 3, &palette, &compressed);
 
-        let (rgb, w, h) = decode_png(&png).unwrap();
+        let (rgb, w, h, _channels) = decode_png(&png).unwrap();
         assert_eq!(w, 2);
         assert_eq!(h, 1);
         assert_eq!(rgb, vec![255, 0, 0, 0, 255, 0]);
     }
 
     #[test]
-    fn test_roundtrip_rgba8_1x1() {
-        // 1x1 RGBA8 with alpha=128
-        let scanline = vec![0u8, 10, 20, 30, 128]; // filter=0, R=10, G=20, B=30, A=128
+    fn decode_rgba8_preserves_alpha_channel() {
+        // 1x1 RGBA pixel (10, 20, 30, 128). Color-type 6, bit depth 8.
+        let scanline = vec![0u8, 10, 20, 30, 128]; // filter byte + RGBA
         let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&scanline, 6);
         let png = build_minimal_png(1, 1, 8, 6, &[], &compressed);
-
-        let (rgb, w, h) = decode_png(&png).unwrap();
-        assert_eq!((w, h), (1, 1));
-        assert_eq!(rgb, vec![10, 20, 30]);
+        let (data, w, h, channels) = decode_png(&png).unwrap();
+        assert_eq!((w, h, channels), (1, 1, 4));
+        assert_eq!(data, vec![10, 20, 30, 128]);
     }
 
     #[test]
-    fn test_roundtrip_gray_alpha_8bit() {
-        // 1x1 Gray+Alpha
-        let scanline = vec![0u8, 200, 128]; // filter=0, gray=200, alpha=128
+    fn decode_rgb_source_reports_3_channels() {
+        let scanline = vec![0u8, 100, 150, 200]; // filter + RGB
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&scanline, 6);
+        let png = build_minimal_png(1, 1, 8, 2, &[], &compressed);
+        let (data, w, h, channels) = decode_png(&png).unwrap();
+        assert_eq!((w, h, channels), (1, 1, 3));
+        assert_eq!(data, vec![100, 150, 200]);
+    }
+
+    #[test]
+    fn decode_gray_alpha_source_reports_4_channels() {
+        // Gray+Alpha 8-bit: (Gray=128, Alpha=64) → expand to (R=128, G=128, B=128, A=64)
+        let scanline = vec![0u8, 128, 64];
         let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&scanline, 6);
         let png = build_minimal_png(1, 1, 8, 4, &[], &compressed);
-
-        let (rgb, w, h) = decode_png(&png).unwrap();
-        assert_eq!((w, h), (1, 1));
-        assert_eq!(rgb, vec![200, 200, 200]);
+        let (data, w, h, channels) = decode_png(&png).unwrap();
+        assert_eq!((w, h, channels), (1, 1, 4));
+        assert_eq!(data, vec![128, 128, 128, 64]);
     }
 
     #[test]
@@ -668,7 +740,7 @@ mod tests {
         let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&scanline, 6);
         let png = build_minimal_png(1, 1, 16, 2, &[], &compressed);
 
-        let (rgb, w, h) = decode_png(&png).unwrap();
+        let (rgb, w, h, _channels) = decode_png(&png).unwrap();
         assert_eq!((w, h), (1, 1));
         assert_eq!(rgb, vec![0xAB, 0xCD, 0xEF]);
     }
@@ -681,7 +753,7 @@ mod tests {
         let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&scanline, 6);
         let png = build_minimal_png(2, 1, 8, 2, &[], &compressed);
 
-        let (rgb, w, h) = decode_png(&png).unwrap();
+        let (rgb, w, h, _channels) = decode_png(&png).unwrap();
         assert_eq!((w, h), (2, 1));
         assert_eq!(rgb, vec![10, 20, 30, 15, 25, 35]);
     }
@@ -700,7 +772,7 @@ mod tests {
         let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&scanlines, 6);
         let png = build_minimal_png(2, 2, 8, 2, &[], &compressed);
 
-        let (rgb, w, h) = decode_png(&png).unwrap();
+        let (rgb, w, h, _channels) = decode_png(&png).unwrap();
         assert_eq!((w, h), (2, 2));
         assert_eq!(rgb, vec![10, 20, 30, 40, 50, 60, 11, 22, 33, 44, 55, 66]);
     }
