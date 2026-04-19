@@ -225,9 +225,9 @@ fn resize_vertical(
 }
 
 /// Compose `src` centered inside a `dst_w × dst_h` buffer pre-filled with `pad`.
-/// `channels` = 3 or 4; `pad.len()` must equal `channels`. Requires
-/// `src_w ≤ dst_w` and `src_h ≤ dst_h`.
-pub fn pad_center(
+/// If any axis of `src` exceeds the corresponding axis of `dst`, the overflow
+/// is center-cropped. `channels` = 3 or 4; `pad.len()` must equal `channels`.
+pub fn compose_center(
     src: &[u8],
     src_w: usize,
     src_h: usize,
@@ -236,19 +236,15 @@ pub fn pad_center(
     pad: &[u8],
     channels: usize,
 ) -> Vec<u8> {
-    assert!(
-        src_w <= dst_w && src_h <= dst_h,
-        "pad_center: src larger than dst"
-    );
     assert_eq!(
         src.len(),
         src_w * src_h * channels,
-        "pad_center: src length mismatch"
+        "compose_center: src length mismatch"
     );
     assert_eq!(
         pad.len(),
         channels,
-        "pad_center: pad color length must equal channels"
+        "compose_center: pad color length must equal channels"
     );
 
     let mut out = Vec::with_capacity(dst_w * dst_h * channels);
@@ -256,15 +252,25 @@ pub fn pad_center(
         out.extend_from_slice(pad);
     }
 
-    let x_offset = (dst_w - src_w) / 2;
-    let y_offset = (dst_h - src_h) / 2;
+    let copy_w = src_w.min(dst_w);
+    let copy_h = src_h.min(dst_h);
+    if copy_w == 0 || copy_h == 0 {
+        return out;
+    }
+
+    let src_x0 = src_w.saturating_sub(dst_w) / 2;
+    let src_y0 = src_h.saturating_sub(dst_h) / 2;
+    let dst_x0 = dst_w.saturating_sub(src_w) / 2;
+    let dst_y0 = dst_h.saturating_sub(src_h) / 2;
+
     let src_row_bytes = src_w * channels;
     let dst_row_bytes = dst_w * channels;
+    let copy_bytes = copy_w * channels;
 
-    for row in 0..src_h {
-        let s = row * src_row_bytes;
-        let d = (y_offset + row) * dst_row_bytes + x_offset * channels;
-        out[d..d + src_row_bytes].copy_from_slice(&src[s..s + src_row_bytes]);
+    for row in 0..copy_h {
+        let s = (src_y0 + row) * src_row_bytes + src_x0 * channels;
+        let d = (dst_y0 + row) * dst_row_bytes + dst_x0 * channels;
+        out[d..d + copy_bytes].copy_from_slice(&src[s..s + copy_bytes]);
     }
     out
 }
@@ -497,9 +503,9 @@ mod tests {
     }
 
     #[test]
-    fn pad_center_rgb_fills_corners_with_pad_color() {
+    fn compose_center_rgb_fills_corners_with_pad_color() {
         let src: Vec<u8> = vec![255, 0, 0].repeat(4);
-        let out = pad_center(&src, 2, 2, 4, 4, &[0, 255, 0], 3);
+        let out = compose_center(&src, 2, 2, 4, 4, &[0, 255, 0], 3);
         assert_eq!(out.len(), 4 * 4 * 3);
         assert_eq!(pixel_at(&out, 4, 0, 0, 3), vec![0, 255, 0]);
         assert_eq!(pixel_at(&out, 4, 3, 3, 3), vec![0, 255, 0]);
@@ -508,9 +514,9 @@ mod tests {
     }
 
     #[test]
-    fn pad_center_rgba_carries_alpha_in_pad_region() {
+    fn compose_center_rgba_carries_alpha_in_pad_region() {
         let src: Vec<u8> = vec![255, 0, 0, 255].repeat(4);
-        let out = pad_center(&src, 2, 2, 4, 4, &[0, 0, 0, 0], 4);
+        let out = compose_center(&src, 2, 2, 4, 4, &[0, 0, 0, 0], 4);
         assert_eq!(out.len(), 4 * 4 * 4);
         assert_eq!(pixel_at(&out, 4, 0, 0, 4), vec![0, 0, 0, 0]);
         assert_eq!(pixel_at(&out, 4, 3, 0, 4), vec![0, 0, 0, 0]);
@@ -519,19 +525,49 @@ mod tests {
     }
 
     #[test]
-    fn pad_center_identity_when_dims_match() {
+    fn compose_center_identity_when_dims_match() {
         let src = make_test_image(3, 2);
-        let out = pad_center(&src, 3, 2, 3, 2, &[0, 0, 0], 3);
+        let out = compose_center(&src, 3, 2, 3, 2, &[0, 0, 0], 3);
         assert_eq!(out, src);
     }
 
     #[test]
-    fn pad_center_odd_offsets_use_floor_division_rgb() {
+    fn compose_center_odd_offsets_use_floor_division_rgb() {
         let src = vec![200, 100, 50];
-        let out = pad_center(&src, 1, 1, 4, 1, &[10, 20, 30], 3);
+        let out = compose_center(&src, 1, 1, 4, 1, &[10, 20, 30], 3);
         assert_eq!(pixel_at(&out, 4, 0, 0, 3), vec![10, 20, 30]);
         assert_eq!(pixel_at(&out, 4, 1, 0, 3), vec![200, 100, 50]);
         assert_eq!(pixel_at(&out, 4, 2, 0, 3), vec![10, 20, 30]);
         assert_eq!(pixel_at(&out, 4, 3, 0, 3), vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn compose_center_crops_when_src_wider_than_dst() {
+        // 6x1 source (values 1..=6), target 2x1 → center-cropped to pixels 3,4.
+        let src: Vec<u8> = vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6];
+        let out = compose_center(&src, 6, 1, 2, 1, &[0, 0, 0], 3);
+        assert_eq!(out, vec![3, 3, 3, 4, 4, 4]);
+    }
+
+    #[test]
+    fn compose_center_crops_when_src_taller_than_dst() {
+        // 1x4 source, target 1x2 → keeps rows 1,2.
+        let src: Vec<u8> = vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4];
+        let out = compose_center(&src, 1, 4, 1, 2, &[0, 0, 0], 3);
+        assert_eq!(out, vec![2, 2, 2, 3, 3, 3]);
+    }
+
+    #[test]
+    fn compose_center_crops_one_axis_pads_the_other() {
+        // 4x1 source, target 2x3 → crop to 2x1 in x, pad vertically above and below.
+        let src: Vec<u8> = vec![10, 10, 10, 20, 20, 20, 30, 30, 30, 40, 40, 40];
+        let out = compose_center(&src, 4, 1, 2, 3, &[0, 0, 0], 3);
+        // Row 0: pad. Row 1: src cols 1,2 = (20,30). Row 2: pad.
+        assert_eq!(pixel_at(&out, 2, 0, 0, 3), vec![0, 0, 0]);
+        assert_eq!(pixel_at(&out, 2, 1, 0, 3), vec![0, 0, 0]);
+        assert_eq!(pixel_at(&out, 2, 0, 1, 3), vec![20, 20, 20]);
+        assert_eq!(pixel_at(&out, 2, 1, 1, 3), vec![30, 30, 30]);
+        assert_eq!(pixel_at(&out, 2, 0, 2, 3), vec![0, 0, 0]);
+        assert_eq!(pixel_at(&out, 2, 1, 2, 3), vec![0, 0, 0]);
     }
 }

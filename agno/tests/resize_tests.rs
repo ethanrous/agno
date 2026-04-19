@@ -172,15 +172,62 @@ fn no_stretch_rgba_source_keeps_source_alpha() {
 
     let off = 4 * 4;
     let data = out.as_slice();
-    for i in 0..4 {
-        let diff = (data[off + i] as i32 - [10, 20, 30, 200][i] as i32).unsigned_abs();
-        assert!(
-            diff <= 1,
-            "channel {i}: got {}, want {}",
-            data[off + i],
-            [10, 20, 30, 200][i]
-        );
+    assert_eq!(&data[off..off + 4], &[10, 20, 30, 200]);
+    AgnoImage::free(&out);
+}
+
+#[test]
+fn no_stretch_does_not_upscale_when_target_is_larger() {
+    // 4x4 solid red source composed into a 12x12 canvas must remain 4x4 red
+    // in the middle, padded all around. No scaling.
+    use agno::agno_image::AgnoImage;
+    use agno::agno_image::transform::{PadColor, scale_image_no_stretch};
+    use agno::exif::ExifContext;
+
+    let src: Vec<u8> = vec![255, 0, 0].repeat(16);
+    let img = AgnoImage::new(src, 4, 4, ExifContext::default());
+    let out = scale_image_no_stretch(img, 12, 12, PadColor::Rgb([0, 255, 0])).expect("resize");
+    assert_eq!((out.width, out.height), (12, 12));
+
+    let data = out.as_slice();
+    // Centered 4x4 red block at rows 4..8, cols 4..8.
+    for y in 0..12 {
+        for x in 0..12 {
+            let off = (y * 12 + x) * 3;
+            let in_block = (4..8).contains(&y) && (4..8).contains(&x);
+            let expected: [u8; 3] = if in_block { [255, 0, 0] } else { [0, 255, 0] };
+            assert_eq!(
+                &data[off..off + 3],
+                &expected,
+                "pixel ({x},{y}) wrong"
+            );
+        }
     }
+    AgnoImage::free(&out);
+}
+
+#[test]
+fn no_stretch_crops_when_target_is_smaller_than_source() {
+    // 8x1 source with distinct per-column colors. Target 4x1 should
+    // center-crop to columns 2..6.
+    use agno::agno_image::AgnoImage;
+    use agno::agno_image::transform::{PadColor, scale_image_no_stretch};
+    use agno::exif::ExifContext;
+
+    let mut src = Vec::with_capacity(8 * 3);
+    for i in 0..8 {
+        src.extend_from_slice(&[i as u8 * 10, 0, 0]);
+    }
+    let img = AgnoImage::new(src, 8, 1, ExifContext::default());
+
+    let out = scale_image_no_stretch(img, 4, 1, PadColor::Rgb([99, 99, 99])).expect("resize");
+    assert_eq!((out.width, out.height), (4, 1));
+    let data = out.as_slice();
+    // columns 2..=5 → R values 20, 30, 40, 50
+    assert_eq!(&data[0..3], &[20, 0, 0]);
+    assert_eq!(&data[3..6], &[30, 0, 0]);
+    assert_eq!(&data[6..9], &[40, 0, 0]);
+    assert_eq!(&data[9..12], &[50, 0, 0]);
     AgnoImage::free(&out);
 }
 

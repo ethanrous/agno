@@ -9,18 +9,6 @@ use crate::{
     sony_decoder::Dimensions,
 };
 
-/// Largest `(w, h)` that preserves source aspect ratio and fits inside `(dst_w, dst_h)`.
-/// Clamped to ≥1 pixel per axis; never exceeds the target.
-pub(crate) fn compute_fit_dims(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32) {
-    if src_w == 0 || src_h == 0 {
-        return (dst_w.max(1), dst_h.max(1));
-    }
-    let scale = (dst_w as f64 / src_w as f64).min(dst_h as f64 / src_h as f64);
-    let inner_w = ((src_w as f64 * scale).round() as u32).max(1).min(dst_w);
-    let inner_h = ((src_h as f64 * scale).round() as u32).max(1).min(dst_h);
-    (inner_w, inner_h)
-}
-
 pub fn scale_image(
     a_img: AgnoImage,
     new_width: u32,
@@ -166,9 +154,10 @@ fn promote_rgb_to_rgba(a_img: AgnoImage) -> AgnoImage {
     AgnoImage::new_with_channels(rgba, width, height, 4, exif)
 }
 
-/// Resize without stretching: scale to largest aspect-preserving fit within
-/// `(new_width, new_height)`, then center inside a target-sized buffer filled
-/// with `pad`. If `pad` carries alpha and the source is RGB, the source is
+/// Resize without stretching: preserve source pixel dimensions, center it
+/// inside a `(new_width, new_height)` buffer, and either pad with `pad` where
+/// the canvas is larger or center-crop where it is smaller. The source is
+/// never scaled. If `pad` carries alpha and the source is RGB, the source is
 /// promoted to RGBA first so the output has real per-pixel transparency in
 /// the pad region.
 pub fn scale_image_no_stretch(
@@ -191,42 +180,32 @@ pub fn scale_image_no_stretch(
         _ => &pad_bytes_4[..4],
     };
 
-    let (inner_w, inner_h) = compute_fit_dims(
-        a_img.width as u32,
-        a_img.height as u32,
-        new_width,
-        new_height,
-    );
-
     debug!(
         from_width = a_img.width,
         from_height = a_img.height,
         to_width = new_width,
         to_height = new_height,
-        inner_width = inner_w,
-        inner_height = inner_h,
         channels = output_channels,
-        "Scaling image without stretching"
+        "Composing image into target canvas without stretching"
     );
 
-    if inner_w == new_width && inner_h == new_height {
-        return scale_image(a_img, new_width, new_height);
+    if a_img.width as u32 == new_width && a_img.height as u32 == new_height {
+        return Ok(a_img);
     }
 
-    let scaled = scale_image(a_img, inner_w, inner_h)?;
-    let padded = ops::pad_center(
-        scaled.as_slice(),
-        inner_w as usize,
-        inner_h as usize,
+    let composed = ops::compose_center(
+        a_img.as_slice(),
+        a_img.width as usize,
+        a_img.height as usize,
         new_width as usize,
         new_height as usize,
         pad_slice,
         output_channels as usize,
     );
-    let exif = scaled.exif.clone();
-    AgnoImage::free(&scaled);
+    let exif = a_img.exif.clone();
+    AgnoImage::free(&a_img);
     Ok(AgnoImage::new_with_channels(
-        padded,
+        composed,
         new_width as u64,
         new_height as u64,
         output_channels,
@@ -234,44 +213,3 @@ pub fn scale_image_no_stretch(
     ))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fit_dims_square_into_wider_box_pillarboxes() {
-        let (iw, ih) = compute_fit_dims(512, 512, 1024, 512);
-        assert_eq!((iw, ih), (512, 512));
-    }
-
-    #[test]
-    fn fit_dims_wide_into_square_letterboxes() {
-        let (iw, ih) = compute_fit_dims(1000, 500, 400, 400);
-        assert_eq!((iw, ih), (400, 200));
-    }
-
-    #[test]
-    fn fit_dims_identity_when_target_matches_source() {
-        let (iw, ih) = compute_fit_dims(800, 600, 800, 600);
-        assert_eq!((iw, ih), (800, 600));
-    }
-
-    #[test]
-    fn fit_dims_upscale_uniformly() {
-        let (iw, ih) = compute_fit_dims(512, 512, 2048, 2048);
-        assert_eq!((iw, ih), (2048, 2048));
-    }
-
-    #[test]
-    fn fit_dims_clamps_to_minimum_one_pixel() {
-        let (iw, ih) = compute_fit_dims(1000, 1, 100, 100);
-        assert_eq!(iw, 100);
-        assert!(ih >= 1);
-    }
-
-    #[test]
-    fn fit_dims_never_exceeds_target() {
-        let (iw, ih) = compute_fit_dims(1001, 501, 400, 400);
-        assert!(iw <= 400 && ih <= 400);
-    }
-}
