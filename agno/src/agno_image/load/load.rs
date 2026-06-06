@@ -18,6 +18,7 @@ pub enum ImageType {
     Png,
     Webp,
     Gif,
+    Dicom,
     Pdf,
     Heic,
     QuickTimeMov,
@@ -62,7 +63,16 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
                 // Classic QuickTime MOV without ftyp box
                 Ok(ImageType::QuickTimeMov)
             } else {
-                Err("Unsupported image format".into())
+                // DICOM Part-10: a 128-byte preamble followed by "DICM" at offset 128.
+                let mut magic = [0u8; 4];
+                if reader.seek(SeekFrom::Start(128)).is_ok()
+                    && reader.read_exact(&mut magic).is_ok()
+                    && &magic == b"DICM"
+                {
+                    Ok(ImageType::Dicom)
+                } else {
+                    Err("Unsupported image format".into())
+                }
             }
         }
     }
@@ -119,6 +129,15 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         #[cfg(not(feature = "gif"))]
         ImageType::Gif => {
             Err("GIF support is not enabled. Please enable the 'gif' feature.".into())
+        }
+        #[cfg(feature = "dicom")]
+        ImageType::Dicom => {
+            let file_data = std::fs::read(path)?;
+            super::load_dicom_from_bytes(&file_data, exif)
+        }
+        #[cfg(not(feature = "dicom"))]
+        ImageType::Dicom => {
+            Err("DICOM support is not enabled. Please enable the 'dicom' feature.".into())
         }
         #[cfg(feature = "pdf")]
         ImageType::Pdf => {

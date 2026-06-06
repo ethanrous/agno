@@ -195,6 +195,7 @@ impl ExifContext {
                 ImageType::Png => Self::from_png(reader)?,
                 ImageType::Webp => return Ok(Self::new()),
                 ImageType::Gif => return Ok(Self::new()),
+                ImageType::Dicom => return Ok(Self::new()),
                 ImageType::Pdf => return Ok(Self::new()),
                 ImageType::Heic => Self::from_isobmff(reader)?,
                 ImageType::QuickTimeMov | ImageType::Mp4 => Self::from_mov(reader)?,
