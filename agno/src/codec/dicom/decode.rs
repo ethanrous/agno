@@ -66,8 +66,8 @@ fn stored_value(
     }
 }
 
-/// Render an RGB frame to RGB8. 16-bit channels are masked to BitsStored and
-/// scaled down to 8 bits.
+/// Render an RGB frame to RGB8. Channels are masked to BitsStored and scaled to
+/// 8 bits (down for 16-bit, up for sub-8-bit), matching the grayscale path.
 fn render_rgb(
     frame: &[u8],
     n: usize,
@@ -89,7 +89,12 @@ fn render_rgb(
                 (masked << (8 - bits_stored)) as u8
             }
         } else {
-            frame[sample]
+            let raw = frame[sample];
+            if bits_stored >= 8 {
+                raw
+            } else {
+                (raw & (((1u16 << bits_stored) - 1) as u8)) << (8 - bits_stored)
+            }
         }
     };
     let mut out = vec![0u8; n * 3];
@@ -133,13 +138,24 @@ fn render_frame(img: &DicomImage, frame_index: usize) -> Result<Vec<u8>, Box<dyn
     let frame = &img.pixel_data[start..end];
 
     match img.photometric {
-        Photometric::Rgb if spp == 3 => Ok(render_rgb(
-            frame,
-            n,
-            img.planar_configuration,
-            img.bits_allocated,
-            img.bits_stored as u32,
-        )),
+        Photometric::Rgb if spp == 3 => {
+            // PlanarConfiguration is defined only for 0 (interleaved) or 1
+            // (planar); reject other values rather than silently mis-decoding.
+            if img.planar_configuration > 1 {
+                return Err(format!(
+                    "unsupported DICOM PlanarConfiguration: {}",
+                    img.planar_configuration
+                )
+                .into());
+            }
+            Ok(render_rgb(
+                frame,
+                n,
+                img.planar_configuration,
+                img.bits_allocated,
+                img.bits_stored as u32,
+            ))
+        }
         Photometric::Monochrome1 | Photometric::Monochrome2 if spp == 1 => {
             Ok(render_mono(img, frame, n))
         }
@@ -353,6 +369,38 @@ mod tests {
         let file = make_part10(&rgb_dataset(1), &pixels);
         let (rgb, _, _, _) = decode_dicom(&file).unwrap();
         assert_eq!(rgb, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn eight_bit_rgb_substored_masks_and_scales() {
+        // RGB with BitsAllocated=8, BitsStored=4: each channel is masked to the low
+        // 4 bits and scaled up to 8 bits (v << 4), matching the 16-bit/grayscale
+        // paths. The high nibble must be discarded before scaling.
+        let mut d = Vec::new();
+        d.extend_from_slice(&short(0x0028, 0x0002, b"US", &us(3)));
+        d.extend_from_slice(&short(0x0028, 0x0004, b"CS", &pad(b"RGB".to_vec(), b' ')));
+        d.extend_from_slice(&short(0x0028, 0x0006, b"US", &us(0))); // interleaved
+        d.extend_from_slice(&short(0x0028, 0x0010, b"US", &us(1))); // Rows
+        d.extend_from_slice(&short(0x0028, 0x0011, b"US", &us(2))); // Columns
+        d.extend_from_slice(&short(0x0028, 0x0100, b"US", &us(8))); // BitsAllocated
+        d.extend_from_slice(&short(0x0028, 0x0101, b"US", &us(4))); // BitsStored
+        d.extend_from_slice(&short(0x0028, 0x0102, b"US", &us(3))); // HighBit
+        d.extend_from_slice(&short(0x0028, 0x0103, b"US", &us(0)));
+        let pixels = [0xFFu8, 0x10, 0x01, 0x18, 0x00, 0x0F];
+        let file = make_part10(&d, &pixels);
+        let (rgb, w, h, _) = decode_dicom(&file).unwrap();
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(rgb, vec![240, 0, 16, 128, 0, 240]);
+    }
+
+    #[test]
+    fn rejects_invalid_planar_configuration() {
+        // PlanarConfiguration is defined only for 0 or 1; a value of 2 must error
+        // rather than silently deinterleave the samples as planar.
+        let pixels = [10u8, 20, 30, 40, 50, 60];
+        let file = make_part10(&rgb_dataset(2), &pixels);
+        let err = decode_dicom(&file).unwrap_err().to_string();
+        assert!(err.contains("PlanarConfiguration"), "got: {err}");
     }
 
     #[test]

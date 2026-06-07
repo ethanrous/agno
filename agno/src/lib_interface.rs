@@ -245,6 +245,19 @@ pub extern "C" fn load_image_page(
         Err(e) => return make_error_result(format!("Failed to read {path_str}: {e}")),
     };
 
+    // DICOM first: the 128-byte Part-10 preamble is arbitrary and may begin with
+    // another format's magic (e.g. "%PDF-"/"GIF8"), so the authoritative "DICM"
+    // marker at offset 128 must be checked before the leading-magic dispatch.
+    // Mirrors detect_image_type() in agno_image/load/load.rs.
+    #[cfg(feature = "dicom")]
+    if crate::codec::dicom::is_dicom(&data) {
+        return into_result!(crate::agno_image::load::load_dicom_frame_from_bytes(
+            &data,
+            page_num,
+            crate::exif::ExifContext::default(),
+        ));
+    }
+
     if data.len() >= 5 && &data[..5] == b"%PDF-" {
         #[cfg(feature = "pdf")]
         {
@@ -275,15 +288,6 @@ pub extern "C" fn load_image_page(
         {
             return make_error_result("GIF support is not enabled".to_string());
         }
-    }
-
-    #[cfg(feature = "dicom")]
-    if crate::codec::dicom::is_dicom(&data) {
-        return into_result!(crate::agno_image::load::load_dicom_frame_from_bytes(
-            &data,
-            page_num,
-            crate::exif::ExifContext::default(),
-        ));
     }
 
     let _ = max_dims;

@@ -9,7 +9,6 @@ matches the Rust decoder's window formula exactly.
 Usage:
     python3 scripts/make_dicom_fixture.py ~/tmp/brain/IMG00001.dcm
 """
-import math
 import sys
 
 import numpy as np
@@ -18,7 +17,9 @@ from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "/Users/ethan/tmp/brain/IMG00001.dcm"
+if len(sys.argv) != 2:
+    sys.exit(f"usage: {sys.argv[0]} <source.dcm>")
+SRC = sys.argv[1]
 OUT_DCM = "tests/data/mri.dcm"
 OUT_RGB = "tests/data/mri-reference.rgb"
 
@@ -38,7 +39,7 @@ ds.WindowCenter = str(src.WindowCenter)
 ds.WindowWidth = str(src.WindowWidth)
 ds.RescaleIntercept = str(src.RescaleIntercept)
 ds.RescaleSlope = str(src.RescaleSlope)
-ds.PixelData = src.PixelData  # raw pixels are not identifying
+ds.PixelData = src.PixelData  # carry over raw pixels (verify no burned-in PHI for the chosen slice)
 
 # Inject one innocuous, PHI-free defined-length sequence BEFORE pixel data so
 # the committed fixture exercises the parser's sequence-skipping path.
