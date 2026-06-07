@@ -429,13 +429,6 @@ pub fn decrypt_sr2_data(decryptor: &mut SonyDecryptor, data: &mut [u8], key: u32
 //     })
 // }
 
-// Port of LibRaw::sony_arw2_load_raw (block-based: 16 bytes -> 16 pixels)
-// For each row, the stream contains 16-byte blocks:
-//   - First 4 bytes (LE) carry fields: max(11b), min(11b), imax(4b), imin(4b)
-//   - Remaining 12 bytes carry 14 packed 7-bit codes, MSB-first within the 16-byte span:
-//       starting at bit offset 30, each 7-bit code -> value = (code << sh) + min
-//       positions imax/imin are set to max/min respectively.
-// We decode blocks until we fill active_width pixels. Any trailing row bytes are ignored.
 /// Build the Sony ARW2 linearization (tone) curve from the `SonyToneCurve` tag (0x7010).
 ///
 /// Port of dcraw/LibRaw: the four control points are reduced with `>> 2 & 0xfff` and
@@ -455,6 +448,7 @@ pub fn build_sony_tone_curve(points: [u16; 4]) -> Vec<u16> {
     }
 
     let mut sc = [0usize; 6];
+    sc[0] = 0;
     sc[5] = 4095;
     for i in 0..4 {
         sc[i + 1] = ((points[i] >> 2) & 0xfff) as usize;
@@ -469,6 +463,13 @@ pub fn build_sony_tone_curve(points: [u16; 4]) -> Vec<u16> {
     curve
 }
 
+// Port of LibRaw::sony_arw2_load_raw (block-based: 16 bytes -> 16 pixels)
+// For each row, the stream contains 16-byte blocks:
+//   - First 4 bytes (LE) carry fields: max(11b), min(11b), imax(4b), imin(4b)
+//   - Remaining 12 bytes carry 14 packed 7-bit codes, MSB-first within the 16-byte span:
+//       starting at bit offset 30, each 7-bit code -> value = (code << sh) + min
+//       positions imax/imin are set to max/min respectively.
+// We decode blocks until we fill active_width pixels. Any trailing row bytes are ignored.
 #[allow(clippy::needless_range_loop)]
 pub fn sony_arw2_load_raw<R: Read>(
     reader: &mut R,
@@ -659,5 +660,17 @@ mod tests {
         assert_eq!(curve[2001], 2002); // segment 1, step 2
         assert_eq!(curve[2600], 3200); // end of segment 1
         assert_eq!(curve[4094], 17204); // max real index: pix 0x7ff -> (0x7ff << 1) = 0xffe
+    }
+
+    #[test]
+    fn build_sony_tone_curve_identity_and_nonmonotonic() {
+        // Missing tag (all zero) -> identity passthrough.
+        let flat = build_sony_tone_curve([0, 0, 0, 0]);
+        assert_eq!(flat[0], 0);
+        assert_eq!(flat[1000], 1000);
+        assert_eq!(flat[4094], 4094);
+        // Non-monotonic control points must not panic; unset entries stay 0.
+        let curve = build_sony_tone_curve([10400, 8000, 12900, 14100]);
+        assert_eq!(curve[0], 0);
     }
 }
