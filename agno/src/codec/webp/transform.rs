@@ -178,12 +178,8 @@ mod tests {
     /// to row-first changes indices 0, 3, 5, and 7.
     #[test]
     fn idct4x4_uses_vp8_reference_pass_order() {
-        let input = [
-            120, 35, -18, 7, -22, 14, 9, -5, 11, -8, 4, 3, -6, 2, -1, 2,
-        ];
-        let expected = [
-            20, 15, 10, 4, 19, 19, 12, 4, 17, 19, 17, 4, 20, 22, 26, 15,
-        ];
+        let input = [120, 35, -18, 7, -22, 14, 9, -5, 11, -8, 4, 3, -6, 2, -1, 2];
+        let expected = [20, 15, 10, 4, 19, 19, 12, 4, 17, 19, 17, 4, 20, 22, 26, 15];
         assert_eq!(idct4x4(&input), expected);
     }
 }
