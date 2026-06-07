@@ -66,11 +66,11 @@ AgnoBuffer write_agno_image_to_jpeg_buffer(const AgnoImage *img, uint8_t quality
 /**
  * Load a specific page (or frame) from a multi-page file and return it as an AgnoImage.
  *
- * Supported formats: PDF (`%PDF-` magic), GIF (`GIF` magic).
+ * Supported formats: PDF (`%PDF-` magic), GIF (`GIF` magic), DICOM (`DICM` marker).
  *
  * `page_num` is 0-based. For PDFs, `max_width`/`max_height` of 0 uses default scale;
  * non-zero values constrain the rendered output to fit within those dimensions.
- * For GIFs, `max_width`/`max_height` are ignored (raster, no scale-up at decode).
+ * For GIFs and DICOM, `max_width`/`max_height` are ignored (raster, no scale-up at decode).
  */
 AgnoResult load_image_page(const char *path,
                            uintptr_t len,
