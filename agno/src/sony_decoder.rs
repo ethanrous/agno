@@ -439,7 +439,9 @@ pub fn decrypt_sr2_data(decryptor: &mut SonyDecryptor, data: &mut [u8], key: u32
 pub fn build_sony_tone_curve(points: [u16; 4]) -> Vec<u16> {
     let mut curve = vec![0u16; 0x4000];
 
-    // Missing/zero tag: identity passthrough so ARW2 still decodes (no expansion).
+    // Missing/zero tag: identity curve (curve[i] = i). The decoder indexes curve[pix << 1],
+    // so this still applies a linear << 1 expansion of the 11-bit codes (no Sony tone shaping),
+    // letting ARW2 decode without the camera's highlight curve.
     if points == [0, 0, 0, 0] {
         for (i, c) in curve.iter_mut().enumerate() {
             *c = i.min(0x3fff) as u16;
