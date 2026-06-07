@@ -685,44 +685,48 @@ fn decode_token_tree_vp8(dec: &mut BoolDecoder, probs: &[u8; 11]) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// Inverse 4x4 DCT (VP8 specification, Sections 14.3-14.4).
+///
+/// Matches the reference `vp8_short_idct4x4llm_c`: column pass first, row pass
+/// second (with the `+4` rounding bias). See the encoder-side `transform::idct4x4`
+/// for why the pass order is load-bearing.
 fn idct4x4(input: &[i32; 16]) -> [i32; 16] {
     let mut tmp = [0i32; 16];
 
-    // Row pass (no rounding bias -- bias is added in column pass).
+    // Column pass.
     for i in 0..4 {
-        let c0 = input[i * 4];
-        let c1 = input[i * 4 + 1];
-        let c2 = input[i * 4 + 2];
-        let c3 = input[i * 4 + 3];
+        let c0 = input[i];
+        let c1 = input[i + 4];
+        let c2 = input[i + 8];
+        let c3 = input[i + 12];
 
         let a1 = c0 + c2;
         let b1 = c0 - c2;
         let temp1 = ((c1 * 35468) >> 16) - c3 - ((c3 * 20091) >> 16);
         let temp2 = c1 + ((c1 * 20091) >> 16) + ((c3 * 35468) >> 16);
 
-        tmp[i * 4] = a1 + temp2;
-        tmp[i * 4 + 3] = a1 - temp2;
-        tmp[i * 4 + 1] = b1 + temp1;
-        tmp[i * 4 + 2] = b1 - temp1;
+        tmp[i] = a1 + temp2;
+        tmp[i + 12] = a1 - temp2;
+        tmp[i + 4] = b1 + temp1;
+        tmp[i + 8] = b1 - temp1;
     }
 
-    // Column pass (with +4 rounding bias, then >>3 normalization).
+    // Row pass (with +4 rounding bias, then >>3 normalization).
     let mut result = [0i32; 16];
     for i in 0..4 {
-        let c0 = tmp[i];
-        let c1 = tmp[i + 4];
-        let c2 = tmp[i + 8];
-        let c3 = tmp[i + 12];
+        let c0 = tmp[i * 4];
+        let c1 = tmp[i * 4 + 1];
+        let c2 = tmp[i * 4 + 2];
+        let c3 = tmp[i * 4 + 3];
 
         let a1 = c0 + c2;
         let b1 = c0 - c2;
         let temp1 = ((c1 * 35468) >> 16) - c3 - ((c3 * 20091) >> 16);
         let temp2 = c1 + ((c1 * 20091) >> 16) + ((c3 * 35468) >> 16);
 
-        result[i] = (a1 + temp2 + 4) >> 3;
-        result[i + 12] = (a1 - temp2 + 4) >> 3;
-        result[i + 4] = (b1 + temp1 + 4) >> 3;
-        result[i + 8] = (b1 - temp1 + 4) >> 3;
+        result[i * 4] = (a1 + temp2 + 4) >> 3;
+        result[i * 4 + 3] = (a1 - temp2 + 4) >> 3;
+        result[i * 4 + 1] = (b1 + temp1 + 4) >> 3;
+        result[i * 4 + 2] = (b1 - temp1 + 4) >> 3;
     }
     result
 }
