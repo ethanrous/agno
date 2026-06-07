@@ -463,31 +463,36 @@ pub fn build_sony_tone_curve(points: [u16; 4]) -> Vec<u16> {
     curve
 }
 
-// Port of LibRaw::sony_arw2_load_raw (block-based: 16 bytes -> 16 pixels)
-// For each row, the stream contains 16-byte blocks:
-//   - First 4 bytes (LE) carry fields: max(11b), min(11b), imax(4b), imin(4b)
-//   - Remaining 12 bytes carry 14 packed 7-bit codes, MSB-first within the 16-byte span:
-//       starting at bit offset 30, each 7-bit code -> value = (code << sh) + min
-//       positions imax/imin are set to max/min respectively.
-// We decode blocks until we fill active_width pixels. Any trailing row bytes are ignored.
+// Port of LibRaw::sony_arw2_load_raw (block-based: 16 bytes -> 16 pixels).
+// Each 16-byte block decodes 16 pixels that are written to every OTHER column (stride 2);
+// consecutive blocks alternate between the even and odd column phase of a 32-column span.
+// The 11-bit codes are expanded through the Sony tone curve (`curve[pix << 1]`) into the
+// ~14-bit linear domain. Skipping the de-interleave produces a vertical comb artifact;
+// skipping the curve makes the image ~8x too dark.
 #[allow(clippy::needless_range_loop)]
 pub fn sony_arw2_load_raw<R: Read>(
     reader: &mut R,
     dims: Dimensions,
+    tone_curve: &[u16],
 ) -> Result<SonyLoadResult, DecodeError> {
-    let row_len = dims.output_width; // bytes per compressed row in ARW2 equal to pixel width
+    let raw_width = dims.raw_width;
     let mut pixels = vec![0u16; dims.raw_width * dims.raw_height];
 
-    let mut row_buf = vec![0u8; row_len + 1];
+    // dcraw allocates raw_width + 1 so the 16-bit reads inside a block can over-read by one byte.
+    let mut row_buf = vec![0u8; raw_width + 1];
 
     for row in 0..dims.output_height {
-        // Read one row of compressed bytes
-        reader.read_exact(&mut row_buf[..row_len])?;
+        reader.read_exact(&mut row_buf[..raw_width])?;
+        row_buf[raw_width] = 0;
 
-        let mut out_col = 0usize;
         let mut dp = 0usize;
+        let mut col: usize = 0;
 
-        while out_col < dims.output_width && dp + 16 <= row_len {
+        while col < raw_width.saturating_sub(30) {
+            if dp + 16 > raw_width {
+                break;
+            }
+
             let header = u32::from_le_bytes([
                 row_buf[dp],
                 row_buf[dp + 1],
@@ -506,41 +511,42 @@ pub fn sony_arw2_load_raw<R: Read>(
             }
 
             let mut pix16 = [0u16; 16];
-            let mut bit = 30;
-
+            let mut bit = 30usize;
             for i in 0..16usize {
                 if i == imax {
                     pix16[i] = max_v as u16;
                 } else if i == imin {
                     pix16[i] = min_v as u16;
                 } else {
-                    let byte_index = dp + ((bit >> 3) as usize);
-                    if byte_index + 1 >= row_buf.len() {
-                        return Err(DecodeError::CorruptData("Sony ARW2: row buffer overread"));
-                    }
+                    let byte_index = dp + (bit >> 3);
                     let two =
                         u16::from_le_bytes([row_buf[byte_index], row_buf[byte_index + 1]]) as i32;
                     let code7 = (two >> (bit & 7)) & 0x7f;
-                    let value = ((code7 << sh) + min_v) as i32;
+                    let mut value = (code7 << sh) + min_v;
+                    if value > 0x7ff {
+                        value = 0x7ff;
+                    }
                     pix16[i] = value as u16;
                     bit += 7;
                 }
             }
 
-            let run = std::cmp::min(16, dims.output_width - out_col);
-            for i in 0..run {
-                let dst = row * dims.raw_width + (out_col + i);
-                pixels[dst] = pix16[i];
+            // De-interleaved write with tone-curve expansion (curve indexed by pix << 1).
+            let mut c = col;
+            for i in 0..16usize {
+                if c < dims.output_width {
+                    pixels[row * dims.raw_width + c] = tone_curve[(pix16[i] as usize) << 1];
+                }
+                c += 2;
             }
-
-            out_col += 16;
+            col = c - if c & 1 == 1 { 1 } else { 31 };
             dp += 16;
         }
     }
 
     Ok(SonyLoadResult {
         pixels,
-        white_level: 0x3fff,
+        white_level: 0x3ff0,
     })
 }
 
@@ -672,5 +678,50 @@ mod tests {
         // Non-monotonic control points must not panic; unset entries stay 0.
         let curve = build_sony_tone_curve([10400, 8000, 12900, 14100]);
         assert_eq!(curve[0], 0);
+    }
+
+    // Build one 16-byte ARW2 block whose 16 decoded pixels are all `value`.
+    // header: max=min=value, imax=0, imin=1 -> pix[0]=max, pix[1]=min, and every other
+    // pixel decodes code=0 (the 12 payload bytes are zero) -> (0 << sh) + min = value.
+    fn make_uniform_block(value: u16) -> [u8; 16] {
+        let v = (value & 0x7ff) as u32;
+        let header = v | (v << 11) | (0u32 << 22) | (1u32 << 26);
+        let mut block = [0u8; 16];
+        block[0..4].copy_from_slice(&header.to_le_bytes());
+        block
+    }
+
+    #[test]
+    fn arw2_deinterleaves_columns_and_applies_tone_curve() {
+        // One 32x1 row = block0 (value A) + block1 (value B). Correct ARW2 decoding writes
+        // block0 to even columns and block1 to odd columns, after expanding through the curve
+        // (indexed by pix << 1). Use an identity curve so curve[p << 1] == p << 1, which makes
+        // both the interleave AND the `<< 1` indexing observable in the assertions.
+        let dims = Dimensions {
+            raw_width: 32,
+            raw_height: 1,
+            output_width: 32,
+            output_height: 1,
+        };
+        let identity: Vec<u16> = (0..0x4000u32).map(|i| i as u16).collect();
+
+        let a: u16 = 100;
+        let b: u16 = 50;
+        let mut row = Vec::with_capacity(32);
+        row.extend_from_slice(&make_uniform_block(a));
+        row.extend_from_slice(&make_uniform_block(b));
+
+        let mut cur = Cursor::new(row);
+        let res = sony_arw2_load_raw(&mut cur, dims, &identity).unwrap();
+
+        for col in 0..32usize {
+            let expected = if col % 2 == 0 {
+                (a as u16) << 1 // even columns come from block0
+            } else {
+                (b as u16) << 1 // odd columns come from block1
+            };
+            assert_eq!(res.pixels[col], expected, "column {col}");
+        }
+        assert_eq!(res.white_level, 0x3ff0);
     }
 }
