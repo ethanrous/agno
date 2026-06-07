@@ -77,16 +77,41 @@ assert check.Rows == ds.Rows and check.Columns == ds.Columns
 print(f"wrote {OUT_DCM}: {check.Rows}x{check.Columns}, no PHI keywords present")
 
 # --- Reference render: modality LUT -> linear window -> 8-bit, MATCHING Rust. ---
-arr = check.pixel_array.astype(np.float64)
+# pydicom's pixel_array uses the BitsAllocated-wide dtype and does NOT clamp to
+# BitsStored. The Rust decoder masks (unsigned) or sign-extends (signed) from
+# BitsStored, so replicate that here or the reference diverges on real data whose
+# high-order bits above BitsStored are set, or on signed sub-word pixels.
+bits_stored = int(check.BitsStored)
+bits_allocated = int(check.BitsAllocated)
+signed = int(check.PixelRepresentation) == 1
+raw = check.pixel_array.astype(np.int64)
+if signed:
+    # Sign-extend from BitsStored: interpret the low BitsStored bits as two's
+    # complement (e.g. 0x0FFF with BitsStored=12 -> -1).
+    sign_bit = 1 << (bits_stored - 1)
+    mask = (1 << bits_stored) - 1
+    raw &= mask
+    raw = (raw ^ sign_bit) - sign_bit
+else:
+    raw &= (1 << bits_stored) - 1
+arr = raw.astype(np.float64)
+
 slope = float(check.RescaleSlope)
 intercept = float(check.RescaleIntercept)
-# WindowCenter/Width may be multi-valued strings; take the first.
+mod = arr * slope + intercept
+
+# Window: prefer the dataset's WindowCenter/Width; otherwise auto-window the
+# modality min/max, matching the Rust decoder's fallback.
 def first(v):
     return float(str(v).split("\\")[0]) if "\\" in str(v) else float(v)
-c = first(check.WindowCenter)
-w = max(first(check.WindowWidth), 1.0)
+if "WindowCenter" in check and "WindowWidth" in check:
+    c = first(check.WindowCenter)
+    w = max(first(check.WindowWidth), 1.0)
+else:
+    lo_v, hi_v = float(mod.min()), float(mod.max())
+    w = max(hi_v - lo_v, 1.0)
+    c = lo_v + w / 2.0
 
-mod = arr * slope + intercept
 lo = c - 0.5 - (w - 1) / 2.0
 hi = c - 0.5 + (w - 1) / 2.0
 y = np.where(

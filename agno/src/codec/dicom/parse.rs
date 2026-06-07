@@ -8,6 +8,9 @@ use std::error::Error;
 
 const PREAMBLE_LEN: usize = 128;
 const UNDEFINED_LEN: u32 = 0xFFFF_FFFF;
+/// Maximum sequence/item nesting depth. Real DICOM is only a few levels deep;
+/// this bounds recursion so crafted deeply-nested input cannot overflow the stack.
+const MAX_SEQ_DEPTH: u32 = 64;
 
 const TS_IMPLICIT_LE: &str = "1.2.840.10008.1.2";
 const TS_EXPLICIT_LE: &str = "1.2.840.10008.1.2.1";
@@ -164,7 +167,14 @@ fn read_header(c: &mut Cursor, implicit: bool) -> Result<ElemHeader, Box<dyn Err
 
 /// Skip an undefined-length sequence: walk items until the Sequence
 /// Delimitation Item (FFFE,E0DD).
-fn skip_undefined_sequence(c: &mut Cursor, implicit: bool) -> Result<(), Box<dyn Error>> {
+fn skip_undefined_sequence(
+    c: &mut Cursor,
+    implicit: bool,
+    depth: u32,
+) -> Result<(), Box<dyn Error>> {
+    if depth >= MAX_SEQ_DEPTH {
+        return Err("DICOM sequence nesting too deep".into());
+    }
     loop {
         let tag = c.tag()?;
         let length = c.u32()?;
@@ -173,7 +183,7 @@ fn skip_undefined_sequence(c: &mut Cursor, implicit: bool) -> Result<(), Box<dyn
         }
         if tag == ITEM {
             if length == UNDEFINED_LEN {
-                skip_undefined_item(c, implicit)?;
+                skip_undefined_item(c, implicit, depth + 1)?;
             } else {
                 c.skip(length as usize)?;
             }
@@ -185,7 +195,10 @@ fn skip_undefined_sequence(c: &mut Cursor, implicit: bool) -> Result<(), Box<dyn
 
 /// Skip an undefined-length item: walk contained elements until the Item
 /// Delimitation Item (FFFE,E00D).
-fn skip_undefined_item(c: &mut Cursor, implicit: bool) -> Result<(), Box<dyn Error>> {
+fn skip_undefined_item(c: &mut Cursor, implicit: bool, depth: u32) -> Result<(), Box<dyn Error>> {
+    if depth >= MAX_SEQ_DEPTH {
+        return Err("DICOM sequence nesting too deep".into());
+    }
     loop {
         let save = c.p;
         let tag = c.tag()?;
@@ -197,7 +210,7 @@ fn skip_undefined_item(c: &mut Cursor, implicit: bool) -> Result<(), Box<dyn Err
         c.p = save;
         let h = read_header(c, implicit)?;
         if h.length == UNDEFINED_LEN {
-            skip_undefined_sequence(c, implicit)?;
+            skip_undefined_sequence(c, implicit, depth + 1)?;
         } else {
             c.skip(h.length as usize)?;
         }
@@ -215,20 +228,23 @@ fn read_us(val: &[u8]) -> u16 {
 }
 
 fn read_ds(val: &[u8]) -> Option<f64> {
-    // DS may be multi-valued (backslash-separated); take the first value.
+    // DS may be multi-valued (backslash-separated); take the first value. Values
+    // may be padded with spaces or (non-conformant) NUL; non-finite values are
+    // rejected so NaN/Inf never reaches the window math.
     String::from_utf8_lossy(val)
         .split('\\')
         .next()?
-        .trim()
+        .trim_matches(|c: char| c == '\0' || c.is_whitespace())
         .parse::<f64>()
         .ok()
+        .filter(|v| v.is_finite())
 }
 
 fn read_is(val: &[u8]) -> Option<i64> {
     String::from_utf8_lossy(val)
         .split('\\')
         .next()?
-        .trim()
+        .trim_matches(|c: char| c == '\0' || c.is_whitespace())
         .parse::<i64>()
         .ok()
 }
@@ -256,8 +272,9 @@ impl DicomBuilder {
             Tag(0x0028, 0x0002) => self.samples_per_pixel = read_us(val),
             Tag(0x0028, 0x0004) => self.photometric = Some(Photometric::from_bytes(val)),
             Tag(0x0028, 0x0006) => self.planar_configuration = read_us(val),
+            // Record the raw frame count (clamped non-negative); build() defaults it.
             Tag(0x0028, 0x0008) => {
-                self.number_of_frames = read_is(val).unwrap_or(1).max(1) as usize
+                self.number_of_frames = read_is(val).unwrap_or(0).max(0) as usize
             }
             Tag(0x0028, 0x0010) => self.rows = read_us(val),
             Tag(0x0028, 0x0011) => self.columns = read_us(val),
@@ -338,6 +355,9 @@ pub fn parse_dicom(data: &[u8]) -> Result<DicomImage<'_>, Box<dyn Error>> {
     let mut transfer_syntax = String::new();
     while c.p < meta_end {
         let h = read_header(&mut c, false)?;
+        if c.p + h.length as usize > meta_end {
+            return Err("DICOM file meta element length exceeds meta group length".into());
+        }
         let val = c.bytes(h.length as usize)?;
         if h.tag == Tag(0x0002, 0x0010) {
             transfer_syntax = String::from_utf8_lossy(val)
@@ -368,7 +388,7 @@ pub fn parse_dicom(data: &[u8]) -> Result<DicomImage<'_>, Box<dyn Error>> {
         }
         if h.length == UNDEFINED_LEN {
             // Undefined length implies a sequence (explicit SQ or implicit).
-            skip_undefined_sequence(&mut c, implicit)?;
+            skip_undefined_sequence(&mut c, implicit, 0)?;
             continue;
         }
         if !implicit && h.vr == Some(*b"SQ") {
@@ -388,17 +408,7 @@ pub fn parse_dicom(data: &[u8]) -> Result<DicomImage<'_>, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Encode an Explicit-VR short-form element (2-byte length).
-    fn short(group: u16, elem: u16, vr: &[u8; 2], val: &[u8]) -> Vec<u8> {
-        let mut v = Vec::new();
-        v.extend_from_slice(&group.to_le_bytes());
-        v.extend_from_slice(&elem.to_le_bytes());
-        v.extend_from_slice(vr);
-        v.extend_from_slice(&(val.len() as u16).to_le_bytes());
-        v.extend_from_slice(val);
-        v
-    }
+    use crate::codec::dicom::test_fixtures::{make_part10_with_tag, pad, short, us};
 
     #[test]
     fn is_dicom_detects_marker() {
@@ -444,7 +454,7 @@ mod tests {
         let h = read_header(&mut c, false).unwrap();
         assert_eq!(h.tag, Tag(0x0008, 0x1110));
         assert_eq!(h.length, UNDEFINED_LEN);
-        skip_undefined_sequence(&mut c, false).unwrap();
+        skip_undefined_sequence(&mut c, false, 0).unwrap();
         assert_eq!(c.p, seq_end, "cursor must land just past the sequence");
     }
 
@@ -465,43 +475,6 @@ mod tests {
         assert_eq!(h.length, 8);
         c.skip(h.length as usize).unwrap();
         assert_eq!(c.remaining(), 0);
-    }
-
-    fn us(v: u16) -> Vec<u8> {
-        v.to_le_bytes().to_vec()
-    }
-
-    // Even-length-pad a text value (DICOM values must be even length).
-    fn pad(mut s: Vec<u8>, p: u8) -> Vec<u8> {
-        if !s.len().is_multiple_of(2) {
-            s.push(p);
-        }
-        s
-    }
-
-    // Wrap a dataset + pixel block into a minimal Explicit-VR-LE Part-10 file.
-    fn make_part10(dataset: &[u8], pixel_tag: (u16, u16), pixel: &[u8]) -> Vec<u8> {
-        let mut out = vec![0u8; 128];
-        out.extend_from_slice(b"DICM");
-        // file meta: (0002,0010) UI transfer syntax = Explicit VR LE
-        let ts = pad(b"1.2.840.10008.1.2.1".to_vec(), 0);
-        let meta = short(0x0002, 0x0010, b"UI", &ts);
-        out.extend_from_slice(&short(
-            0x0002,
-            0x0000,
-            b"UL",
-            &(meta.len() as u32).to_le_bytes(),
-        ));
-        out.extend_from_slice(&meta);
-        out.extend_from_slice(dataset);
-        // pixel data as OW (long form)
-        out.extend_from_slice(&pixel_tag.0.to_le_bytes());
-        out.extend_from_slice(&pixel_tag.1.to_le_bytes());
-        out.extend_from_slice(b"OW");
-        out.extend_from_slice(&[0, 0]);
-        out.extend_from_slice(&(pixel.len() as u32).to_le_bytes());
-        out.extend_from_slice(pixel);
-        out
     }
 
     // A 2x2 16-bit MONOCHROME2 dataset with a defined-length SQ in the middle to
@@ -540,7 +513,7 @@ mod tests {
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        let file = make_part10(&mono16_dataset(), (0x7FE0, 0x0010), &pixel);
+        let file = make_part10_with_tag(&mono16_dataset(), (0x7FE0, 0x0010), &pixel);
         let img = parse_dicom(&file).unwrap();
         assert_eq!((img.rows, img.columns), (2, 2));
         assert_eq!(img.bits_allocated, 16);
@@ -565,9 +538,83 @@ mod tests {
     #[test]
     fn rejects_missing_pixel_data() {
         // Use a non-pixel trailing tag so no (7FE0,0010) is present.
-        let file = make_part10(&mono16_dataset(), (0x0028, 0x0106), &[0u8; 2]);
+        let file = make_part10_with_tag(&mono16_dataset(), (0x0028, 0x0106), &[0u8; 2]);
         let err = parse_dicom(&file).unwrap_err().to_string();
         assert!(err.contains("no pixel data"), "got: {err}");
+    }
+
+    #[test]
+    fn read_ds_strips_nul_padding_and_rejects_non_finite() {
+        // DS/IS values padded with NUL (non-conformant but seen in the wild) must
+        // still parse; "nan"/"inf" must be rejected so they never reach the window.
+        assert_eq!(read_ds(b"2.5\0"), Some(2.5));
+        assert_eq!(read_is(b"7\0"), Some(7));
+        assert_eq!(read_ds(b"nan"), None);
+        assert_eq!(read_ds(b"inf"), None);
+    }
+
+    #[test]
+    fn deeply_nested_sequence_is_rejected() {
+        // A dataset whose top-level undefined-length sequence is nested far deeper
+        // than any real DICOM must error rather than recurse without bound.
+        fn seq_body(depth: u32) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.extend_from_slice(&ITEM.0.to_le_bytes());
+            v.extend_from_slice(&ITEM.1.to_le_bytes());
+            v.extend_from_slice(&UNDEFINED_LEN.to_le_bytes());
+            if depth > 1 {
+                // nested undefined-length SQ element (implicit form: tag + length)
+                v.extend_from_slice(&0x0008u16.to_le_bytes());
+                v.extend_from_slice(&0x1110u16.to_le_bytes());
+                v.extend_from_slice(&UNDEFINED_LEN.to_le_bytes());
+                v.extend_from_slice(&seq_body(depth - 1));
+            }
+            v.extend_from_slice(&ITEM_DELIM.0.to_le_bytes());
+            v.extend_from_slice(&ITEM_DELIM.1.to_le_bytes());
+            v.extend_from_slice(&0u32.to_le_bytes());
+            v.extend_from_slice(&SEQ_DELIM.0.to_le_bytes());
+            v.extend_from_slice(&SEQ_DELIM.1.to_le_bytes());
+            v.extend_from_slice(&0u32.to_le_bytes());
+            v
+        }
+        let mut d = Vec::new();
+        d.extend_from_slice(&0x0008u16.to_le_bytes());
+        d.extend_from_slice(&0x1110u16.to_le_bytes());
+        d.extend_from_slice(&UNDEFINED_LEN.to_le_bytes());
+        d.extend_from_slice(&seq_body(200));
+
+        let mut out = vec![0u8; 128];
+        out.extend_from_slice(b"DICM");
+        let ts = pad(b"1.2.840.10008.1.2".to_vec(), 0); // Implicit VR LE
+        let meta = short(0x0002, 0x0010, b"UI", &ts);
+        out.extend_from_slice(&short(
+            0x0002,
+            0x0000,
+            b"UL",
+            &(meta.len() as u32).to_le_bytes(),
+        ));
+        out.extend_from_slice(&meta);
+        out.extend_from_slice(&d);
+
+        let err = parse_dicom(&out).unwrap_err().to_string();
+        assert!(err.contains("nest"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_meta_element_overshooting_group_length() {
+        // A file-meta element whose declared length runs past the meta group
+        // length must error clearly instead of silently consuming dataset bytes.
+        let mut out = vec![0u8; 128];
+        out.extend_from_slice(b"DICM");
+        out.extend_from_slice(&short(0x0002, 0x0000, b"UL", &12u32.to_le_bytes()));
+        // (0002,0010) UI header claiming 100 bytes — far beyond the 12-byte group.
+        out.extend_from_slice(&0x0002u16.to_le_bytes());
+        out.extend_from_slice(&0x0010u16.to_le_bytes());
+        out.extend_from_slice(b"UI");
+        out.extend_from_slice(&100u16.to_le_bytes());
+        out.extend_from_slice(&[0u8; 120]); // padding so a naive read would succeed
+        let err = parse_dicom(&out).unwrap_err().to_string();
+        assert!(err.contains("meta"), "got: {err}");
     }
 
     #[test]

@@ -16,8 +16,7 @@ pub fn window_to_u8(value: f64, center: f64, width: f64) -> u8 {
     let lo = center - 0.5 - (w - 1.0) / 2.0;
     let hi = center - 0.5 + (w - 1.0) / 2.0;
     // When width == 1.0, lo == hi, so the else (divide-by-(w - 1)) branch is
-    // unreachable; values at/below lo are black, above are white. Keep the
-    // `<= lo` / `> hi` comparisons intact or this invariant breaks (NaN).
+    // unreachable; values at/below lo are black, above are white.
     let y = if value <= lo {
         0.0
     } else if value > hi {
@@ -25,7 +24,9 @@ pub fn window_to_u8(value: f64, center: f64, width: f64) -> u8 {
     } else {
         (value - (center - 0.5)) / (w - 1.0) + 0.5
     };
-    (y * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
+    // y is bounded to [0, 1] by the branches above, so the result is in [0, 255];
+    // the `as u8` cast saturates regardless.
+    (y * 255.0 + 0.5).floor() as u8
 }
 
 /// Derive a (center, width) window from the min/max of modality values, used

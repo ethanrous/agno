@@ -32,6 +32,18 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
     reader.seek(SeekFrom::Start(0))?;
     reader.read_exact(&mut buf)?;
 
+    // DICOM Part-10 first: the 128-byte preamble may contain arbitrary bytes —
+    // even another format's magic — so the authoritative signal is the "DICM"
+    // marker at offset 128. Checking it before the leading-magic match prevents
+    // a DICOM file with a non-zero preamble being misrouted to another decoder.
+    let mut dicm = [0u8; 4];
+    if reader.seek(SeekFrom::Start(128)).is_ok()
+        && reader.read_exact(&mut dicm).is_ok()
+        && &dicm == b"DICM"
+    {
+        return Ok(ImageType::Dicom);
+    }
+
     match [buf[0], buf[1]] {
         [0xFF, 0xD8] => Ok(ImageType::Jpeg),
         [0x89, b'P'] => Ok(ImageType::Png),
@@ -63,16 +75,7 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
                 // Classic QuickTime MOV without ftyp box
                 Ok(ImageType::QuickTimeMov)
             } else {
-                // DICOM Part-10: a 128-byte preamble followed by "DICM" at offset 128.
-                let mut magic = [0u8; 4];
-                if reader.seek(SeekFrom::Start(128)).is_ok()
-                    && reader.read_exact(&mut magic).is_ok()
-                    && &magic == b"DICM"
-                {
-                    Ok(ImageType::Dicom)
-                } else {
-                    Err("Unsupported image format".into())
-                }
+                Err("Unsupported image format".into())
             }
         }
     }
@@ -215,6 +218,36 @@ mod tests {
         assert_eq!(img.page_count, 1);
         assert_eq!(img.as_slice().len(), 2 * 1 * 3);
 
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn detects_dicom_despite_format_magic_in_preamble() {
+        // A DICOM whose 128-byte preamble happens to start with JPEG's FF D8 magic
+        // must still be detected as DICOM via the DICM marker at offset 128.
+        let mut bytes = vec![0u8; 132];
+        bytes[0] = 0xFF;
+        bytes[1] = 0xD8;
+        bytes[128..132].copy_from_slice(b"DICM");
+
+        let dir = std::env::temp_dir();
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!(
+            "agno_dicom_preamble_{}_{}.dcm",
+            std::process::id(),
+            unique_suffix
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut f = File::open(&path).unwrap();
+        let detected = detect_image_type(&mut f).unwrap();
+        assert!(
+            matches!(detected, ImageType::Dicom),
+            "expected Dicom, got something else"
+        );
         std::fs::remove_file(&path).ok();
     }
 }

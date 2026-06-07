@@ -1,49 +1,41 @@
+// The disabled-feature error lives in one place: the `#[cfg(not(feature =
+// "dicom"))]` arm of the loader/FFI dispatch. This module compiles to nothing
+// when the feature is off.
+#[cfg(feature = "dicom")]
 use std::error::Error;
 
+#[cfg(feature = "dicom")]
 use crate::{agno_image::AgnoImage, exif::ExifContext};
 
-/// Decode DICOM bytes into an `AgnoImage`. `page_count` is set to the DICOM
-/// `NumberOfFrames` (1 for ordinary single-frame slices). Only frame 0 is
-/// composited into the returned image.
+/// Decode DICOM bytes into an `AgnoImage` (frame 0). `page_count` is set to the
+/// DICOM `NumberOfFrames` (1 for ordinary single-frame slices). Use
+/// [`load_dicom_frame_from_bytes`] to composite a specific frame.
 #[cfg(feature = "dicom")]
 pub fn load_dicom_from_bytes(data: &[u8], exif: ExifContext) -> Result<AgnoImage, Box<dyn Error>> {
-    let (rgb, width, height, frames) = crate::codec::dicom::decode_dicom(data)?;
+    load_dicom_frame_from_bytes(data, 0, exif)
+}
+
+/// Decode a specific frame (0-based) of a DICOM object into an `AgnoImage`.
+#[cfg(feature = "dicom")]
+pub fn load_dicom_frame_from_bytes(
+    data: &[u8],
+    frame_index: usize,
+    exif: ExifContext,
+) -> Result<AgnoImage, Box<dyn Error>> {
+    let (rgb, width, height, frames) = crate::codec::dicom::decode_dicom_frame(data, frame_index)?;
     let mut img = AgnoImage::new(rgb, width as u64, height as u64, exif);
     img.set_page_count(frames as u64);
     Ok(img)
-}
-
-#[cfg(not(feature = "dicom"))]
-pub fn load_dicom_from_bytes(
-    _data: &[u8],
-    _exif: ExifContext,
-) -> Result<AgnoImage, Box<dyn Error>> {
-    Err("DICOM support is not enabled. Please enable the 'dicom' feature.".into())
 }
 
 #[cfg(test)]
 #[cfg(feature = "dicom")]
 mod tests {
     use super::*;
+    use crate::codec::dicom::test_fixtures::{make_part10, pad, short, us};
 
-    // Minimal 2x2 16-bit MONOCHROME2 Part-10 file built inline.
+    // Minimal 2x2 16-bit MONOCHROME2 Part-10 file.
     fn make_min_dicom() -> Vec<u8> {
-        fn short(g: u16, e: u16, vr: &[u8; 2], val: &[u8]) -> Vec<u8> {
-            let mut v = Vec::new();
-            v.extend_from_slice(&g.to_le_bytes());
-            v.extend_from_slice(&e.to_le_bytes());
-            v.extend_from_slice(vr);
-            v.extend_from_slice(&(val.len() as u16).to_le_bytes());
-            v.extend_from_slice(val);
-            v
-        }
-        fn pad(mut s: Vec<u8>, p: u8) -> Vec<u8> {
-            if !s.len().is_multiple_of(2) {
-                s.push(p);
-            }
-            s
-        }
-        let us = |v: u16| v.to_le_bytes().to_vec();
         let mut d = Vec::new();
         d.extend_from_slice(&short(0x0028, 0x0002, b"US", &us(1)));
         d.extend_from_slice(&short(
@@ -62,30 +54,11 @@ mod tests {
         d.extend_from_slice(&short(0x0028, 0x1051, b"DS", &pad(b"256".to_vec(), b' ')));
         d.extend_from_slice(&short(0x0028, 0x1052, b"DS", &pad(b"0".to_vec(), b' ')));
         d.extend_from_slice(&short(0x0028, 0x1053, b"DS", &pad(b"1".to_vec(), b' ')));
-
-        let mut out = vec![0u8; 128];
-        out.extend_from_slice(b"DICM");
-        let ts = pad(b"1.2.840.10008.1.2.1".to_vec(), 0);
-        let meta = short(0x0002, 0x0010, b"UI", &ts);
-        out.extend_from_slice(&short(
-            0x0002,
-            0x0000,
-            b"UL",
-            &(meta.len() as u32).to_le_bytes(),
-        ));
-        out.extend_from_slice(&meta);
-        out.extend_from_slice(&d);
         let pixels: Vec<u8> = [0u16, 64, 128, 255]
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        out.extend_from_slice(&0x7FE0u16.to_le_bytes());
-        out.extend_from_slice(&0x0010u16.to_le_bytes());
-        out.extend_from_slice(b"OW");
-        out.extend_from_slice(&[0, 0]);
-        out.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
-        out.extend_from_slice(&pixels);
-        out
+        make_part10(&d, &pixels)
     }
 
     #[test]

@@ -3,28 +3,13 @@ use agno::codec::heif::parse_heif;
 use agno::codec::hevc::decode_hevc_still;
 use std::fs::File;
 
+mod common;
+use common::psnr;
+
 /// Return path relative to workspace root (parent of agno/).
 fn test_data(name: &str) -> String {
     let manifest = env!("CARGO_MANIFEST_DIR"); // .../agno/agno
     format!("{}/../tests/data/{}", manifest, name)
-}
-
-fn calculate_psnr(a: &[u8], b: &[u8]) -> f64 {
-    assert_eq!(a.len(), b.len(), "Image sizes must match");
-    let mse: f64 = a
-        .iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| {
-            let diff = x as f64 - y as f64;
-            diff * diff
-        })
-        .sum::<f64>()
-        / a.len() as f64;
-
-    if mse == 0.0 {
-        return f64::INFINITY;
-    }
-    10.0 * (255.0f64 * 255.0 / mse).log10()
 }
 
 /// Count the ratio of pixels that match the "dark green" failure pattern
@@ -97,7 +82,7 @@ fn heic_decode_psnr_single_tile() {
         return;
     }
 
-    let psnr = calculate_psnr(img.as_slice(), &reference);
+    let psnr = psnr(img.as_slice(), &reference);
     eprintln!("Single-tile PSNR: {:.2} dB", psnr);
     assert!(
         psnr > 30.0,
@@ -122,7 +107,7 @@ fn heic_decode_psnr_grid() {
         return;
     }
 
-    let psnr = calculate_psnr(img.as_slice(), &reference);
+    let psnr = psnr(img.as_slice(), &reference);
     eprintln!("Grid PSNR: {:.2} dB", psnr);
     assert!(
         psnr > 30.0,

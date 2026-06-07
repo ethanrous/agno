@@ -6,22 +6,11 @@ use agno::agno_image::load::{load_agno_image_from_file, load_dicom_from_bytes};
 use agno::codec::dicom::decode_dicom;
 use agno::exif::ExifContext;
 
+mod common;
+use common::psnr;
+
 const W: usize = 560;
 const H: usize = 560;
-
-fn psnr(a: &[u8], b: &[u8]) -> f64 {
-    assert_eq!(a.len(), b.len());
-    let mut sse = 0.0f64;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        let d = x as f64 - y as f64;
-        sse += d * d;
-    }
-    if sse == 0.0 {
-        return f64::INFINITY;
-    }
-    let mse = sse / a.len() as f64;
-    10.0 * (255.0f64 * 255.0 / mse).log10()
-}
 
 #[test]
 fn decodes_real_mri_matches_reference() {
