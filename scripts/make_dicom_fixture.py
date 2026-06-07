@@ -83,7 +83,6 @@ print(f"wrote {OUT_DCM}: {check.Rows}x{check.Columns}, no PHI keywords present")
 # BitsStored, so replicate that here or the reference diverges on real data whose
 # high-order bits above BitsStored are set, or on signed sub-word pixels.
 bits_stored = int(check.BitsStored)
-bits_allocated = int(check.BitsAllocated)
 signed = int(check.PixelRepresentation) == 1
 raw = check.pixel_array.astype(np.int64)
 if signed:

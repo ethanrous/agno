@@ -116,8 +116,15 @@ fn render_frame(img: &DicomImage, frame_index: usize) -> Result<Vec<u8>, Box<dyn
     let h = img.rows as usize;
     let bps = (img.bits_allocated / 8) as usize;
     let spp = img.samples_per_pixel as usize;
-    let n = w * h;
-    let frame_bytes = n * spp * bps;
+    // Dimensions and frame count come from untrusted input: guard every size
+    // computation so a crafted file cannot overflow usize and wrap into a
+    // too-small bounds check below.
+    let size_overflow = || -> Box<dyn Error> { "DICOM frame size overflows usize".into() };
+    let n = w.checked_mul(h).ok_or_else(size_overflow)?;
+    let frame_bytes = n
+        .checked_mul(spp)
+        .and_then(|v| v.checked_mul(bps))
+        .ok_or_else(size_overflow)?;
 
     if frame_index >= img.number_of_frames {
         return Err(format!(
@@ -126,8 +133,10 @@ fn render_frame(img: &DicomImage, frame_index: usize) -> Result<Vec<u8>, Box<dyn
         )
         .into());
     }
-    let start = frame_index * frame_bytes;
-    let end = start + frame_bytes;
+    let start = frame_index
+        .checked_mul(frame_bytes)
+        .ok_or_else(size_overflow)?;
+    let end = start.checked_add(frame_bytes).ok_or_else(size_overflow)?;
     if img.pixel_data.len() < end {
         return Err(format!(
             "DICOM pixel data too short: have {}, need {end} for frame {frame_index}",
@@ -532,6 +541,43 @@ mod tests {
 
         // Out-of-range frame errors rather than panicking or returning frame 0.
         assert!(decode_dicom_frame(&file, 2).is_err());
+    }
+
+    #[test]
+    fn rejects_frame_offset_overflow() {
+        // A crafted huge NumberOfFrames plus a large frame index must error rather
+        // than overflow usize when computing the frame's byte offset.
+        let mut d = Vec::new();
+        d.extend_from_slice(&short(0x0028, 0x0002, b"US", &us(1)));
+        d.extend_from_slice(&short(
+            0x0028,
+            0x0004,
+            b"CS",
+            &pad(b"MONOCHROME2".to_vec(), b' '),
+        ));
+        // NumberOfFrames near i64::MAX so a 3e18 frame index is still "in range".
+        d.extend_from_slice(&short(
+            0x0028,
+            0x0008,
+            b"IS",
+            &pad(b"9000000000000000000".to_vec(), b' '),
+        ));
+        d.extend_from_slice(&short(0x0028, 0x0010, b"US", &us(2))); // Rows
+        d.extend_from_slice(&short(0x0028, 0x0011, b"US", &us(2))); // Columns
+        d.extend_from_slice(&short(0x0028, 0x0100, b"US", &us(16)));
+        d.extend_from_slice(&short(0x0028, 0x0101, b"US", &us(16)));
+        d.extend_from_slice(&short(0x0028, 0x0102, b"US", &us(15)));
+        d.extend_from_slice(&short(0x0028, 0x0103, b"US", &us(0)));
+        d.extend_from_slice(&short(0x0028, 0x1050, b"DS", &pad(b"128".to_vec(), b' ')));
+        d.extend_from_slice(&short(0x0028, 0x1051, b"DS", &pad(b"256".to_vec(), b' ')));
+        let pixels = [0u8; 8]; // one 2x2 16-bit frame
+        let file = make_part10(&d, &pixels);
+
+        // 3e18 * frame_bytes(8) overflows usize; expect a clean error, not a panic.
+        let err = decode_dicom_frame(&file, 3_000_000_000_000_000_000)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("overflow"), "got: {err}");
     }
 
     #[test]

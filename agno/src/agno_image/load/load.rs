@@ -43,6 +43,10 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
     {
         return Ok(ImageType::Dicom);
     }
+    // The DICOM probe moved the cursor; rewind to the start so detection stays
+    // side-effect-free for non-DICOM inputs. The match below reads from `buf` and
+    // detect_raw re-seeks, but callers shouldn't have to assume a probe position.
+    reader.seek(SeekFrom::Start(0))?;
 
     match [buf[0], buf[1]] {
         [0xFF, 0xD8] => Ok(ImageType::Jpeg),
@@ -247,6 +251,37 @@ mod tests {
         assert!(
             matches!(detected, ImageType::Dicom),
             "expected Dicom, got something else"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn detect_image_type_rewinds_cursor_for_non_dicom() {
+        // After probing offset 128 for the DICOM marker, detection must leave a
+        // non-DICOM reader's cursor at the start so subsequent reads are predictable.
+        let mut bytes = vec![0u8; 200];
+        bytes[0] = 0xFF; // JPEG SOI
+        bytes[1] = 0xD8;
+
+        let dir = std::env::temp_dir();
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!(
+            "agno_detect_rewind_{}_{}.jpg",
+            std::process::id(),
+            unique_suffix
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut f = File::open(&path).unwrap();
+        let detected = detect_image_type(&mut f).unwrap();
+        assert!(matches!(detected, ImageType::Jpeg));
+        assert_eq!(
+            f.stream_position().unwrap(),
+            0,
+            "cursor must be rewound after a non-DICOM probe"
         );
         std::fs::remove_file(&path).ok();
     }

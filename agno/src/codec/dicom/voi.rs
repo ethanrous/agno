@@ -24,9 +24,10 @@ pub fn window_to_u8(value: f64, center: f64, width: f64) -> u8 {
     } else {
         (value - (center - 0.5)) / (w - 1.0) + 0.5
     };
-    // y is bounded to [0, 1] by the branches above, so the result is in [0, 255];
-    // the `as u8` cast saturates regardless.
-    (y * 255.0 + 0.5).floor() as u8
+    // y is bounded to [0, 1] by the branches above, so the result is in [0, 255].
+    // Clamp before the cast so float roundoff at the window endpoints can never
+    // land outside the byte range (the `as u8` cast also saturates in modern Rust).
+    (y * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
 }
 
 /// Derive a (center, width) window from the min/max of modality values, used
