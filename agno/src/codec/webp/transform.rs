@@ -88,44 +88,50 @@ pub fn fwht4x4(input: &[i16; 16]) -> [i16; 16] {
 }
 
 /// Inverse 4x4 DCT (VP8 specification, Sections 14.3-14.4).
+///
+/// Matches the reference `vp8_short_idct4x4llm_c`: the first pass operates on
+/// columns, the second pass on rows (with the `+4` rounding bias). The pass
+/// order matters because the `>>16` truncation in the trig terms is not
+/// associative across passes — transposing the passes yields off-by-one
+/// reconstruction differences from the reference decoder (libwebp).
 pub fn idct4x4(input: &[i32; 16]) -> [i32; 16] {
     let mut tmp = [0i32; 16];
 
-    // Row pass.
+    // Column pass.
     for i in 0..4 {
-        let c0 = input[i * 4];
-        let c1 = input[i * 4 + 1];
-        let c2 = input[i * 4 + 2];
-        let c3 = input[i * 4 + 3];
+        let c0 = input[i];
+        let c1 = input[i + 4];
+        let c2 = input[i + 8];
+        let c3 = input[i + 12];
 
         let a1 = c0 + c2;
         let b1 = c0 - c2;
         let temp1 = ((c1 * 35468) >> 16) - c3 - ((c3 * 20091) >> 16);
         let temp2 = c1 + ((c1 * 20091) >> 16) + ((c3 * 35468) >> 16);
 
-        tmp[i * 4] = a1 + temp2;
-        tmp[i * 4 + 3] = a1 - temp2;
-        tmp[i * 4 + 1] = b1 + temp1;
-        tmp[i * 4 + 2] = b1 - temp1;
+        tmp[i] = a1 + temp2;
+        tmp[i + 12] = a1 - temp2;
+        tmp[i + 4] = b1 + temp1;
+        tmp[i + 8] = b1 - temp1;
     }
 
-    // Column pass (with +4 rounding bias, then >>3 normalization).
+    // Row pass (with +4 rounding bias, then >>3 normalization).
     let mut result = [0i32; 16];
     for i in 0..4 {
-        let c0 = tmp[i];
-        let c1 = tmp[i + 4];
-        let c2 = tmp[i + 8];
-        let c3 = tmp[i + 12];
+        let c0 = tmp[i * 4];
+        let c1 = tmp[i * 4 + 1];
+        let c2 = tmp[i * 4 + 2];
+        let c3 = tmp[i * 4 + 3];
 
         let a1 = c0 + c2;
         let b1 = c0 - c2;
         let temp1 = ((c1 * 35468) >> 16) - c3 - ((c3 * 20091) >> 16);
         let temp2 = c1 + ((c1 * 20091) >> 16) + ((c3 * 35468) >> 16);
 
-        result[i] = (a1 + temp2 + 4) >> 3;
-        result[i + 12] = (a1 - temp2 + 4) >> 3;
-        result[i + 4] = (b1 + temp1 + 4) >> 3;
-        result[i + 8] = (b1 - temp1 + 4) >> 3;
+        result[i * 4] = (a1 + temp2 + 4) >> 3;
+        result[i * 4 + 3] = (a1 - temp2 + 4) >> 3;
+        result[i * 4 + 1] = (b1 + temp1 + 4) >> 3;
+        result[i * 4 + 2] = (b1 - temp1 + 4) >> 3;
     }
     result
 }
@@ -157,4 +163,23 @@ pub fn iwht4x4(input: &[i16; 16]) -> [i16; 16] {
         result[i + 12] = ((a - b + c - d + 3) >> 3) as i16;
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins `idct4x4` to the VP8 reference pass order (column pass first, then
+    /// row pass). The `>>16` trig truncations are not associative across passes,
+    /// so a row-first IDCT yields off-by-one results that a conformant decoder
+    /// (libwebp) does not share — which manifested as an accumulating chroma
+    /// cast in WebP output. This block is chosen so the two pass orders differ;
+    /// the expected values are the reference (column-first) output. A regression
+    /// to row-first changes indices 0, 3, 5, and 7.
+    #[test]
+    fn idct4x4_uses_vp8_reference_pass_order() {
+        let input = [120, 35, -18, 7, -22, 14, 9, -5, 11, -8, 4, 3, -6, 2, -1, 2];
+        let expected = [20, 15, 10, 4, 19, 19, 12, 4, 17, 19, 17, 4, 20, 22, 26, 15];
+        assert_eq!(idct4x4(&input), expected);
+    }
 }
