@@ -436,6 +436,39 @@ pub fn decrypt_sr2_data(decryptor: &mut SonyDecryptor, data: &mut [u8], key: u32
 //       starting at bit offset 30, each 7-bit code -> value = (code << sh) + min
 //       positions imax/imin are set to max/min respectively.
 // We decode blocks until we fill active_width pixels. Any trailing row bytes are ignored.
+/// Build the Sony ARW2 linearization (tone) curve from the `SonyToneCurve` tag (0x7010).
+///
+/// Port of dcraw/LibRaw: the four control points are reduced with `>> 2 & 0xfff` and
+/// bracketed by 0 and 4095; within segment `i` the curve increments by `1 << i`. During
+/// ARW2 decoding the curve is indexed by `pixel << 1`, expanding the 11-bit codes to the
+/// ~14-bit linear domain (max ~`0x3ff0`). Returns a 0x4000-entry table; only indices
+/// 0..=4094 are ever read (pixel codes are clamped to 0x7ff).
+pub fn build_sony_tone_curve(points: [u16; 4]) -> Vec<u16> {
+    let mut curve = vec![0u16; 0x4000];
+
+    // Missing/zero tag: identity passthrough so ARW2 still decodes (no expansion).
+    if points == [0, 0, 0, 0] {
+        for (i, c) in curve.iter_mut().enumerate() {
+            *c = i.min(0x3fff) as u16;
+        }
+        return curve;
+    }
+
+    let mut sc = [0usize; 6];
+    sc[5] = 4095;
+    for i in 0..4 {
+        sc[i + 1] = ((points[i] >> 2) & 0xfff) as usize;
+    }
+
+    for i in 0..5 {
+        // Segments may be empty if the control points are non-monotonic; that's fine.
+        for j in (sc[i] + 1)..=sc[i + 1] {
+            curve[j] = curve[j - 1].saturating_add(1u16 << i);
+        }
+    }
+    curve
+}
+
 #[allow(clippy::needless_range_loop)]
 pub fn sony_arw2_load_raw<R: Read>(
     reader: &mut R,
@@ -607,4 +640,24 @@ pub fn read_concatenated_strips<R: Read + Seek>(
         pos += *cnt as usize;
     }
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn build_sony_tone_curve_matches_dcraw() {
+        // SonyToneCurve from an A7 IV ARW2: [8000, 10400, 12900, 14100].
+        // dcraw/LibRaw: sony_curve[i+1] = (point >> 2) & 0xfff, bracketed by 0 and 4095,
+        // giving {0, 2000, 2600, 3225, 3525, 4095}; segment i increments by (1 << i).
+        let curve = build_sony_tone_curve([8000, 10400, 12900, 14100]);
+        assert_eq!(curve[0], 0);
+        assert_eq!(curve[1], 1); // segment 0, step 1
+        assert_eq!(curve[2000], 2000); // end of segment 0
+        assert_eq!(curve[2001], 2002); // segment 1, step 2
+        assert_eq!(curve[2600], 3200); // end of segment 1
+        assert_eq!(curve[4094], 17204); // max real index: pix 0x7ff -> (0x7ff << 1) = 0xffe
+    }
 }
