@@ -469,6 +469,8 @@ pub fn build_sony_tone_curve(points: [u16; 4]) -> Vec<u16> {
 // The 11-bit codes are expanded through the Sony tone curve (`curve[pix << 1]`) into the
 // ~14-bit linear domain. Skipping the de-interleave produces a vertical comb artifact;
 // skipping the curve makes the image ~8x too dark.
+// `tone_curve` must have at least 0x1000 entries (as built by `build_sony_tone_curve`);
+// pixel codes are clamped to 0x7ff, so the largest index read is `0x7ff << 1` = 0xffe.
 #[allow(clippy::needless_range_loop)]
 pub fn sony_arw2_load_raw<R: Read>(
     reader: &mut R,
@@ -519,6 +521,9 @@ pub fn sony_arw2_load_raw<R: Read>(
                     pix16[i] = min_v as u16;
                 } else {
                     let byte_index = dp + (bit >> 3);
+                    if byte_index + 1 >= row_buf.len() {
+                        return Err(DecodeError::CorruptData("Sony ARW2: row buffer overread"));
+                    }
                     let two =
                         u16::from_le_bytes([row_buf[byte_index], row_buf[byte_index + 1]]) as i32;
                     let code7 = (two >> (bit & 7)) & 0x7f;
