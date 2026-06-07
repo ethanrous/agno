@@ -12,8 +12,8 @@ use crate::{
     exif::{
         ExifContext, ExifValue,
         spec::{
-            BLACK_LEVEL, COLOR_MATRIX1, COLOR_MATRIX2, COLOR_MATRIX3, SR2_COLOR_MATRIX,
-            WB_RGGBLEVELS,
+            BLACK_LEVEL, COLOR_MATRIX1, COLOR_MATRIX2, COLOR_MATRIX3, SONY_TONE_CURVE,
+            SR2_COLOR_MATRIX, WB_RGGBLEVELS,
         },
     },
     sony_decoder::{self, DecodeError, Dimensions},
@@ -53,8 +53,13 @@ pub fn load_sony_raw(
     // Auto-select decoder based on detection
     let decoded = match variant {
         SonyVariant::Arw2Compressed => {
-            // ARW2: compressed row length equals pixel width; decoder expects row_len == active_width
-            match sony_decoder::sony_arw2_load_raw(&mut cursor, dims) {
+            // ARW2 codes are tone-curve compressed; expand via the Sony tone curve (tag 0x7010).
+            let tone_points: [u16; 4] = match ctx.get_tag_value(SONY_TONE_CURVE) {
+                Some(ExifValue::Short(v)) if v.len() >= 4 => [v[0], v[1], v[2], v[3]],
+                _ => [0u16; 4],
+            };
+            let tone_curve = sony_decoder::build_sony_tone_curve(tone_points);
+            match sony_decoder::sony_arw2_load_raw(&mut cursor, dims, &tone_curve) {
                 Ok(result) => result,
                 Err(e) => return Err(Box::new(e)),
             }
