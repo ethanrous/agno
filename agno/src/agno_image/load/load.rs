@@ -18,6 +18,7 @@ pub enum ImageType {
     Png,
     Webp,
     Gif,
+    Dicom,
     Pdf,
     Heic,
     QuickTimeMov,
@@ -30,6 +31,22 @@ pub fn detect_image_type(reader: &mut File) -> Result<ImageType, Box<dyn Error>>
     let mut buf = [0u8; 12];
     reader.seek(SeekFrom::Start(0))?;
     reader.read_exact(&mut buf)?;
+
+    // DICOM Part-10 first: the 128-byte preamble may contain arbitrary bytes —
+    // even another format's magic — so the authoritative signal is the "DICM"
+    // marker at offset 128. Checking it before the leading-magic match prevents
+    // a DICOM file with a non-zero preamble being misrouted to another decoder.
+    let mut dicm = [0u8; 4];
+    if reader.seek(SeekFrom::Start(128)).is_ok()
+        && reader.read_exact(&mut dicm).is_ok()
+        && &dicm == b"DICM"
+    {
+        return Ok(ImageType::Dicom);
+    }
+    // The DICOM probe moved the cursor; rewind to the start so detection stays
+    // side-effect-free for non-DICOM inputs. The match below reads from `buf` and
+    // detect_raw re-seeks, but callers shouldn't have to assume a probe position.
+    reader.seek(SeekFrom::Start(0))?;
 
     match [buf[0], buf[1]] {
         [0xFF, 0xD8] => Ok(ImageType::Jpeg),
@@ -120,6 +137,15 @@ pub fn load_agno_image_from_file(path: &str) -> Result<AgnoImage, Box<dyn Error>
         ImageType::Gif => {
             Err("GIF support is not enabled. Please enable the 'gif' feature.".into())
         }
+        #[cfg(feature = "dicom")]
+        ImageType::Dicom => {
+            let file_data = std::fs::read(path)?;
+            super::load_dicom_from_bytes(&file_data, exif)
+        }
+        #[cfg(not(feature = "dicom"))]
+        ImageType::Dicom => {
+            Err("DICOM support is not enabled. Please enable the 'dicom' feature.".into())
+        }
         #[cfg(feature = "pdf")]
         ImageType::Pdf => {
             let file_data = std::fs::read(path)?;
@@ -196,6 +222,67 @@ mod tests {
         assert_eq!(img.page_count, 1);
         assert_eq!(img.as_slice().len(), 2 * 1 * 3);
 
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn detects_dicom_despite_format_magic_in_preamble() {
+        // A DICOM whose 128-byte preamble happens to start with JPEG's FF D8 magic
+        // must still be detected as DICOM via the DICM marker at offset 128.
+        let mut bytes = vec![0u8; 132];
+        bytes[0] = 0xFF;
+        bytes[1] = 0xD8;
+        bytes[128..132].copy_from_slice(b"DICM");
+
+        let dir = std::env::temp_dir();
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!(
+            "agno_dicom_preamble_{}_{}.dcm",
+            std::process::id(),
+            unique_suffix
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut f = File::open(&path).unwrap();
+        let detected = detect_image_type(&mut f).unwrap();
+        assert!(
+            matches!(detected, ImageType::Dicom),
+            "expected Dicom, got something else"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn detect_image_type_rewinds_cursor_for_non_dicom() {
+        // After probing offset 128 for the DICOM marker, detection must leave a
+        // non-DICOM reader's cursor at the start so subsequent reads are predictable.
+        let mut bytes = vec![0u8; 200];
+        bytes[0] = 0xFF; // JPEG SOI
+        bytes[1] = 0xD8;
+
+        let dir = std::env::temp_dir();
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!(
+            "agno_detect_rewind_{}_{}.jpg",
+            std::process::id(),
+            unique_suffix
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut f = File::open(&path).unwrap();
+        let detected = detect_image_type(&mut f).unwrap();
+        assert!(matches!(detected, ImageType::Jpeg));
+        assert_eq!(
+            f.stream_position().unwrap(),
+            0,
+            "cursor must be rewound after a non-DICOM probe"
+        );
         std::fs::remove_file(&path).ok();
     }
 }

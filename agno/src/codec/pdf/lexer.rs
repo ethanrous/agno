@@ -572,9 +572,9 @@ mod tests {
 
     #[test]
     fn parse_real() {
-        let mut lex = Lexer::new(b"3.14");
+        let mut lex = Lexer::new(b"3.25");
         let obj = lex.next_object().unwrap().unwrap();
-        assert!((obj.as_f64().unwrap() - 3.14).abs() < 1e-9);
+        assert!((obj.as_f64().unwrap() - 3.25).abs() < 1e-9);
     }
 
     #[test]

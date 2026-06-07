@@ -72,6 +72,7 @@ Three crates in a Cargo workspace:
 | `png` | yes | Native PNG decode |
 | `webp` | yes | Native WebP encode/decode |
 | `pdf` | yes | Native PDF rasterizer (tiny-skia + ttf-parser) |
+| `dicom` | yes | Native DICOM (.dcm) decode: uncompressed MONOCHROME/RGB, window/level |
 | `cabac-trace` | no | Debug: log every CABAC decision for HEVC decoder comparison |
 
 HEIF/HEVC decoding is always compiled (not feature-gated). The `heic-experimental-decoder` flag in Cargo.toml is a legacy artifact with no effect.

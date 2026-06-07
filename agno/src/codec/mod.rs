@@ -1,3 +1,5 @@
+#[cfg(feature = "dicom")]
+pub mod dicom;
 #[cfg(feature = "gif")]
 pub mod gif;
 pub mod heif;

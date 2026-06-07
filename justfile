@@ -55,9 +55,9 @@ test *args:
         esac
     done
     if [ -n "$filter" ]; then
-        cargo test -p agno "${extra_args[@]}" -- "$filter"
+        cargo test -p agno ${extra_args[@]+"${extra_args[@]}"} -- "$filter"
     else
-        cargo test -p agno "${extra_args[@]}"
+        cargo test -p agno ${extra_args[@]+"${extra_args[@]}"}
     fi
 
 # Run clippy and format check

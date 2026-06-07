@@ -1,4 +1,5 @@
 pub mod canon;
+pub mod dicom;
 pub mod gif;
 pub mod heic;
 #[allow(clippy::module_inception)]
@@ -8,6 +9,8 @@ pub mod pdf;
 pub mod sony;
 
 pub use canon::*;
+#[cfg(feature = "dicom")]
+pub use dicom::*;
 pub use gif::*;
 pub use heic::*;
 pub use load::*;

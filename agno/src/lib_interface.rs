@@ -215,12 +215,12 @@ pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) 
 
 /// Load a specific page (or frame) from a multi-page file and return it as an AgnoImage.
 ///
-/// Supported formats: PDF (`%PDF-` magic), GIF (`GIF` magic).
+/// Supported formats: PDF (`%PDF-` magic), GIF (`GIF` magic), DICOM (`DICM` marker).
 ///
 /// `page_num` is 0-based. For PDFs, `max_width`/`max_height` of 0 uses default scale;
 /// non-zero values constrain the rendered output to fit within those dimensions.
-/// For GIFs, `max_width`/`max_height` are ignored (raster, no scale-up at decode).
-#[cfg(any(feature = "pdf", feature = "gif"))]
+/// For GIFs and DICOM, `max_width`/`max_height` are ignored (raster, no scale-up at decode).
+#[cfg(any(feature = "pdf", feature = "gif", feature = "dicom"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn load_image_page(
     path: *const c_char,
@@ -244,6 +244,19 @@ pub extern "C" fn load_image_page(
         Ok(d) => d,
         Err(e) => return make_error_result(format!("Failed to read {path_str}: {e}")),
     };
+
+    // DICOM first: the 128-byte Part-10 preamble is arbitrary and may begin with
+    // another format's magic (e.g. "%PDF-"/"GIF8"), so the authoritative "DICM"
+    // marker at offset 128 must be checked before the leading-magic dispatch.
+    // Mirrors detect_image_type() in agno_image/load/load.rs.
+    #[cfg(feature = "dicom")]
+    if crate::codec::dicom::is_dicom(&data) {
+        return into_result!(crate::agno_image::load::load_dicom_frame_from_bytes(
+            &data,
+            page_num,
+            crate::exif::ExifContext::default(),
+        ));
+    }
 
     if data.len() >= 5 && &data[..5] == b"%PDF-" {
         #[cfg(feature = "pdf")]
@@ -384,6 +397,62 @@ mod tests {
         unsafe {
             let img = &*result.image;
             assert_eq!(img.page_count, 2, "expected page_count=2 for 2-frame gif");
+            let _ = Box::from_raw(result.image);
+        }
+        free_agno_result(result);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[cfg(feature = "dicom")]
+    #[test]
+    fn load_image_page_dispatches_dicom_frames() {
+        use crate::codec::dicom::test_fixtures::{make_part10, pad, short, us};
+        use std::ffi::CString as StdCString;
+
+        // 2-frame 1x2 MONOCHROME2 object: frame0 [10,20], frame1 [200,210].
+        let mut d = Vec::new();
+        d.extend_from_slice(&short(0x0028, 0x0002, b"US", &us(1)));
+        d.extend_from_slice(&short(
+            0x0028,
+            0x0004,
+            b"CS",
+            &pad(b"MONOCHROME2".to_vec(), b' '),
+        ));
+        d.extend_from_slice(&short(0x0028, 0x0008, b"IS", &pad(b"2".to_vec(), b' ')));
+        d.extend_from_slice(&short(0x0028, 0x0010, b"US", &us(1)));
+        d.extend_from_slice(&short(0x0028, 0x0011, b"US", &us(2)));
+        d.extend_from_slice(&short(0x0028, 0x0100, b"US", &us(8)));
+        d.extend_from_slice(&short(0x0028, 0x0101, b"US", &us(8)));
+        d.extend_from_slice(&short(0x0028, 0x0102, b"US", &us(7)));
+        d.extend_from_slice(&short(0x0028, 0x0103, b"US", &us(0)));
+        d.extend_from_slice(&short(0x0028, 0x1050, b"DS", &pad(b"128".to_vec(), b' ')));
+        d.extend_from_slice(&short(0x0028, 0x1051, b"DS", &pad(b"256".to_vec(), b' ')));
+        let file = make_part10(&d, &[10u8, 20, 200, 210]);
+
+        let dir = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!(
+            "agno_ffi_dicom_{}_{}.dcm",
+            std::process::id(),
+            unique
+        ));
+        std::fs::write(&path, &file).unwrap();
+        let path_str = path.to_str().unwrap();
+        let c_path = StdCString::new(path_str).unwrap();
+
+        let result = load_image_page(c_path.as_ptr(), path_str.len(), 1, 0, 0);
+        assert!(!result.image.is_null(), "expected image, got null");
+        assert!(result.error.is_null(), "expected no error");
+        unsafe {
+            let img = &*result.image;
+            assert_eq!(img.page_count, 2, "expected page_count=2 for 2-frame dicom");
+            assert_eq!(img.width, 2);
+            assert_eq!(img.height, 1);
+            // page 1 must be frame 1 (first pixel 200), not frame 0 (10).
+            assert_eq!(img.as_slice()[0], 200);
             let _ = Box::from_raw(result.image);
         }
         free_agno_result(result);

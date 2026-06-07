@@ -29,6 +29,7 @@ agno/src/
 │       ├── canon.rs         Canon CR2 RAW (thin wrapper, calls canon_decoder.rs)
 │       ├── heic.rs          HEIC/HEIF (parses container, decodes HEVC)
 │       ├── mov.rs           MOV/MP4 thumbnail extraction (4 strategies)
+│       ├── dicom.rs         DICOM loader bridge (calls codec::dicom)
 │       └── pdf.rs           PDF loading integration (calls codec::pdf)
 │
 ├── codec/                  Native format implementations (no external C deps)
@@ -38,6 +39,11 @@ agno/src/
 │   ├── jpeg/               JPEG encoder + decoder (DCT, Huffman, quantization)
 │   ├── webp/               WebP encoder + decoder (VP8, arithmetic coding)
 │   ├── png/                PNG decoder
+│   ├── dicom/              Native DICOM parser + renderer (Part-10, uncompressed)
+│   │   ├── mod.rs           Public API: decode_dicom(), is_dicom()
+│   │   ├── parse.rs         Byte-level element/sequence parser → DicomImage
+│   │   ├── voi.rs           Modality LUT + linear window/level math
+│   │   └── decode.rs        Pixel extraction + photometric → RGB8
 │   └── pdf/                Native PDF rasterizer (tiny-skia + ttf-parser)
 │       ├── mod.rs           Public API: render_pdf_page(), pdf_page_count()
 │       ├── objects.rs       PDF object types (Dict, Array, Stream, Name, etc.)
