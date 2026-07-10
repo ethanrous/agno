@@ -32,6 +32,11 @@ impl ExifData {
 
     fn from_bytes(bytes: &[u8], typ: u16) -> Self {
         let len = bytes.len();
+        if len == 0 {
+            // Avoid malloc(0): a non-null pointer with len == 0 would look
+            // like present data to FFI callers. len == 0 means "no data".
+            return ExifData::null();
+        }
         let data = unsafe { libc::malloc(len) as *mut u8 };
         if data.is_null() {
             return ExifData::null();

@@ -305,6 +305,12 @@ pub extern "C" fn free_agno_buffer(buf: AgnoBuffer) {
     }
 }
 
+/// Frees the buffer of an `ExifData` returned by `get_exif_value`.
+///
+/// Every non-null `ExifData.data` is a `libc::malloc`'d copy owned by the
+/// caller. It must be released exactly once, and only via this function —
+/// not with `free()` or any other allocator. Null data is a no-op, so
+/// passing a not-found result is safe.
 #[unsafe(no_mangle)]
 pub extern "C" fn free_exif_data(data: ExifData) {
     if !data.data.is_null() {

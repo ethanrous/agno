@@ -226,10 +226,13 @@ func (img *Image) getExifValue(exifTag int) any {
 	}
 
 	v := C.get_exif_value(img.img, C.uint16_t(exifTag))
-	if v.len == 0 && v.data == nil {
+	if v.data == nil {
 		return nil
 	}
 	defer C.free_exif_data(v)
+	if v.len == 0 {
+		return nil
+	}
 
 	switch v.typ {
 	case 1: // BYTE
