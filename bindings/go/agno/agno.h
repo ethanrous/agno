@@ -81,7 +81,9 @@ AgnoResult load_image_page(const char *path,
 
 void free_agno_buffer(AgnoBuffer buf);
 
-void free_agno_image(const AgnoImage *img);
+void free_exif_data(ExifData data);
+
+void free_agno_image(AgnoImage *img);
 
 void free_agno_result(AgnoResult result);
 

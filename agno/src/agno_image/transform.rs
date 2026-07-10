@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub fn scale_image(
-    a_img: AgnoImage,
+    mut a_img: AgnoImage,
     new_width: u32,
     new_height: u32,
 ) -> Result<AgnoImage, Box<dyn Error>> {
@@ -32,8 +32,9 @@ pub fn scale_image(
         new_height,
     ) {
         debug!("GPU resize complete");
-        let exif = a_img.exif.clone();
-        AgnoImage::free(&a_img);
+        // The source is consumed: move its EXIF into the result, no clone.
+        let exif = std::mem::take(&mut a_img.exif);
+        drop(a_img);
         return Ok(AgnoImage::new(
             resized,
             new_width as u64,
@@ -51,8 +52,8 @@ pub fn scale_image(
         new_width as usize,
         new_height as usize,
     );
-    let exif = a_img.exif.clone();
-    AgnoImage::free(&a_img);
+    let exif = std::mem::take(&mut a_img.exif);
+    drop(a_img);
     Ok(AgnoImage::new(
         resized,
         new_width as u64,

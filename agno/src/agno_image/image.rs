@@ -54,18 +54,6 @@ impl AgnoImage {
         null_mut()
     }
 
-    #[allow(dead_code)]
-    pub fn free(img: &AgnoImage) {
-        unsafe {
-            if !img.data.is_null() {
-                libc::free(img.data as *mut c_void);
-            }
-
-            // img is dropped here (struct memory freed)
-            // Box::from_raw(&mut img);
-        }
-    }
-
     pub fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
@@ -162,6 +150,17 @@ impl AgnoImage {
             _ => self.to_jpeg(quality),
             #[cfg(not(feature = "jpeg"))]
             _ => Err(format!("No encoder available for .{ext}").into()),
+        }
+    }
+}
+
+impl Drop for AgnoImage {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.data.is_null() {
+                libc::free(self.data as *mut c_void);
+                self.data = null_mut();
+            }
         }
     }
 }
