@@ -81,6 +81,14 @@ AgnoResult load_image_page(const char *path,
 
 void free_agno_buffer(AgnoBuffer buf);
 
+/**
+ * Frees the buffer of an `ExifData` returned by `get_exif_value`.
+ *
+ * Every non-null `ExifData.data` is a `libc::malloc`'d copy owned by the
+ * caller. It must be released exactly once, and only via this function —
+ * not with `free()` or any other allocator. Null data is a no-op, so
+ * passing a not-found result is safe.
+ */
 void free_exif_data(ExifData data);
 
 void free_agno_image(AgnoImage *img);

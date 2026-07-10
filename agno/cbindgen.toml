@@ -20,6 +20,8 @@ typedef struct {
 """
 
 [export]
+# Constants are internal codec tables — never part of the C API.
+item_types = ["enums", "structs", "unions", "typedefs", "opaque", "functions"]
 include = ["ExifData", "GpsCoordinates", "AgnoBuffer"]
 exclude = ["AgnoImage", "ExifContext", "Endian", "ExifValue", "CString", "MAX_COMPONENTS"]
 
