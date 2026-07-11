@@ -83,8 +83,15 @@ impl AgnoImage {
         unsafe {
             if !self.data.is_null() {
                 libc::free(self.data as *mut c_void);
+                // Null out immediately so the image stays Drop-safe if the
+                // allocation below fails and we return early.
+                self.data = null_mut();
+                self.len = 0;
             }
             let new_ptr = libc::malloc(rotated.len()) as *mut c_uchar;
+            if new_ptr.is_null() {
+                return Err("allocation failed while rotating image".into());
+            }
             new_ptr.copy_from_nonoverlapping(rotated.as_ptr(), rotated.len());
             self.data = new_ptr;
             self.len = rotated.len();

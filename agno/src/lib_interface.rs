@@ -146,7 +146,7 @@ pub extern "C" fn resize_image(
 pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
     let data = img.exif.get_tag_value_by_tag(img_tag);
 
-    let ret = match data {
+    match data {
         Some(value) => ExifData::from_exif_value(value),
         None => {
             debug!(
@@ -160,13 +160,7 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
                 typ: 0,
             }
         }
-    };
-
-    if ret.len == 0 {
-        return ret;
     }
-
-    ret
 }
 
 #[repr(C)]

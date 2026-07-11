@@ -33,7 +33,7 @@ pub fn load_mov_thumbnail(file: &mut File, exif: ExifContext) -> Result<AgnoImag
         return decode_jpeg_thumbnail(&data, exif);
     }
 
-    if let Ok(img) = try_hevc_keyframe(file, exif.clone()) {
+    if let Ok(img) = try_hevc_keyframe(file, exif) {
         return Ok(img);
     }
 
@@ -347,8 +347,10 @@ fn try_hevc_keyframe(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Bo
             None => break,
         };
 
-        if let Ok(Some(img)) = try_decode_hevc_from_trak(file, trak_start, trak_end, &exif) {
-            return Ok(img);
+        if let Ok(Some((rgb, width, height))) =
+            try_decode_hevc_from_trak(file, trak_start, trak_end)
+        {
+            return Ok(AgnoImage::new(rgb, width, height, exif));
         }
 
         trak_pos = trak_end;
@@ -357,13 +359,15 @@ fn try_hevc_keyframe(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Bo
     Err("No decodable HEVC keyframe found".into())
 }
 
+/// A decoded video frame: `(rgb8 pixels, width, height)`.
+type DecodedFrame = (Vec<u8>, u64, u64);
+
 /// Try to decode the first keyframe from a single trak, if it's an HEVC video track.
 fn try_decode_hevc_from_trak(
     file: &mut File,
     trak_start: u64,
     trak_end: u64,
-    exif: &ExifContext,
-) -> Result<Option<AgnoImage>, Box<dyn Error>> {
+) -> Result<Option<DecodedFrame>, Box<dyn Error>> {
     let (mdia_start, mdia_end) = match isobmff_find_box(file, trak_start, trak_end, b"mdia")? {
         Some(v) => v,
         None => return Ok(None),
@@ -417,7 +421,7 @@ fn try_decode_hevc_from_trak(
     let sample_data = read_bytes_at(file, offset, size)?;
 
     // Decode HEVC keyframe natively
-    decode_hevc_sample(&hvcc_data, &sample_data, exif.clone()).map(Some)
+    decode_hevc_sample(&hvcc_data, &sample_data).map(Some)
 }
 
 /// Extract the raw hvcC box data (full box content) from stsd > hvc1 > hvcC.
@@ -476,26 +480,32 @@ fn read_stsd_dimensions(file: &mut File, stsd_start: u64) -> Result<(u16, u16), 
 }
 
 /// Construct a minimal valid HEIF file from an hvcC config and one HEVC sample.
-/// Decode HEVC sample data using the native decoder.
+/// Decode HEVC sample data using the native decoder into `(rgb8, width, height)`.
 fn decode_hevc_sample(
     hvcc_data: &[u8],
     sample_data: &[u8],
-    exif: ExifContext,
-) -> Result<AgnoImage, Box<dyn Error>> {
+) -> Result<DecodedFrame, Box<dyn Error>> {
     let picture = decode_hevc_still(hvcc_data, sample_data)?;
     let rgb = picture.to_rgb8();
-    Ok(AgnoImage::new(
-        rgb,
-        picture.width as u64,
-        picture.height as u64,
-        exif,
-    ))
+    Ok((rgb, picture.width as u64, picture.height as u64))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::agno_image::load::{ImageType, detect_image_type, load_agno_image_from_file};
+    use crate::exif::ExifContext;
     use std::fs::File;
+
+    /// Characterization test for strategy D: decode the first HEVC keyframe
+    /// directly, bypassing the JPEG-thumbnail strategies.
+    #[test]
+    fn hevc_keyframe_strategy_decodes_sample() {
+        let mut file = File::open("../tests/data/sample.mov").unwrap();
+        let img = super::try_hevc_keyframe(&mut file, ExifContext::default()).unwrap();
+        assert!(img.width > 0, "Width should be non-zero");
+        assert!(img.height > 0, "Height should be non-zero");
+        assert_eq!(img.as_slice().len(), (img.width * img.height * 3) as usize);
+    }
 
     #[test]
     fn detect_mov_format() {
