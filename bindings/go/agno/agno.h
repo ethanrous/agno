@@ -84,13 +84,22 @@ void free_agno_buffer(AgnoBuffer buf);
 /**
  * Frees the buffer of an `ExifData` returned by `get_exif_value`.
  *
- * Every non-null `ExifData.data` is a `libc::malloc`'d copy owned by the
- * caller. It must be released exactly once, and only via this function —
- * not with `free()` or any other allocator. Null data is a no-op, so
- * passing a not-found result is safe.
+ * Every non-null `ExifData.data` is a `malloc()`-allocated copy owned by
+ * the caller. It must be released exactly once, and only via this
+ * function — not with `free()` or any other allocator. Null data is a
+ * no-op, so passing a not-found result is safe.
  */
 void free_exif_data(ExifData data);
 
+/**
+ * Frees an `AgnoImage` returned by this library.
+ *
+ * Only pass pointers obtained from agno (e.g. `load_image_from_path`,
+ * `resize_image`, `load_image_page`). The pointer is reclaimed by the
+ * Rust allocator, so calling this on any other pointer — stack-allocated,
+ * `malloc()`'d, or already freed — is undefined behavior. Never release
+ * the pointer with `free()`. Null is a no-op.
+ */
 void free_agno_image(AgnoImage *img);
 
 void free_agno_result(AgnoResult result);
