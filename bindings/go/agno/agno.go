@@ -96,12 +96,26 @@ func (img *Image) Close() error {
 
 // Dimensions returns the width and height of the image.
 func (img *Image) Dimensions() (width, height int) {
+	img.mu.Lock()
+	defer img.mu.Unlock()
+
+	if img.freed {
+		return 0, 0
+	}
+
 	return int(img.img.width), int(img.img.height)
 }
 
 // PageCount returns the number of pages in the source file.
 // Returns 1 for single-page formats (JPEG, PNG, WebP, HEIC, etc.).
 func (img *Image) PageCount() int {
+	img.mu.Lock()
+	defer img.mu.Unlock()
+
+	if img.freed {
+		return 0
+	}
+
 	return int(img.img.page_count)
 }
 
@@ -138,6 +152,10 @@ func (img *Image) WriteWebP(path string) error {
 	img.mu.Lock()
 	defer img.mu.Unlock()
 
+	if img.freed {
+		return fmt.Errorf("agno: cannot write a freed image")
+	}
+
 	C.write_agno_image_to_webp(cPath, C.size_t(len(path)), img.img)
 
 	return nil
@@ -148,6 +166,10 @@ func (img *Image) WriteWebP(path string) error {
 func (img *Image) WriteJPEG(quality int) ([]byte, error) {
 	img.mu.Lock()
 	defer img.mu.Unlock()
+
+	if img.freed {
+		return nil, fmt.Errorf("agno: cannot write a freed image")
+	}
 
 	buf := C.write_agno_image_to_jpeg_buffer(img.img, C.uint8_t(quality))
 	if buf.data == nil {
@@ -165,6 +187,10 @@ func (img *Image) WriteJPEG(quality int) ([]byte, error) {
 func (img *Image) GPSCoordinates() ([2]float64, error) {
 	img.mu.Lock()
 	defer img.mu.Unlock()
+
+	if img.freed {
+		return [2]float64{}, fmt.Errorf("agno: cannot get GPS coordinates from a freed image")
+	}
 
 	gps := C.get_gps_coordinates(img.img)
 	if gps.valid == 0 {
@@ -195,8 +221,16 @@ func (img *Image) getExifValue(exifTag int) any {
 	img.mu.Lock()
 	defer img.mu.Unlock()
 
+	if img.freed {
+		return nil
+	}
+
 	v := C.get_exif_value(img.img, C.uint16_t(exifTag))
-	if v.len == 0 && v.data == nil {
+	if v.data == nil {
+		return nil
+	}
+	defer C.free_exif_data(v)
+	if v.len == 0 {
 		return nil
 	}
 

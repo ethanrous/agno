@@ -32,6 +32,11 @@ impl ExifData {
 
     fn from_bytes(bytes: &[u8], typ: u16) -> Self {
         let len = bytes.len();
+        if len == 0 {
+            // Avoid malloc(0): a non-null pointer with len == 0 would look
+            // like present data to FFI callers. len == 0 means "no data".
+            return ExifData::null();
+        }
         let data = unsafe { libc::malloc(len) as *mut u8 };
         if data.is_null() {
             return ExifData::null();
@@ -45,13 +50,7 @@ impl ExifData {
     pub fn from_exif_value(v: &ExifValue) -> Self {
         match v {
             ExifValue::Byte(b) => ExifData::from_bytes(b, 1),
-            ExifValue::Ascii(s) => ExifData {
-                // Note: borrows the String's buffer directly. Safe because Go copies
-                // the bytes immediately in getExifValue before this data can be freed.
-                data: s.as_ptr() as *mut u8,
-                len: s.len(),
-                typ: 2,
-            },
+            ExifValue::Ascii(s) => ExifData::from_bytes(s.as_bytes(), 2),
             ExifValue::Short(v) => {
                 let mut bytes = Vec::with_capacity(v.len() * 4);
                 for n in v {

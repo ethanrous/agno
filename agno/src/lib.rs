@@ -1,6 +1,6 @@
 pub mod agno_image;
 pub mod codec;
-mod lib_interface;
+pub mod lib_interface;
 
 pub mod logging;
 

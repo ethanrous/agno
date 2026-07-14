@@ -15,9 +15,9 @@ use crate::{
 /// On failure: image is null, error is a malloc'd UTF-8 string.
 #[repr(C)]
 pub struct AgnoResult {
-    image: *mut AgnoImage,
-    error: *mut u8,
-    error_len: usize,
+    pub image: *mut AgnoImage,
+    pub error: *mut u8,
+    pub error_len: usize,
 }
 
 fn make_error_result(msg: String) -> AgnoResult {
@@ -66,6 +66,7 @@ impl CString {
     // safety: data must point to memory allocated with malloc() that is valid
     // for `length` bytes. Returns Err on invalid UTF-8 — panicking across the
     // FFI boundary would be undefined behavior.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn new(data: *const u8, length: usize) -> Result<CString, &'static str> {
         unsafe {
             if std::str::from_utf8(std::slice::from_raw_parts(data, length)).is_err() {
@@ -125,6 +126,7 @@ pub extern "C" fn write_agno_image_to_webp(path: *const c_char, len: usize, img:
 }
 
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn resize_image(
     img: *mut AgnoImage,
     new_width: usize,
@@ -144,7 +146,7 @@ pub extern "C" fn resize_image(
 pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
     let data = img.exif.get_tag_value_by_tag(img_tag);
 
-    let ret = match data {
+    match data {
         Some(value) => ExifData::from_exif_value(value),
         None => {
             debug!(
@@ -158,13 +160,7 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
                 typ: 0,
             }
         }
-    };
-
-    if ret.len == 0 {
-        return ret;
     }
-
-    ret
 }
 
 #[repr(C)]
@@ -303,9 +299,39 @@ pub extern "C" fn free_agno_buffer(buf: AgnoBuffer) {
     }
 }
 
+/// Frees the buffer of an `ExifData` returned by `get_exif_value`.
+///
+/// Every non-null `ExifData.data` is a `malloc()`-allocated copy owned by
+/// the caller. It must be released exactly once, and only via this
+/// function — not with `free()` or any other allocator. Null data is a
+/// no-op, so passing a not-found result is safe.
 #[unsafe(no_mangle)]
-pub extern "C" fn free_agno_image(img: &AgnoImage) {
-    AgnoImage::free(img);
+pub extern "C" fn free_exif_data(data: ExifData) {
+    if !data.data.is_null() {
+        unsafe {
+            libc::free(data.data as *mut c_void);
+        }
+    }
+}
+
+/// Frees an `AgnoImage` returned by this library.
+///
+/// Only pass pointers obtained from agno (e.g. `load_image_from_path`,
+/// `resize_image`, `load_image_page`). The pointer is reclaimed by the
+/// Rust allocator, so calling this on any other pointer — stack-allocated,
+/// `malloc()`'d, or already freed — is undefined behavior. Never release
+/// the pointer with `free()`. Null is a no-op.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn free_agno_image(img: *mut AgnoImage) {
+    if img.is_null() {
+        return;
+    }
+    // Reclaim the Box handed out by into_result! so the AgnoImage — including
+    // its ExifContext — is actually dropped. Drop frees the pixel buffer.
+    unsafe {
+        drop(Box::from_raw(img));
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -355,9 +381,7 @@ mod tests {
         assert_eq!(r.error_len, 0);
 
         // Clean up
-        unsafe {
-            let _ = Box::from_raw(r.image);
-        }
+        free_agno_image(r.image);
     }
 
     #[cfg(all(feature = "gif", feature = "pdf"))]
@@ -397,8 +421,8 @@ mod tests {
         unsafe {
             let img = &*result.image;
             assert_eq!(img.page_count, 2, "expected page_count=2 for 2-frame gif");
-            let _ = Box::from_raw(result.image);
         }
+        free_agno_image(result.image);
         free_agno_result(result);
         std::fs::remove_file(&path).ok();
     }
@@ -453,8 +477,8 @@ mod tests {
             assert_eq!(img.height, 1);
             // page 1 must be frame 1 (first pixel 200), not frame 0 (10).
             assert_eq!(img.as_slice()[0], 200);
-            let _ = Box::from_raw(result.image);
         }
+        free_agno_image(result.image);
         free_agno_result(result);
         std::fs::remove_file(&path).ok();
     }
