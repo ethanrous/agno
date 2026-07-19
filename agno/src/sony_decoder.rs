@@ -662,15 +662,18 @@ pub fn read_concatenated_strips<R: Read + Seek>(
     counts: &[u64],
 ) -> Result<Vec<u8>, DecodeError> {
     let total: usize = counts.iter().try_fold(0usize, |acc, &c| {
-        acc.checked_add(c as usize)
+        usize::try_from(c)
+            .ok()
+            .and_then(|c| acc.checked_add(c))
             .ok_or(DecodeError::CorruptData("size overflow"))
     })?;
     let mut buf = crate::guard::try_vec(0u8, total)?;
     let mut pos = 0usize;
     for (off, cnt) in offsets.iter().zip(counts.iter()) {
+        let cnt = usize::try_from(*cnt).map_err(|_| DecodeError::CorruptData("size overflow"))?;
         reader.seek(SeekFrom::Start(*off))?;
-        reader.read_exact(&mut buf[pos..pos + *cnt as usize])?;
-        pos += *cnt as usize;
+        reader.read_exact(&mut buf[pos..pos + cnt])?;
+        pos += cnt;
     }
     Ok(buf)
 }
