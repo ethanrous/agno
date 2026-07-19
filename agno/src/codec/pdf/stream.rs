@@ -36,16 +36,13 @@ fn apply_filter(
     match filter {
         b"FlateDecode" | b"Fl" => {
             const MAX_DECOMPRESSED_SIZE: usize = 256 * 1024 * 1024; // 256 MB
-            let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(data)
-                .map_err(|e| format!("FlateDecode: {e:?}"))?;
-            if decompressed.len() > MAX_DECOMPRESSED_SIZE {
-                return Err(format!(
-                    "FlateDecode: decompressed size {} exceeds limit of {} bytes",
-                    decompressed.len(),
-                    MAX_DECOMPRESSED_SIZE
-                )
-                .into());
-            }
+            // Limit enforced during inflation so a bomb can't allocate
+            // unbounded memory before a post-hoc size check.
+            let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
+                data,
+                MAX_DECOMPRESSED_SIZE,
+            )
+            .map_err(|e| format!("FlateDecode: {e:?}"))?;
             apply_png_predictor(decompressed, params)
         }
         b"ASCIIHexDecode" | b"AHx" => decode_ascii_hex(data),

@@ -293,6 +293,7 @@ impl DicomBuilder {
         if self.rows == 0 || self.columns == 0 {
             return Err("DICOM image has zero dimensions".into());
         }
+        crate::guard::check_dims(self.columns as u64, self.rows as u64)?;
         let bits_allocated = if self.bits_allocated == 0 {
             16
         } else {

@@ -173,6 +173,7 @@ impl<'a> GifParser<'a> {
 
         let width = u16::from_le_bytes([data[6], data[7]]);
         let height = u16::from_le_bytes([data[8], data[9]]);
+        crate::guard::check_dims(width as u64, height as u64)?;
         let packed = data[10];
         let background_index = data[11];
         // data[12] = pixel aspect ratio — ignore
@@ -251,6 +252,12 @@ impl<'a> GifParser<'a> {
         let top = u16::from_le_bytes([self.data[self.pos + 2], self.data[self.pos + 3]]);
         let width = u16::from_le_bytes([self.data[self.pos + 4], self.data[self.pos + 5]]);
         let height = u16::from_le_bytes([self.data[self.pos + 6], self.data[self.pos + 7]]);
+        // A 0-wide or 0-high frame is a legal (if pointless) degenerate GIF frame: the
+        // compose loops below iterate zero times, so it's harmless to let it through.
+        // Only guard nonzero dimensions against the oversized-allocation case.
+        if width != 0 && height != 0 {
+            crate::guard::check_dims(width as u64, height as u64)?;
+        }
         let packed = self.data[self.pos + 8];
         self.pos += 9;
         let local_palette = if packed & 0x80 != 0 {
@@ -374,7 +381,7 @@ fn build_background_canvas(
         .and_then(|n| n.checked_mul(3))
         .ok_or("GIF canvas dimensions overflow")?;
     let pixels = screen.width as usize * screen.height as usize;
-    let mut canvas = Vec::with_capacity(byte_len);
+    let mut canvas = crate::guard::try_with_capacity(byte_len)?;
     for _ in 0..pixels {
         canvas.extend_from_slice(&color);
     }
@@ -639,6 +646,48 @@ mod tests {
         assert!(gif_frame_count(&buf).is_err());
     }
 
+    #[test]
+    fn oversized_logical_screen_rejected_before_canvas_alloc() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GIF89a");
+        buf.extend_from_slice(&65535u16.to_le_bytes()); // width
+        buf.extend_from_slice(&65535u16.to_le_bytes()); // height
+        buf.push(0); // packed: no GCT
+        buf.push(0); // background
+        buf.push(0); // aspect
+        buf.push(0x3B); // trailer
+        let err = decode_gif_frame(&buf, 0).unwrap_err();
+        assert!(
+            err.to_string().contains("exceed"),
+            "expected dimension-limit error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn oversized_frame_descriptor_rejected() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GIF89a");
+        buf.extend_from_slice(&2u16.to_le_bytes()); // screen width
+        buf.extend_from_slice(&1u16.to_le_bytes()); // screen height
+        buf.push(0); // packed: no GCT
+        buf.push(0); // background
+        buf.push(0); // aspect
+        buf.push(0x2C); // image descriptor
+        buf.extend_from_slice(&0u16.to_le_bytes()); // left
+        buf.extend_from_slice(&0u16.to_le_bytes()); // top
+        buf.extend_from_slice(&65535u16.to_le_bytes()); // frame width
+        buf.extend_from_slice(&65535u16.to_le_bytes()); // frame height
+        buf.push(0); // packed: no local color table
+        buf.push(2); // lzw min code size
+        buf.extend_from_slice(&[1, 0x44, 0]); // one data sub-block + terminator
+        buf.push(0x3B); // trailer
+        let err = decode_gif_frame(&buf, 0).unwrap_err();
+        assert!(
+            err.to_string().contains("exceed"),
+            "expected dimension-limit error, got: {err}"
+        );
+    }
+
     /// Build a 2-frame 2x1 GIF programmatically. Frame 0 = (red, red). Frame 1 = (green, _) at offset 0.
     /// No disposal — second frame leaves the patch in place.
     fn make_two_frame_gif() -> Vec<u8> {
@@ -759,5 +808,58 @@ mod tests {
         // Frame 1: pixel 0 green (just painted), pixel 1 white (background, because disposal=2 wiped frame 0's rect)
         let (f1, _, _, _) = decode_gif_frame(&g, 1).unwrap();
         assert_eq!(f1, vec![0, 255, 0, 255, 255, 255]);
+    }
+
+    #[test]
+    fn zero_size_frame_is_harmless() {
+        // A hand-built 2x1 2-frame GIF where frame 1 is a degenerate 0x0 image descriptor.
+        // Per the GIF spec this is a legal (if pointless) frame: the compose loops iterate
+        // zero times and it should not affect decoding any other frame in the file.
+        //
+        // Layout: GIF89a header, 2x1 LSD, GCT [white, red, green, black], frame 0 (2x1, red,red),
+        // frame 1 (0x0, empty LZW stream), trailer.
+        let mut g = Vec::new();
+        g.extend_from_slice(b"GIF89a");
+        g.extend_from_slice(&2u16.to_le_bytes()); // width
+        g.extend_from_slice(&1u16.to_le_bytes()); // height
+        g.push(0b1000_0001); // packed: GCT present, size=1 -> 4 entries
+        g.push(0); // bg index = 0 (white)
+        g.push(0); // aspect
+        g.extend_from_slice(&[255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 0]); // white, red, green, black
+
+        // Frame 0: image descriptor, left=0, top=0, w=2, h=1, packed=0 (no LCT, not interlaced).
+        g.push(0x2C);
+        g.extend_from_slice(&0u16.to_le_bytes());
+        g.extend_from_slice(&0u16.to_le_bytes());
+        g.extend_from_slice(&2u16.to_le_bytes());
+        g.extend_from_slice(&1u16.to_le_bytes());
+        g.push(0);
+        // LZW min_code_size=2, codes for [1, 1] (red, red) — same stream as
+        // disposal_method_2_restores_background's frame 0.
+        g.push(0x02);
+        g.push(0x02);
+        g.extend_from_slice(&[0x4C, 0x0A]);
+        g.push(0x00);
+
+        // Frame 1: degenerate 0x0 image descriptor, no GCE, no local color table.
+        g.push(0x2C);
+        g.extend_from_slice(&0u16.to_le_bytes()); // left
+        g.extend_from_slice(&0u16.to_le_bytes()); // top
+        g.extend_from_slice(&0u16.to_le_bytes()); // width = 0
+        g.extend_from_slice(&0u16.to_le_bytes()); // height = 0
+        g.push(0); // packed: no LCT
+        g.push(0x02); // lzw min code size
+        // LZW stream: clear(4), eoi(5) — decodes to zero bytes, matching the zero pixel count.
+        g.push(0x01); // sub-block length
+        g.push(0x2C); // clear+eoi packed into a single byte
+        g.push(0x00); // sub-block terminator
+
+        g.push(0x3B); // trailer
+
+        let (rgb0, w, h, count) = decode_gif_frame(&g, 0).unwrap();
+        assert_eq!((w, h, count), (2, 1, 2));
+        assert_eq!(rgb0, vec![255, 0, 0, 255, 0, 0]);
+
+        assert_eq!(gif_frame_count(&g).unwrap(), 2);
     }
 }

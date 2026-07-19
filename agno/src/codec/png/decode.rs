@@ -63,9 +63,7 @@ pub fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
 
     let ihdr = ihdr.ok_or("Missing IHDR chunk")?;
 
-    if ihdr.width == 0 || ihdr.height == 0 {
-        return Err("PNG has zero width or height".into());
-    }
+    crate::guard::check_dims(ihdr.width as u64, ihdr.height as u64)?;
 
     if ihdr.interlace != 0 {
         return Err("Interlaced PNG (Adam7) is not supported".into());
@@ -79,7 +77,14 @@ pub fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
         return Err("PNG contains no IDAT chunks".into());
     }
 
-    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(&idat_data)
+    // Cap decompression at ~2x the header-implied size + 64 KB. This protects against
+    // zip bombs while tolerating trailing bytes that real encoders sometimes emit after
+    // the final scanline (which libpng accepts with only a warning). The limit is
+    // (expected * 2) + 64 KB, so a 1x1 image (expected=4) has limit=65544 and still rejects
+    // a 1 MB bomb, while allowing modest trailing data.
+    let expected = (ihdr.height as usize) * (1 + scanline_bytes(&ihdr));
+    let limit = expected.saturating_mul(2).saturating_add(64 * 1024);
+    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&idat_data, limit)
         .map_err(|e| format!("PNG zlib decompression failed: {:?}", e))?;
 
     let raw_pixels = reconstruct_filters(&decompressed, &ihdr)?;
@@ -193,7 +198,7 @@ fn reconstruct_filters(decompressed: &[u8], ihdr: &IhdrInfo) -> Result<Vec<u8>, 
         .into());
     }
 
-    let mut output = vec![0u8; h * stride];
+    let mut output = crate::guard::try_vec(0u8, h * stride)?;
     let mut src_pos = 0;
 
     for y in 0..h {
@@ -268,7 +273,7 @@ fn to_rgb8(raw: &[u8], ihdr: &IhdrInfo, palette: &[u8]) -> Result<Vec<u8>, Box<d
     let w = ihdr.width as usize;
     let h = ihdr.height as usize;
     let pixel_count = w * h;
-    let mut rgb = vec![0u8; pixel_count * 3];
+    let mut rgb = crate::guard::try_vec(0u8, pixel_count * 3)?;
 
     match (ihdr.color_type, ihdr.bit_depth) {
         // Grayscale 8-bit
@@ -703,6 +708,42 @@ mod tests {
         let (rgb, w, h) = decode_png(&png).unwrap();
         assert_eq!((w, h), (2, 2));
         assert_eq!(rgb, vec![10, 20, 30, 40, 50, 60, 11, 22, 33, 44, 55, 66]);
+    }
+
+    #[test]
+    fn test_rejects_dimensions_beyond_limits() {
+        let scanline = vec![0u8, 255, 0, 128];
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&scanline, 6);
+        let png = build_minimal_png(u32::MAX, u32::MAX, 8, 2, &[], &compressed);
+        assert!(decode_png(&png).is_err());
+    }
+
+    #[test]
+    fn test_rejects_idat_inflating_beyond_declared_size() {
+        // A 1x1 image whose IDAT decompresses to a megabyte of zeros.
+        let bomb = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0u8; 1 << 20], 6);
+        let png = build_minimal_png(1, 1, 8, 2, &[], &bomb);
+        assert!(decode_png(&png).is_err());
+    }
+
+    #[test]
+    fn test_tolerates_trailing_idat_data() {
+        // Test that PNG decoder tolerates trailing bytes in the decompressed IDAT,
+        // which real encoders sometimes emit. libpng accepts this with a warning.
+        // Build a 1x1 RGB8 PNG: raw stream is filter byte (0) + 3 RGB bytes.
+        let mut raw_stream = vec![0u8]; // filter byte = None
+        raw_stream.extend_from_slice(&[10, 20, 30]); // R=10, G=20, B=30
+        // Append ~100 extra bytes to the raw stream before compressing
+        raw_stream.extend_from_slice(&vec![0u8; 100]);
+
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&raw_stream, 6);
+        let png = build_minimal_png(1, 1, 8, 2, &[], &compressed);
+
+        // Should succeed despite trailing data
+        let (rgb, w, h) = decode_png(&png).unwrap();
+        assert_eq!(w, 1);
+        assert_eq!(h, 1);
+        assert_eq!(rgb, vec![10, 20, 30]);
     }
 
     // --- Test helpers ---

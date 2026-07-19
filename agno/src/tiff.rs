@@ -270,7 +270,7 @@ fn read_ascii_tag<R: Read + Seek>(
             return Ok(None);
         }
         let count = ent.count as usize;
-        let mut buf = vec![0u8; count];
+        let mut buf = crate::guard::try_vec(0u8, count)?;
         read_tag_value_bytes(r, e, ent, &mut buf)?;
         // Trim trailing NUL if present
         if let Some(&0) = buf.last() {
@@ -292,7 +292,7 @@ fn read_long_array_tag<R: Read + Seek>(
     tag_id: u16,
 ) -> Result<Option<Vec<u32>>, DecodeError> {
     if let Some(ent) = ifd.entries.iter().find(|t| t.tag == tag_id) {
-        let mut out = vec![0u32; ent.count as usize];
+        let mut out = crate::guard::try_vec(0u32, ent.count as usize)?;
         read_tag_value_u32s(r, e, ent, &mut out)?;
         return Ok(Some(out));
     }
@@ -309,7 +309,7 @@ fn read_short_array_tag<R: Read + Seek>(
         if ent.typ != 3 || ent.count == 0 {
             return Ok(None);
         }
-        let mut out = vec![0u16; ent.count as usize];
+        let mut out = crate::guard::try_vec(0u16, ent.count as usize)?;
         read_tag_value_u16s(r, e, ent, &mut out)?;
         return Ok(Some(out));
     }
@@ -464,7 +464,7 @@ fn read_dng_version_tag<R: Read + Seek>(
         if ent.typ != 1 || ent.count < 4 {
             return Ok(None);
         }
-        let mut buf = vec![0u8; ent.count as usize];
+        let mut buf = crate::guard::try_vec(0u8, ent.count as usize)?;
         read_tag_value_bytes(r, e, ent, &mut buf)?;
         if buf.len() >= 4 {
             let v = ((buf[0] as u32) << 24)

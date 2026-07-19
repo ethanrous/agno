@@ -74,7 +74,7 @@ fn render_rgb(
     planar: u16,
     bits_allocated: u16,
     bits_stored: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let channel = |sample: usize| -> u8 {
         if bits_allocated == 16 {
             let raw = u16::from_le_bytes([frame[sample * 2], frame[sample * 2 + 1]]);
@@ -97,7 +97,7 @@ fn render_rgb(
             }
         }
     };
-    let mut out = vec![0u8; n * 3];
+    let mut out = crate::guard::try_vec(0u8, n * 3)?;
     for i in 0..n {
         let (r, g, b) = if planar == 0 {
             (i * 3, i * 3 + 1, i * 3 + 2) // interleaved RGBRGB
@@ -108,7 +108,7 @@ fn render_rgb(
         out[i * 3 + 1] = channel(g);
         out[i * 3 + 2] = channel(b);
     }
-    out
+    Ok(out)
 }
 
 fn render_frame(img: &DicomImage, frame_index: usize) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -157,16 +157,16 @@ fn render_frame(img: &DicomImage, frame_index: usize) -> Result<Vec<u8>, Box<dyn
                 )
                 .into());
             }
-            Ok(render_rgb(
+            render_rgb(
                 frame,
                 n,
                 img.planar_configuration,
                 img.bits_allocated,
                 img.bits_stored as u32,
-            ))
+            )
         }
         Photometric::Monochrome1 | Photometric::Monochrome2 if spp == 1 => {
-            Ok(render_mono(img, frame, n))
+            render_mono(img, frame, n)
         }
         other => Err(format!(
             "unsupported DICOM pixel format: photometric={other:?}, samples_per_pixel={spp}"
@@ -177,7 +177,7 @@ fn render_frame(img: &DicomImage, frame_index: usize) -> Result<Vec<u8>, Box<dyn
 
 /// Render a single-sample MONOCHROME1/2 frame to grayscale RGB8 in one pass over
 /// the sample bytes (no intermediate per-pixel buffer).
-fn render_mono(img: &DicomImage, frame: &[u8], n: usize) -> Vec<u8> {
+fn render_mono(img: &DicomImage, frame: &[u8], n: usize) -> Result<Vec<u8>, Box<dyn Error>> {
     let signed = img.pixel_representation == 1;
     let bits_allocated = img.bits_allocated;
     let bits_stored = img.bits_stored as u32; // build() guarantees >= 1
@@ -211,7 +211,7 @@ fn render_mono(img: &DicomImage, frame: &[u8], n: usize) -> Vec<u8> {
     };
     let invert = img.photometric == Photometric::Monochrome1;
 
-    let mut out = Vec::with_capacity(n * 3);
+    let mut out = crate::guard::try_with_capacity(n * 3)?;
     for i in 0..n {
         let mut v = window_to_u8(value(i), center, width);
         if invert {
@@ -221,7 +221,7 @@ fn render_mono(img: &DicomImage, frame: &[u8], n: usize) -> Vec<u8> {
         out.push(v);
         out.push(v);
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -259,6 +259,19 @@ mod tests {
         d.extend_from_slice(&short(0x0028, 0x1052, b"DS", &pad(b"0".to_vec(), b' ')));
         d.extend_from_slice(&short(0x0028, 0x1053, b"DS", &pad(b"1".to_vec(), b' ')));
         d
+    }
+
+    #[test]
+    fn oversized_dimensions_rejected_at_parse() {
+        let mut ds = Vec::new();
+        ds.extend_from_slice(&short(0x0028, 0x0010, b"US", &us(65535))); // rows
+        ds.extend_from_slice(&short(0x0028, 0x0011, b"US", &us(65535))); // columns
+        let file = make_part10(&ds, &[0u8; 8]);
+        let err = decode_dicom(&file).unwrap_err();
+        assert!(
+            err.to_string().contains("exceed"),
+            "expected dimension-limit error, got: {err}"
+        );
     }
 
     #[test]

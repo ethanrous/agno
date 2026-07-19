@@ -7,6 +7,7 @@ pub enum DecodeError {
     Io(std::io::Error),
     CorruptData(&'static str),
     UnsupportedFormat(SonyVariant),
+    AllocationFailed(String),
 }
 
 impl std::fmt::Display for DecodeError {
@@ -17,6 +18,7 @@ impl std::fmt::Display for DecodeError {
             DecodeError::UnsupportedFormat(v) => {
                 write!(f, "Unsupported Sony RAW format: {:?}", v)
             }
+            DecodeError::AllocationFailed(msg) => write!(f, "Allocation failed: {}", msg),
         }
     }
 }
@@ -24,6 +26,12 @@ impl std::fmt::Display for DecodeError {
 impl From<std::io::Error> for DecodeError {
     fn from(err: std::io::Error) -> DecodeError {
         DecodeError::Io(err)
+    }
+}
+
+impl From<crate::guard::GuardError> for DecodeError {
+    fn from(err: crate::guard::GuardError) -> DecodeError {
+        DecodeError::AllocationFailed(err.to_string())
     }
 }
 
@@ -299,7 +307,12 @@ impl SonyDecrypt for SonyDecryptor {
 pub fn decrypt_sr2_data(decryptor: &mut SonyDecryptor, data: &mut [u8], key: u32) {
     // Convert bytes to u32 words (little-endian)
     let word_count = data.len() / 4;
-    let mut words = Vec::with_capacity(word_count);
+    // Fallible: word_count is bounded by the caller's already-allocated `data`, but
+    // guard against allocation failure anyway rather than aborting the process. If the
+    // probe fails, leave `data` undecrypted instead of aborting (signature is infallible).
+    let Ok(mut words) = crate::guard::try_with_capacity(word_count) else {
+        return;
+    };
     for chunk in data.chunks_exact(4) {
         words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
@@ -479,11 +492,13 @@ pub fn sony_arw2_load_raw<R: Read>(
     dims: Dimensions,
     tone_curve: &[u16],
 ) -> Result<SonyLoadResult, DecodeError> {
+    crate::guard::check_dims(dims.raw_width as u64, dims.raw_height as u64)?;
+
     let raw_width = dims.raw_width;
-    let mut pixels = vec![0u16; dims.raw_width * dims.raw_height];
+    let mut pixels = crate::guard::try_vec(0u16, dims.raw_width * dims.raw_height)?;
 
     // dcraw allocates raw_width + 1 so the 16-bit reads inside a block can over-read by one byte.
-    let mut row_buf = vec![0u8; raw_width + 1];
+    let mut row_buf = crate::guard::try_vec(0u8, raw_width + 1)?;
 
     for row in 0..dims.output_height {
         reader.read_exact(&mut row_buf[..raw_width])?;
@@ -564,12 +579,14 @@ pub fn sony_arw_load_raw_from_stream<R: Read>(
     zero_after_ff: bool,
     dng_version: Option<u32>,
 ) -> Result<SonyLoadResult, DecodeError> {
+    crate::guard::check_dims(dims.raw_width as u64, dims.raw_height as u64)?;
+
     let mut bs = JpegBitstream::new(reader);
     bs.set_zero_after_ff(zero_after_ff);
     bs.dng_version = dng_version;
     bs.reset_state();
 
-    // Build Huffman table (fixed)
+    // Build Huffman table (fixed size, not header-derived)
     const TAB: [u16; 18] = [
         0x0f11, 0x0f10, 0x0e0f, 0x0d0e, 0x0c0d, 0x0b0c, 0x0a0b, 0x090a, 0x0809, 0x0708, 0x0607,
         0x0506, 0x0405, 0x0304, 0x0303, 0x0300, 0x0202, 0x0201,
@@ -585,7 +602,7 @@ pub fn sony_arw_load_raw_from_stream<R: Read>(
         }
     }
 
-    let mut pixels = vec![0u16; dims.raw_width * dims.raw_height];
+    let mut pixels = crate::guard::try_vec(0u16, dims.raw_width * dims.raw_height)?;
     let mut acc: i32 = 0;
 
     for col in (0..dims.raw_width).rev() {
@@ -617,14 +634,16 @@ pub fn sony_uncompressed14_load_raw<R: Read>(
     reader: &mut R,
     dims: Dimensions,
 ) -> Result<SonyLoadResult, DecodeError> {
-    let mut pixels = vec![0u16; dims.raw_width * dims.raw_height];
-    let mut row = vec![0u8; dims.output_width * 2];
+    crate::guard::check_dims(dims.raw_width as u64, dims.raw_height as u64)?;
+
+    let mut pixels = crate::guard::try_vec(0u16, dims.raw_width * dims.raw_height)?;
+    let mut row = crate::guard::try_vec(0u8, dims.output_width * 2)?;
 
     for y in 0..dims.output_height {
         reader.read_exact(&mut row)?;
         for x in 0..dims.output_width {
-            let lo = row[2 * x] as u8;
-            let hi = row[2 * x + 1] as u8;
+            let lo = row[2 * x];
+            let hi = row[2 * x + 1];
             let v = u16::from_le_bytes([lo, hi]);
             pixels[y * dims.raw_width + x] = v; // 14-bit data in 16-bit container
         }
@@ -646,7 +665,7 @@ pub fn read_concatenated_strips<R: Read + Seek>(
         acc.checked_add(c as usize)
             .ok_or(DecodeError::CorruptData("size overflow"))
     })?;
-    let mut buf = vec![0u8; total];
+    let mut buf = crate::guard::try_vec(0u8, total)?;
     let mut pos = 0usize;
     for (off, cnt) in offsets.iter().zip(counts.iter()) {
         reader.seek(SeekFrom::Start(*off))?;
@@ -730,5 +749,50 @@ mod tests {
             assert_eq!(res.pixels[col], expected, "column {col}");
         }
         assert_eq!(res.white_level, 0x3ff0);
+    }
+
+    // Absurd Dimensions (header-declared, not attacker-controllable in a way the guard
+    // can't catch): raw_width * raw_height overflows the guard's MAX_PIXELS budget, so
+    // these must reject via `check_dims` before any multi-terabyte allocation is attempted.
+    fn absurd_dims() -> Dimensions {
+        Dimensions {
+            raw_width: 1 << 20,
+            raw_height: 1 << 20,
+            output_width: 1 << 20,
+            output_height: 1 << 20,
+        }
+    }
+
+    #[test]
+    fn sony_arw2_load_raw_rejects_absurd_dimensions() {
+        let tone_curve = vec![0u16; 0x4000];
+        let mut cur = Cursor::new(Vec::<u8>::new());
+        let result = sony_arw2_load_raw(&mut cur, absurd_dims(), &tone_curve);
+        assert!(result.is_err(), "expected absurd dimensions to be rejected");
+    }
+
+    #[test]
+    fn sony_arw_load_raw_from_stream_rejects_absurd_dimensions() {
+        let mut cur = Cursor::new(Vec::<u8>::new());
+        let result = sony_arw_load_raw_from_stream(&mut cur, absurd_dims(), true, None);
+        assert!(result.is_err(), "expected absurd dimensions to be rejected");
+    }
+
+    #[test]
+    fn sony_uncompressed14_load_raw_rejects_absurd_dimensions() {
+        let mut cur = Cursor::new(Vec::<u8>::new());
+        let result = sony_uncompressed14_load_raw(&mut cur, absurd_dims());
+        assert!(result.is_err(), "expected absurd dimensions to be rejected");
+    }
+
+    #[test]
+    fn read_concatenated_strips_rejects_huge_total() {
+        // usize::MAX byte total: guaranteed to exceed any real address space, so the
+        // fallible allocation must return an error instead of aborting the process.
+        let mut cur = Cursor::new(Vec::<u8>::new());
+        let offsets = [0u64, usize::MAX as u64 / 2];
+        let counts = [usize::MAX as u64 / 2, usize::MAX as u64 / 2];
+        let result = read_concatenated_strips(&mut cur, &offsets, &counts);
+        assert!(result.is_err(), "expected huge strip total to be rejected");
     }
 }

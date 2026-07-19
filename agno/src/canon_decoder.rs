@@ -279,7 +279,7 @@ pub fn canon_ljpeg_load_raw<R: Read + Seek>(
             0xC4 => {
                 // DHT - Define Huffman Table
                 let length = read_be_u16(reader)? as usize - 2;
-                let mut data = vec![0u8; length];
+                let mut data = crate::guard::try_vec(0u8, length)?;
                 reader.read_exact(&mut data)?;
 
                 let mut pos = 0;
@@ -343,7 +343,7 @@ pub fn canon_ljpeg_load_raw<R: Read + Seek>(
             0xDA => {
                 // SOS - Start of Scan
                 let length = read_be_u16(reader)? as usize - 2;
-                let mut sos_data = vec![0u8; length];
+                let mut sos_data = crate::guard::try_vec(0u8, length)?;
                 reader.read_exact(&mut sos_data)?;
 
                 let ns = sos_data[0] as usize; // Number of components in scan
@@ -405,9 +405,11 @@ fn decode_ljpeg_data<R: Read>(
     comp_tables: &[usize],
     slice_info: Option<Cr2SliceInfo>,
 ) -> Result<CanonLoadResult, DecodeError> {
+    crate::guard::check_dims(dims.raw_width as u64, dims.raw_height as u64)?;
+
     let mut bs = LjpegBitstream::new(reader);
 
-    let mut pixels = vec![0u16; dims.raw_width * dims.raw_height];
+    let mut pixels = crate::guard::try_vec(0u16, dims.raw_width * dims.raw_height)?;
 
     // Initial prediction value: 2^(precision-1) is standard for LJPEG
     let initial_pred = 1 << (precision - 1);
@@ -591,10 +593,12 @@ pub fn canon_uncompressed_load_raw<R: Read>(
     dims: Dimensions,
     bits_per_sample: u16,
 ) -> Result<CanonLoadResult, DecodeError> {
-    let mut pixels = vec![0u16; dims.raw_width * dims.raw_height];
+    crate::guard::check_dims(dims.raw_width as u64, dims.raw_height as u64)?;
+
+    let mut pixels = crate::guard::try_vec(0u16, dims.raw_width * dims.raw_height)?;
 
     // Read 16-bit little-endian values
-    let mut row_buf = vec![0u8; dims.output_width * 2];
+    let mut row_buf = crate::guard::try_vec(0u8, dims.output_width * 2)?;
 
     for y in 0..dims.output_height {
         reader.read_exact(&mut row_buf)?;
@@ -652,4 +656,38 @@ fn read_be_u16<R: Read>(reader: &mut R) -> Result<u16, DecodeError> {
     let mut b = [0u8; 2];
     reader.read_exact(&mut b)?;
     Ok(u16::from_be_bytes(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    // Absurd Dimensions (header-declared): raw_width * raw_height overflows the guard's
+    // MAX_PIXELS budget, so decode functions must reject via `check_dims` before any
+    // multi-terabyte allocation is attempted.
+    fn absurd_dims() -> Dimensions {
+        Dimensions {
+            raw_width: 1 << 20,
+            raw_height: 1 << 20,
+            output_width: 1 << 20,
+            output_height: 1 << 20,
+        }
+    }
+
+    #[test]
+    fn canon_uncompressed_load_raw_rejects_absurd_dimensions() {
+        let mut cur = Cursor::new(Vec::<u8>::new());
+        let result = canon_uncompressed_load_raw(&mut cur, absurd_dims(), 14);
+        assert!(result.is_err(), "expected absurd dimensions to be rejected");
+    }
+
+    #[test]
+    fn decode_ljpeg_data_rejects_absurd_dimensions() {
+        let huff_tables: [Option<HuffmanTable>; 4] = [None, None, None, None];
+        let mut cur = Cursor::new(Vec::<u8>::new());
+        let result = decode_ljpeg_data(&mut cur, absurd_dims(), 1, 14, &huff_tables, &[], None);
+        assert!(result.is_err(), "expected absurd dimensions to be rejected");
+    }
 }

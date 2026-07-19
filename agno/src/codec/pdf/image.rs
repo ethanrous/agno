@@ -31,12 +31,13 @@ pub fn decode_image_xobject(
     }
 
     // Raw pixel data — convert to RGB8 based on color space and bpc
+    crate::guard::check_dims(width as u64, height as u64)?;
     let num_components = color_space.num_components();
     let pixel_count = (width as usize)
         .checked_mul(height as usize)
         .and_then(|n| n.checked_mul(3))
         .ok_or("Image dimensions overflow")?;
-    let mut rgb_data = Vec::with_capacity(pixel_count);
+    let mut rgb_data = crate::guard::try_with_capacity(pixel_count)?;
     let max_val = ((1u32 << bits_per_component) - 1) as f64;
 
     match bits_per_component {
@@ -155,6 +156,15 @@ mod tests {
     #[test]
     fn unsupported_bpc() {
         let result = decode_image_xobject(&[], 1, 1, 12, &ColorSpace::DeviceRGB, None);
+        assert!(result.is_err());
+    }
+
+    /// Declared dimensions implying a multi-gigabyte buffer must be rejected
+    /// before allocation, regardless of how little stream data is present.
+    #[test]
+    fn oversized_dimensions_rejected() {
+        let data = vec![0u8; 4];
+        let result = decode_image_xobject(&data, 65535, 65535, 8, &ColorSpace::DeviceGray, None);
         assert!(result.is_err());
     }
 }
