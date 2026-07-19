@@ -624,6 +624,31 @@ impl Sps {
         let pic_width_in_luma_samples = reader.read_ue()?;
         let pic_height_in_luma_samples = reader.read_ue()?;
 
+        // This is a decoder capacity/sanity cap, not a level conformance
+        // check: a corrupt or malicious SPS must not be able to size a
+        // multi-gigabyte frame buffer, which would abort the process. It
+        // deliberately does NOT enforce HEVC level 6.2's MaxLumaPs
+        // (35,651,584 samples) -- real single-tile still-image encoders
+        // (e.g. libheif/x265 without grid tiling) legally emit streams that
+        // exceed level 6.2, and those decoded fine before such a check
+        // existed. Reuse the same per-side/global-pixel guard as the rest of
+        // the codebase, plus an additional total-sample cap sized well above
+        // any real still camera sensor (including 150 MP medium format).
+        crate::guard::check_dims(
+            pic_width_in_luma_samples as u64,
+            pic_height_in_luma_samples as u64,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        const MAX_STILL_LUMA_PS: u64 = 1 << 28;
+        ensure!(
+            (pic_width_in_luma_samples as u64) * (pic_height_in_luma_samples as u64)
+                <= MAX_STILL_LUMA_PS,
+            "SPS picture dimensions {}x{} exceed still-image decoder limit",
+            pic_width_in_luma_samples,
+            pic_height_in_luma_samples
+        );
+
         let conformance_window_flag = reader.read_flag()?;
         let (
             conf_win_left_offset,
@@ -1242,10 +1267,8 @@ mod tests {
         assert_eq!(sps.max_tb_log2_size(), 5);
     }
 
-    /// Build a minimal SPS bitstream for a 1920x1080 still image and verify
-    /// that parsing recovers the dimensions and coding parameters.
-    #[test]
-    fn parse_synthetic_sps() {
+    /// Build a minimal SPS bitstream for a still image with the given dimensions.
+    fn build_synthetic_sps(width: u32, height: u32) -> Vec<u8> {
         let mut w = BitWriter::new();
 
         // sps_video_parameter_set_id = 0 (4 bits)
@@ -1268,8 +1291,8 @@ mod tests {
         // SPS fields
         w.write_ue(0); // sps_seq_parameter_set_id
         w.write_ue(1); // chroma_format_idc = 4:2:0
-        w.write_ue(1920); // pic_width_in_luma_samples
-        w.write_ue(1080); // pic_height_in_luma_samples
+        w.write_ue(width); // pic_width_in_luma_samples
+        w.write_ue(height); // pic_height_in_luma_samples
         w.write(0, 1); // conformance_window_flag = 0
         w.write_ue(0); // bit_depth_luma_minus8
         w.write_ue(0); // bit_depth_chroma_minus8
@@ -1294,7 +1317,14 @@ mod tests {
         w.write(1, 1); // strong_intra_smoothing_enabled_flag
         w.write(0, 1); // vui_parameters_present_flag
 
-        let data = w.finish();
+        w.finish()
+    }
+
+    /// Verify that parsing a synthetic 1920x1080 SPS recovers the dimensions
+    /// and coding parameters.
+    #[test]
+    fn parse_synthetic_sps() {
+        let data = build_synthetic_sps(1920, 1080);
         let mut reader = BitReader::new(&data);
         let sps = Sps::parse(&mut reader, 0).expect("SPS parse should succeed");
 
@@ -1312,6 +1342,29 @@ mod tests {
         assert!(!sps._conformance_window_flag);
         assert!(sps._amp_enabled_flag);
         assert!(sps._sps_temporal_mvp_enabled_flag);
+    }
+
+    /// An SPS whose declared dimensions are far beyond any real picture must
+    /// be rejected at parse time, before any frame buffer is sized from them.
+    #[test]
+    fn sps_rejects_absurd_dimensions() {
+        let data = build_synthetic_sps(131_072, 131_072);
+        let mut reader = BitReader::new(&data);
+        assert!(Sps::parse(&mut reader, 0).is_err());
+    }
+
+    /// Real-world single-tile HEIC encoders (e.g. libheif/x265 without grid
+    /// tiling) legally emit streams that exceed HEVC level 6.2's MaxLumaPs.
+    /// A 8192x6144 (50.3 MP) picture is above the old 35.6 MP level-6.2 cap
+    /// but must still parse: it's well under the decoder's capacity cap.
+    #[test]
+    fn sps_accepts_large_single_tile_dimensions() {
+        let data = build_synthetic_sps(8192, 6144);
+        let mut reader = BitReader::new(&data);
+        let sps = Sps::parse(&mut reader, 0).expect("large single-tile SPS should parse");
+
+        assert_eq!(sps.pic_width_in_luma_samples, 8192);
+        assert_eq!(sps.pic_height_in_luma_samples, 6144);
     }
 
     #[test]

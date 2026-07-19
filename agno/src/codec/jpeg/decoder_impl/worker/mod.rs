@@ -82,7 +82,13 @@ pub fn compute_image_parallel(
     let color_convert_func = choose_color_convert_func(components.len(), color_transform)?;
     let upsampler = Upsampler::new(components, output_size.width, output_size.height)?;
     let line_size = output_size.width as usize * components.len();
-    let mut image = vec![0u8; line_size * output_size.height as usize];
+    let total_size = line_size
+        .checked_mul(output_size.height as usize)
+        .ok_or_else(|| {
+            super::error::Error::Format("JPEG output buffer size overflows usize".to_string())
+        })?;
+    let mut image = crate::guard::try_vec(0u8, total_size)
+        .map_err(|e| super::error::Error::Format(e.to_string()))?;
 
     for (row, line) in image.chunks_mut(line_size).enumerate() {
         upsampler.upsample_and_interleave_row(

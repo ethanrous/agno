@@ -738,6 +738,10 @@ fn render_inline_image(
     if img_w == 0 || img_h == 0 {
         return;
     }
+    if let Err(e) = crate::guard::check_dims(img_w as u64, img_h as u64) {
+        tracing::warn!(error = %e, width = img_w, height = img_h, "Skipping PDF inline image: dimensions exceed limits");
+        return;
+    }
 
     let bpc = dict.get_i64(b"BitsPerComponent").unwrap_or(1) as u8;
     let is_mask = dict
@@ -836,7 +840,28 @@ fn render_inline_mask(
     let g = (color.g.clamp(0.0, 1.0) * 255.0) as u8;
     let b = (color.b.clamp(0.0, 1.0) * 255.0) as u8;
 
-    let mut rgba = vec![0u8; img_w as usize * img_h as usize * 4];
+    // check_dims allows up to 2^30 pixels, so the *4 can overflow a 32-bit usize.
+    let rgba_len = match (img_w as usize)
+        .checked_mul(img_h as usize)
+        .and_then(|px| px.checked_mul(4))
+    {
+        Some(len) => len,
+        None => {
+            tracing::warn!(
+                width = img_w,
+                height = img_h,
+                "Skipping PDF inline mask: buffer size overflows usize"
+            );
+            return;
+        }
+    };
+    let mut rgba = match crate::guard::try_vec(0u8, rgba_len) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, width = img_w, height = img_h, "Skipping PDF inline mask: buffer allocation failed");
+            return;
+        }
+    };
     let row_bytes = (img_w as usize).div_ceil(8);
 
     for y in 0..img_h as usize {

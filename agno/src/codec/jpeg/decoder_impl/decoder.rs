@@ -379,9 +379,10 @@ impl<R: Read> Decoder<R> {
                             .map(|c| {
                                 let block_count =
                                     c.block_size.width as usize * c.block_size.height as usize;
-                                vec![0; block_count * 64]
+                                crate::guard::try_vec(0i16, block_count * 64)
                             })
-                            .collect();
+                            .collect::<core::result::Result<Vec<_>, _>>()
+                            .map_err(|e| Error::Format(e.to_string()))?;
                     }
 
                     if frame.coding_process == CodingProcess::Lossless {

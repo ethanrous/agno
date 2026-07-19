@@ -218,6 +218,9 @@ pub fn parse_sof<R: Read>(reader: &mut R, marker: Marker) -> Result<FrameInfo> {
         return Err(Error::Format("zero width in frame header".to_owned()));
     }
 
+    crate::guard::check_dims(width as u64, height as u64)
+        .map_err(|e| Error::Format(e.to_string()))?;
+
     let component_count = read_u8(reader)?;
 
     if component_count == 0 {
@@ -786,4 +789,35 @@ pub fn parse_app<R: Read>(reader: &mut R, marker: Marker) -> Result<Option<AppDa
 
     skip_bytes(reader, length - bytes_read)?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// SOF payload: length(2) precision(1) height(2) width(2) ncomp(1) + 3 bytes/comp.
+    fn sof0_payload(width: u16, height: u16) -> Vec<u8> {
+        let mut p = vec![0x00, 0x0B, 8];
+        p.extend_from_slice(&height.to_be_bytes());
+        p.extend_from_slice(&width.to_be_bytes());
+        p.extend_from_slice(&[1, 1, 0x11, 0]);
+        p
+    }
+
+    #[test]
+    fn sof_accepts_normal_dimensions() {
+        let payload = sof0_payload(4032, 3024);
+        let frame = parse_sof(&mut Cursor::new(payload), SOF(0)).expect("SOF should parse");
+        assert_eq!(frame.image_size.width, 4032);
+        assert_eq!(frame.image_size.height, 3024);
+    }
+
+    /// A frame whose total pixel count implies a multi-gigabyte decode buffer
+    /// must be rejected at parse time.
+    #[test]
+    fn sof_rejects_oversized_pixel_count() {
+        let payload = sof0_payload(u16::MAX, u16::MAX);
+        assert!(parse_sof(&mut Cursor::new(payload), SOF(0)).is_err());
+    }
 }

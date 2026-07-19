@@ -1,5 +1,6 @@
 pub mod agno_image;
 pub mod codec;
+pub mod guard;
 pub mod lib_interface;
 
 pub mod logging;

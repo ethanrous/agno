@@ -43,9 +43,9 @@ pub fn decode_webp(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
     let y_h = mb_height * 16;
     let uv_h = mb_height * 8;
 
-    let mut y_plane = vec![0u8; y_stride * y_h];
-    let mut u_plane = vec![0u8; uv_stride * uv_h];
-    let mut v_plane = vec![0u8; uv_stride * uv_h];
+    let mut y_plane = crate::guard::try_vec(0u8, y_stride * y_h)?;
+    let mut u_plane = crate::guard::try_vec(0u8, uv_stride * uv_h)?;
+    let mut v_plane = crate::guard::try_vec(0u8, uv_stride * uv_h)?;
 
     // Decode token partition and reconstruct macroblocks.
     let mut token_dec = BoolDecoder::new(token_part_data);
@@ -277,6 +277,7 @@ fn parse_frame_header(
     }
     let width = u16::from_le_bytes([vp8[6], vp8[7]]) & 0x3FFF;
     let height = u16::from_le_bytes([vp8[8], vp8[9]]) & 0x3FFF;
+    crate::guard::check_dims(width as u64, height as u64)?;
 
     let first_start = 10;
     let first_end = first_start + first_part_size;
@@ -945,6 +946,22 @@ mod tests {
             return 100.0;
         }
         10.0 * (255.0_f64 * 255.0 / mse).log10()
+    }
+
+    /// A frame header declaring a zero dimension must be rejected instead of
+    /// decoding to an empty image.
+    #[test]
+    fn decode_rejects_zero_width() {
+        let rgb = vec![128u8; 16 * 16 * 3];
+        let mut webp = encode_webp(&rgb, 16, 16, 80).unwrap();
+        // Zero the 2-byte width field that follows the VP8 key-frame start code.
+        let start = webp
+            .windows(3)
+            .position(|w| w == [0x9D, 0x01, 0x2A])
+            .unwrap();
+        webp[start + 3] = 0;
+        webp[start + 4] = 0;
+        assert!(decode_webp(&webp).is_err());
     }
 
     #[test]
