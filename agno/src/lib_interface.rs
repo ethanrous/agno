@@ -133,7 +133,7 @@ pub extern "C" fn write_agno_image_to_webp(path: *const c_char, len: usize, img:
     };
     ffi_catch(
         |_| (),
-        std::panic::AssertUnwindSafe(|| {
+        || {
             let file = match File::create(wrapped_path.as_str()) {
                 Ok(f) => f,
                 Err(e) => {
@@ -151,7 +151,7 @@ pub extern "C" fn write_agno_image_to_webp(path: *const c_char, len: usize, img:
             ) {
                 warn!(error = ?e, "Failed to encode WebP");
             }
-        }),
+        },
     )
 }
 
@@ -180,7 +180,7 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
             len: 0,
             typ: 0,
         },
-        std::panic::AssertUnwindSafe(|| {
+        || {
             let data = img.exif.get_tag_value_by_tag(img_tag);
 
             match data {
@@ -198,7 +198,7 @@ pub extern "C" fn get_exif_value(img: &AgnoImage, img_tag: u16) -> ExifData {
                     }
                 }
             }
-        }),
+        },
     )
 }
 
@@ -217,14 +217,14 @@ pub extern "C" fn get_gps_coordinates(img: &AgnoImage) -> GpsCoordinates {
             lon: 0.0,
             valid: 0,
         },
-        std::panic::AssertUnwindSafe(|| match img.exif.get_gps_coordinates() {
+        || match img.exif.get_gps_coordinates() {
             Some((lat, lon)) => GpsCoordinates { lat, lon, valid: 1 },
             None => GpsCoordinates {
                 lat: 0.0,
                 lon: 0.0,
                 valid: 0,
             },
-        }),
+        },
     )
 }
 
@@ -242,7 +242,7 @@ pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) 
             data: null_mut(),
             len: 0,
         },
-        std::panic::AssertUnwindSafe(|| match img.to_jpeg(quality) {
+        || match img.to_jpeg(quality) {
             Ok(mut buf) => {
                 buf.shrink_to_fit();
                 let data = buf.as_mut_ptr();
@@ -257,7 +257,7 @@ pub extern "C" fn write_agno_image_to_jpeg_buffer(img: &AgnoImage, quality: u8) 
                     len: 0,
                 }
             }
-        }),
+        },
     )
 }
 

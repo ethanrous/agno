@@ -47,11 +47,11 @@ pub fn check_dims(width: u64, height: u64) -> Result<(), GuardError> {
 /// Fallible replacement for `vec![value; len]`: returns an error instead of
 /// aborting the process when the allocation cannot be satisfied.
 pub fn try_vec<T: Clone>(value: T, len: usize) -> Result<Vec<T>, GuardError> {
-    // Probe the allocation fallibly first, then let `vec![]` perform the
-    // real allocation: for zero values it lowers to alloc_zeroed, which
-    // hands back untouched zero pages instead of memsetting the buffer.
-    drop(try_with_capacity::<T>(len)?);
-    Ok(vec![value; len])
+    // Fill within the fallibly-reserved allocation; a separate `vec![]`
+    // call would allocate a second time and could still abort on OOM.
+    let mut v = try_with_capacity::<T>(len)?;
+    v.resize(len, value);
+    Ok(v)
 }
 
 /// Fallible replacement for `Vec::with_capacity`.
