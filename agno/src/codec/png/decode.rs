@@ -82,8 +82,11 @@ pub fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {
     // the final scanline (which libpng accepts with only a warning). The limit is
     // (expected * 2) + 64 KB, so a 1x1 image (expected=4) has limit=65544 and still rejects
     // a 1 MB bomb, while allowing modest trailing data.
-    let expected = (ihdr.height as usize) * (1 + scanline_bytes(&ihdr));
-    let limit = expected.saturating_mul(2).saturating_add(64 * 1024);
+    // Computed in u64: height * (1 + scanline) can exceed 32-bit usize for
+    // guard-allowed dimensions (e.g. 16-bit RGBA), which would wrap the limit.
+    let expected = (ihdr.height as u64).saturating_mul(1 + scanline_bytes(&ihdr) as u64);
+    let limit = usize::try_from(expected.saturating_mul(2).saturating_add(64 * 1024))
+        .map_err(|_| "PNG header-implied size exceeds addressable memory")?;
     let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&idat_data, limit)
         .map_err(|e| format!("PNG zlib decompression failed: {:?}", e))?;
 

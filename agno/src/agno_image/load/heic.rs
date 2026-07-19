@@ -59,9 +59,10 @@ pub fn load_heic(file: &mut File, exif: ExifContext) -> Result<AgnoImage, Box<dy
 /// Validate that a grid of `cols` x `rows` tiles of `tile_w` x `tile_h` is
 /// consistent with a declared `out_w` x `out_h` output canvas. Per HEIF grid
 /// semantics, the grid covers the canvas with less than one tile of overhang
-/// on each axis: `(cols-1) * tile_w < out_w` and `(rows-1) * tile_h < out_h`.
-/// Rejecting inconsistent geometry here (after the first tile decodes) bounds
-/// how many further tiles get decoded and buffered before stitching.
+/// on each axis: `(cols-1) * tile_w < out_w <= cols * tile_w` (and likewise
+/// for height). Rejecting inconsistent geometry here (after the first tile
+/// decodes) bounds how many further tiles get decoded and buffered before
+/// stitching, and rejects canvases the grid cannot fully cover.
 fn check_grid_geometry(
     out_w: usize,
     out_h: usize,
@@ -72,7 +73,9 @@ fn check_grid_geometry(
 ) -> Result<(), Box<dyn Error>> {
     let covered_w = cols.saturating_sub(1).saturating_mul(tile_w);
     let covered_h = rows.saturating_sub(1).saturating_mul(tile_h);
-    if covered_w < out_w && covered_h < out_h {
+    let full_w = cols.saturating_mul(tile_w);
+    let full_h = rows.saturating_mul(tile_h);
+    if covered_w < out_w && out_w <= full_w && covered_h < out_h && out_h <= full_h {
         Ok(())
     } else {
         Err(format!(
@@ -152,6 +155,14 @@ mod tests {
     #[test]
     fn check_grid_geometry_rejects_inflated_grid() {
         assert!(super::check_grid_geometry(100, 100, 100, 100, 512, 512).is_err());
+    }
+
+    /// A declared canvas larger than the grid's total coverage would leave the
+    /// uncovered region as zeroes after stitching; reject it instead.
+    #[test]
+    fn check_grid_geometry_rejects_canvas_larger_than_grid() {
+        assert!(super::check_grid_geometry(2000, 2000, 2, 2, 512, 512).is_err());
+        assert!(super::check_grid_geometry(1024, 2000, 2, 2, 512, 512).is_err());
     }
 
     #[test]
